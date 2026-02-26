@@ -1,0 +1,43 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/OoIartBnXXea5EyDvNXUs6GcgUk</id>
+  <title>arXiv Query: search_query=&amp;id_list=1806.07857&amp;start=0&amp;max_results=10</title>
+  <updated>2026-02-26T15:36:54Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=&amp;start=0&amp;max_results=10&amp;id_list=1806.07857" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>10</opensearch:itemsPerPage>
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/1806.07857v3</id>
+    <title>RUDDER: Return Decomposition for Delayed Rewards</title>
+    <updated>2019-09-10T16:27:52Z</updated>
+    <link href="https://arxiv.org/abs/1806.07857v3" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1806.07857v3" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We propose RUDDER, a novel reinforcement learning approach for delayed rewards in finite Markov decision processes (MDPs). In MDPs the Q-values are equal to the expected immediate reward plus the expected future rewards. The latter are related to bias problems in temporal difference (TD) learning and to high variance problems in Monte Carlo (MC) learning. Both problems are even more severe when rewards are delayed. RUDDER aims at making the expected future rewards zero, which simplifies Q-value estimation to computing the mean of the immediate reward. We propose the following two new concepts to push the expected future rewards toward zero. (i) Reward redistribution that leads to return-equivalent decision processes with the same optimal policies and, when optimal, zero expected future rewards. (ii) Return decomposition via contribution analysis which transforms the reinforcement learning task into a regression task at which deep learning excels. On artificial tasks with delayed rewards, RUDDER is significantly faster than MC and exponentially faster than Monte Carlo Tree Search (MCTS), TD(λ), and reward shaping approaches. At Atari games, RUDDER on top of a Proximal Policy Optimization (PPO) baseline improves the scores, which is most prominent at games with delayed rewards. Source code is available at \url{https://github.com/ml-jku/rudder} and demonstration videos at \url{https://goo.gl/EQerZV}.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="math.OC" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2018-06-20T17:34:07Z</published>
+    <arxiv:comment>9 Pages plus appendix. For videos https://goo.gl/EQerZV</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Jose A. Arjona-Medina</name>
+    </author>
+    <author>
+      <name>Michael Gillhofer</name>
+    </author>
+    <author>
+      <name>Michael Widrich</name>
+    </author>
+    <author>
+      <name>Thomas Unterthiner</name>
+    </author>
+    <author>
+      <name>Johannes Brandstetter</name>
+    </author>
+    <author>
+      <name>Sepp Hochreiter</name>
+    </author>
+  </entry>
+</feed>
