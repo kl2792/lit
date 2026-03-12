@@ -1,5 +1,1 @@
-{
-    "HTTP_status_code": 422,
-    "error": true,
-    "message": "Please use your own email address in API calls. See http://unpaywall.org/products/api"
-}
+{"best_oa_location":null,"data_standard":2,"doi":"10.1145/3442188.3445899","doi_url":"https://doi.org/10.1145/3442188.3445899","first_oa_location":null,"genre":"proceedings-article","has_repository_copy":false,"is_oa":false,"is_paratext":false,"journal_is_in_doaj":null,"journal_is_oa":false,"journal_issn_l":null,"journal_issns":null,"journal_name":"Proceedings of the 2021 ACM Conference on Fairness, Accountability, and Transparency","oa_locations":[],"oa_locations_embargoed":[],"oa_status":"closed","published_date":"2021-03-01","publisher":"ACM","title":"Algorithmic Recourse","updated":"2025-06-20T04:27:11Z","year":2021,"z_authors":[{"author_position":"first","is_corresponding":true,"raw_affiliation_strings":["MPI-IS, Germany, ETH Z\u00fcrich, Switzerland"],"raw_author_name":"Amir-Hossein Karimi"},{"author_position":"additional","is_corresponding":false,"raw_affiliation_strings":["MPI-IS, Germany"],"raw_author_name":"Bernhard Sch\u00f6lkopf"},{"author_position":"last","is_corresponding":false,"raw_affiliation_strings":["MPI-IS, Germany, Saarland University, Germany"],"raw_author_name":"Isabel Valera"}]}

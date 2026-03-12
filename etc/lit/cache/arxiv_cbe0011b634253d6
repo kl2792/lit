@@ -1,0 +1,56 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/RzVFjAIgnxrHBdHv4TKe2+0xJqM</id>
+  <title>arXiv Query: search_query=&amp;id_list=1912.02503&amp;start=0&amp;max_results=10</title>
+  <updated>2026-03-01T09:41:32Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=&amp;start=0&amp;max_results=10&amp;id_list=1912.02503" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>10</opensearch:itemsPerPage>
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/1912.02503v1</id>
+    <title>Hindsight Credit Assignment</title>
+    <updated>2019-12-05T11:05:27Z</updated>
+    <link href="https://arxiv.org/abs/1912.02503v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1912.02503v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We consider the problem of efficient credit assignment in reinforcement learning. In order to efficiently and meaningfully utilize new data, we propose to explicitly assign credit to past decisions based on the likelihood of them having led to the observed outcome. This approach uses new information in hindsight, rather than employing foresight. Somewhat surprisingly, we show that value functions can be rewritten through this lens, yielding a new family of algorithms. We study the properties of these algorithms, and empirically show that they successfully address important credit assignment challenges, through a set of illustrative tasks.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2019-12-05T11:05:27Z</published>
+    <arxiv:comment>NeurIPS 2019</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Anna Harutyunyan</name>
+    </author>
+    <author>
+      <name>Will Dabney</name>
+    </author>
+    <author>
+      <name>Thomas Mesnard</name>
+    </author>
+    <author>
+      <name>Mohammad Azar</name>
+    </author>
+    <author>
+      <name>Bilal Piot</name>
+    </author>
+    <author>
+      <name>Nicolas Heess</name>
+    </author>
+    <author>
+      <name>Hado van Hasselt</name>
+    </author>
+    <author>
+      <name>Greg Wayne</name>
+    </author>
+    <author>
+      <name>Satinder Singh</name>
+    </author>
+    <author>
+      <name>Doina Precup</name>
+    </author>
+    <author>
+      <name>Remi Munos</name>
+    </author>
+  </entry>
+</feed>

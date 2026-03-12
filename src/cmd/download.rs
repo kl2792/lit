@@ -1,10 +1,8 @@
-/// `lit source <arxiv_id> [dir]` -- Download arXiv LaTeX source tarball.
+/// `lit download <id>` -- Download PDF or arXiv LaTeX source.
 ///
-/// Looks up paper metadata from the arXiv API, creates a named directory
-/// (e.g. `harutyunyan2019_hca/`), downloads and extracts the source tarball,
-/// writes a `source.yaml` with metadata, and cleans up the tarball.
-///
-/// If `[dir]` is provided, it overrides the auto-generated directory name.
+/// Default: find open-access PDF via Unpaywall and print URL.
+/// `--source`: download arXiv LaTeX source tarball, extract, write source.yaml.
+/// `--url-only`: print PDF URL without downloading.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,30 +10,107 @@ use std::time::Duration;
 
 use super::Context;
 use crate::api::arxiv;
-use crate::api::PaperResult;
-use crate::detect::normalize_arxiv;
+use crate::api::{extract_last_name, unpaywall, PaperResult};
+use crate::citekey::SKIP_WORDS;
+use crate::db;
+use crate::detect::{normalize_arxiv, normalize_doi};
 use crate::format;
 
-/// Download timeout for source tarballs (seconds). Tarballs can be large,
-/// so we use a longer timeout than the default 15s HTTP client.
+/// Download timeout for source tarballs (seconds).
 const DOWNLOAD_TIMEOUT_SECS: u64 = 60;
 
-/// Words to skip when generating the directory slug from the title.
-const SKIP_WORDS: &[&str] = &[
-    "the", "a", "an", "of", "and", "in", "on", "for", "to", "how", "what", "why", "when",
-    "with", "from", "by", "is", "are", "at", "its",
-];
+pub async fn run(
+    ctx: &Context,
+    input: &str,
+    source: bool,
+    url_only: bool,
+    dir_override: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if source {
+        return run_source(ctx, input, dir_override).await;
+    }
+    run_pdf(ctx, input, url_only).await
+}
 
-pub fn run(ctx: &Context, input: &str, dir_override: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+/// Find open-access PDF via Unpaywall, with S2 and OpenAlex fallbacks.
+///
+/// Tries all three sources concurrently and uses the first PDF URL found
+/// (preference: Unpaywall > Semantic Scholar > OpenAlex).
+async fn run_pdf(ctx: &Context, input: &str, url_only: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::api::{openalex as oa_api, semantic_scholar as s2_api};
+
+    let doi = normalize_doi(input);
+    let client = ctx.client();
+
+    // Build URLs and cache keys for all three sources.
+    let uw_key = db::Db::cache_key("unpaywall", &doi);
+    let uw_url = unpaywall::pdf_url(&doi);
+
+    let s2_key = db::Db::cache_key("s2_paper_doi", &doi);
+    let s2_url = s2_api::paper_url(&format!("DOI:{}", doi));
+
+    let oa_key = db::Db::cache_key("oa_work", &doi);
+    let oa_url = oa_api::work_by_doi_url(&doi);
+
+    // Fetch all three concurrently.
+    let (uw_body, s2_body, oa_body) = tokio::join!(
+        client.get_cached(&uw_key, &uw_url, db::TTL_DOI),
+        client.get_cached(&s2_key, &s2_url, db::TTL_DOI),
+        client.get_cached(&oa_key, &oa_url, db::TTL_DOI),
+    );
+
+    // Parse Unpaywall result (used for both title and PDF URL).
+    let uw_result = uw_body
+        .ok()
+        .and_then(|b| unpaywall::parse_response(&b).ok());
+    let title = uw_result
+        .as_ref()
+        .map(|r| r.title.clone())
+        .unwrap_or_else(|| "N/A".to_string());
+    let uw_pdf = uw_result.and_then(|r| r.pdf_url);
+
+    let s2_pdf = s2_body
+        .ok()
+        .and_then(|b| s2_api::parse_paper(&b).ok())
+        .and_then(|r| r.pdf_url);
+
+    let oa_pdf = oa_body
+        .ok()
+        .and_then(|b| oa_api::parse_work(&b).ok())
+        .and_then(|r| r.oa_url);
+
+    let pdf_url = uw_pdf.or(s2_pdf).or(oa_pdf);
+
+    if url_only {
+        if let Some(ref pdf) = pdf_url {
+            println!("{}", pdf);
+        } else {
+            return Err("No open-access PDF found".into());
+        }
+    } else {
+        println!("Title: {}", title);
+        if let Some(ref pdf) = pdf_url {
+            println!("PDF: {}", pdf);
+        } else {
+            println!("No open-access PDF found");
+        }
+    }
+
+    Ok(())
+}
+
+/// Download arXiv LaTeX source tarball.
+async fn run_source(
+    ctx: &Context,
+    input: &str,
+    dir_override: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let arxiv_id = normalize_arxiv(input);
     let url = format!("https://arxiv.org/e-print/{}", arxiv_id);
 
-    // Step 1: Look up paper metadata from arXiv API.
     format::info(&format!("Looking up metadata for arXiv:{}", arxiv_id));
-    let paper = fetch_metadata(ctx, &arxiv_id)?;
+    let paper = fetch_metadata(ctx, &arxiv_id).await?;
 
-    // Step 2: Determine output directory.
-    // Default to etc/pdf/{key} relative to project root (parent of parent of exe).
     let dir_name = match dir_override {
         Some(d) => d.to_path_buf(),
         None => {
@@ -48,28 +123,26 @@ pub fn run(ctx: &Context, input: &str, dir_override: Option<&Path>) -> Result<()
     format::info(&format!("Output directory: {}", dir_name.display()));
     std::fs::create_dir_all(&dir_name)?;
 
-    // Step 3: Download the tarball into the directory.
     let safe_id = arxiv_id.replace('/', "_");
     let tarball = dir_name.join(format!("{}.tar.gz", safe_id));
 
     format::info(&format!("Downloading arXiv source: {}", arxiv_id));
-    let download_client = reqwest::blocking::Client::builder()
+    let download_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
         .user_agent("lit/1.0")
         .build()?;
 
-    let resp = download_client.get(&url).send()?;
+    let resp = download_client.get(&url).send().await?;
     if !resp.status().is_success() {
         return Err(format!("HTTP {} for {}", resp.status(), url).into());
     }
-    let bytes = resp.bytes()?;
+    let bytes = resp.bytes().await?;
     std::fs::write(&tarball, &bytes)?;
 
     if !tarball.exists() {
         return Err("Download failed".into());
     }
 
-    // Step 4: Extract the tarball.
     format::info("Extracting source tarball...");
     let status = Command::new("tar")
         .arg("-xzf")
@@ -82,7 +155,6 @@ pub fn run(ctx: &Context, input: &str, dir_override: Option<&Path>) -> Result<()
         Ok(s) if s.success() => {}
         Ok(s) => {
             format::warn(&format!("tar exited with status {}", s));
-            // Try gunzip in case it's a gzipped single file, not a tar archive
             format::info("Retrying as gzipped file...");
             let gunzip_status = Command::new("gunzip")
                 .arg("-f")
@@ -97,20 +169,17 @@ pub fn run(ctx: &Context, input: &str, dir_override: Option<&Path>) -> Result<()
         Err(e) => return Err(format!("failed to run tar: {}", e).into()),
     }
 
-    // Step 5: Write source.yaml.
     let today = today_string();
     let yaml = build_source_yaml(&paper, &arxiv_id, &today);
     let yaml_path = dir_name.join("source.yaml");
     std::fs::write(&yaml_path, &yaml)?;
     format::info(&format!("Wrote {}", yaml_path.display()));
 
-    // Step 6: Clean up the tarball (if it still exists after extraction).
     if tarball.exists() {
         std::fs::remove_file(&tarball)?;
         format::info("Cleaned up tarball");
     }
 
-    // Summary
     println!("Title: {}", paper.title);
     let first_author = paper.authors.first().map(|s| s.as_str()).unwrap_or("?");
     println!("Authors: {} et al.", first_author);
@@ -120,10 +189,8 @@ pub fn run(ctx: &Context, input: &str, dir_override: Option<&Path>) -> Result<()
     Ok(())
 }
 
-/// Default output directory: `etc/pdf/` relative to the project root.
-///
-/// Walks up from cwd looking for a directory containing `etc/pdf/`.
-/// Falls back to `./etc/pdf/` if no project root is found.
+// -- Helpers (moved from source.rs) -------------------------------------------
+
 fn default_output_dir() -> PathBuf {
     if let Ok(cwd) = std::env::current_dir() {
         let mut dir = cwd.as_path();
@@ -141,37 +208,25 @@ fn default_output_dir() -> PathBuf {
     PathBuf::from("etc/pdf")
 }
 
-/// Fetch paper metadata from the arXiv API.
-fn fetch_metadata(ctx: &Context, arxiv_id: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
+async fn fetch_metadata(ctx: &Context, arxiv_id: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
     let url = arxiv::query_url(arxiv_id);
     let client = ctx.client();
-    let cache_key = crate::cache::Cache::key("arxiv", arxiv_id);
-    let body = client.get_cached_deferred(&cache_key, &url, crate::cache::TTL_DOI)?;
+    let cache_key = db::Db::cache_key("arxiv", arxiv_id);
+    let body = client.get_cached_deferred(&cache_key, &url, db::TTL_DOI).await?;
     let result = arxiv::parse_entry(&body)?;
-    client.cache_set(&cache_key, &body);
+    client.cache_set(&cache_key, &url, &body);
     Ok(result)
 }
 
-/// Generate a directory name from paper metadata.
-///
-/// Format: `{lastname}{year}{slug}` (bibtex key style, no separators) where:
-/// - `lastname` is the lowercased last name of the first author (non-alpha stripped)
-/// - `year` is the 4-digit year
-/// - `slug` is the first significant word from the title (lowercase, non-alpha stripped)
-///
-/// Examples: `harutyunyan2019hindsight`, `schulman2017proximal`, `mesnard2023quantile`
 fn generate_dir_name(paper: &PaperResult) -> String {
     let lastname = extract_lastname(&paper.authors);
     let slug = extract_title_slug(&paper.title);
-
     format!("{}{}{}", lastname, paper.year, slug)
 }
 
-/// Extract the lowercased last name of the first author.
 fn extract_lastname(authors: &[String]) -> String {
     if let Some(first) = authors.first() {
-        let name = first.trim();
-        let last = name.split_whitespace().last().unwrap_or("unknown");
+        let last = extract_last_name(first.trim());
         last.chars()
             .filter(|c| c.is_alphabetic())
             .collect::<String>()
@@ -181,7 +236,6 @@ fn extract_lastname(authors: &[String]) -> String {
     }
 }
 
-/// Extract a short slug from the title: first significant word, lowercased.
 fn extract_title_slug(title: &str) -> String {
     title
         .split(|c: char| !c.is_alphanumeric())
@@ -191,11 +245,8 @@ fn extract_title_slug(title: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Build the source.yaml content.
 fn build_source_yaml(paper: &PaperResult, arxiv_id: &str, retrieved: &str) -> String {
-    // Format authors as "Last, First and Last, First and ..."
     let authors_str = paper.authors.join(" and ");
-    // Escape double quotes in title/authors for YAML safety
     let title = paper.title.replace('"', "\\\"");
     let authors = authors_str.replace('"', "\\\"");
 
@@ -208,25 +259,18 @@ fn build_source_yaml(paper: &PaperResult, arxiv_id: &str, retrieved: &str) -> St
     yaml
 }
 
-/// Get today's date as YYYY-MM-DD.
 fn today_string() -> String {
-    // Use UNIX date formatting via std::time. For simplicity, compute from
-    // SystemTime since we don't have chrono as a dependency.
     let now = std::time::SystemTime::now();
     let since_epoch = now
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-
-    // Simple date calculation (no leap second precision needed)
     let days = since_epoch / 86400;
     let (year, month, day) = days_to_ymd(days);
     format!("{:04}-{:02}-{:02}", year, month, day)
 }
 
-/// Convert days since Unix epoch to (year, month, day).
 fn days_to_ymd(days: u64) -> (u64, u64, u64) {
-    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
     let z = days + 719468;
     let era = z / 146097;
     let doe = z - era * 146097;
@@ -333,9 +377,6 @@ mod tests {
 
     #[test]
     fn test_days_to_ymd_known_date() {
-        // 2026-03-01 = day 20513 since epoch
-        // 2026-01-01 = day 20454
-        // Jan has 31, Feb has 28 in 2026: 20454 + 31 + 28 = 20513
         assert_eq!(days_to_ymd(20513), (2026, 3, 1));
     }
 

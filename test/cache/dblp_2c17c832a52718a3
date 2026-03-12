@@ -1,0 +1,92 @@
+{
+"result":{
+"query":"attention* is all* you* need*",
+"status":{
+"@code":"200",
+"text":"OK"
+},
+"time":{
+"@unit":"msecs",
+"text":"25.98"
+},
+"completions":{
+"@total":"1",
+"@computed":"1",
+"@sent":"1",
+"c":{
+"@sc":"106",
+"@dc":"104",
+"@oc":"106",
+"@id":"65933637",
+"text":"need"
+}
+},
+"hits":{
+"@total":"104",
+"@computed":"100",
+"@sent":"10",
+"@first":"0",
+"hit":[{
+"@score":"9",
+"@id":"2467430",
+"info":{"authors":{"author":[{"@pid":"167/1261-9","text":"Xiaopeng Zhang 0009"},{"@pid":"17/8386","text":"Haoyu Yang"},{"@pid":"y/EFYYoung","text":"Evangeline F. Y. Young"}]},"title":"Attentional Transfer is All You Need: Technology-aware Layout Pattern Generation.","venue":"DAC","pages":"169-174","year":"2021","type":"Conference and Workshop Papers","access":"closed","key":"conf/dac/ZhangYY21","doi":"10.1109/DAC18074.2021.9586227","ee":"https://doi.org/10.1109/DAC18074.2021.9586227","url":"https://dblp.org/rec/conf/dac/ZhangYY21"},
+"url":"URL#2467430"
+},
+{
+"@score":"8",
+"@id":"1143834",
+"info":{"authors":{"author":[{"@pid":"375/1509","text":"Georgy Tyukin"},{"@pid":"342/2924","text":"Gbètondji J.-S. Dovonon"},{"@pid":"232/9592","text":"Jean Kaddour"},{"@pid":"58/10142","text":"Pasquale Minervini"}]},"title":"Attention Is All You Need But You Don&apos;t Need All Of It For Inference of Large Language Models.","venue":"CoRR","volume":"abs/2407.15516","year":"2024","type":"Informal and Other Publications","access":"open","key":"journals/corr/abs-2407-15516","doi":"10.48550/ARXIV.2407.15516","ee":"https://doi.org/10.48550/arXiv.2407.15516","url":"https://dblp.org/rec/journals/corr/abs-2407-15516"},
+"url":"URL#1143834"
+},
+{
+"@score":"7",
+"@id":"74579",
+"info":{"authors":{"author":[{"@pid":"377/4079","text":"Tarik Houichime"},{"@pid":"147/7108","text":"Younès El Amrani"}]},"title":"Context Is All You Need: A Hybrid Attention-Based Method for Detecting Code Design Patterns.","venue":"IEEE Access","volume":"13","pages":"9689-9707","year":"2025","type":"Journal Articles","access":"open","key":"journals/access/HouichimeA25","doi":"10.1109/ACCESS.2025.3525849","ee":"https://doi.org/10.1109/ACCESS.2025.3525849","url":"https://dblp.org/rec/journals/access/HouichimeA25"},
+"url":"URL#74579"
+},
+{
+"@score":"7",
+"@id":"467693",
+"info":{"authors":{"author":{"@pid":"397/7878","text":"M. Murat Yaslioglu"}},"title":"Attention is All You Need Until You Need Retention.","venue":"CoRR","volume":"abs/2501.09166","year":"2025","type":"Informal and Other Publications","access":"open","key":"journals/corr/abs-2501-09166","doi":"10.48550/ARXIV.2501.09166","ee":"https://doi.org/10.48550/arXiv.2501.09166","url":"https://dblp.org/rec/journals/corr/abs-2501-09166"},
+"url":"URL#467693"
+},
+{
+"@score":"7",
+"@id":"3083646",
+"info":{"authors":{"author":[{"@pid":"43/5814","text":"Sanghyun Yoo"},{"@pid":"49/2036","text":"Young-Seok Kim"},{"@pid":"148/9610","text":"Kang Hyun Lee"},{"@pid":"185/1342","text":"Kuhwan Jeong"},{"@pid":"41/8883","text":"Junhwi Choi"},{"@pid":"121/9613","text":"Hoshik Lee"},{"@pid":"18/3075","text":"Young Sang Choi"}]},"title":"Graph-Aware Transformer: Is Attention All Graphs Need?","venue":"CoRR","volume":"abs/2006.05213","year":"2020","type":"Informal and Other Publications","access":"open","key":"journals/corr/abs-2006-05213","ee":"https://arxiv.org/abs/2006.05213","url":"https://dblp.org/rec/journals/corr/abs-2006-05213"},
+"url":"URL#3083646"
+},
+{
+"@score":"6",
+"@id":"214470",
+"info":{"authors":{"author":[{"@pid":"392/2216","text":"Tokimasa Isomura"},{"@pid":"315/2865","text":"Ryotaro Shimizu"},{"@pid":"04/2472","text":"Masayuki Goto"}]},"title":"Sparse attention is all you need for pre-training on tabular data.","venue":"Neural Comput. Appl.","volume":"37","number":"3","pages":"1509-1522","year":"2025","type":"Journal Articles","access":"closed","key":"journals/nca/IsomuraSG25","doi":"10.1007/S00521-024-10698-X","ee":"https://doi.org/10.1007/s00521-024-10698-x","url":"https://dblp.org/rec/journals/nca/IsomuraSG25"},
+"url":"URL#214470"
+},
+{
+"@score":"6",
+"@id":"336002",
+"info":{"authors":{"author":[{"@pid":"245/3555","text":"Jeeyung Kim"},{"@pid":"393/2825","text":"Erfan Esmaeili"},{"@pid":"97/360-1","text":"Qiang Qiu 0001"}]},"title":"Text Embedding is Not All You Need: Attention Control for Text-to-Image Semantic Alignment with Text Self-Attention Maps.","venue":"CVPR","pages":"8031-8040","year":"2025","type":"Conference and Workshop Papers","access":"open","key":"conf/cvpr/KimE025","doi":"10.1109/CVPR52734.2025.00752","ee":"https://openaccess.thecvf.com/content/CVPR2025/html/Kim_Text_Embedding_is_Not_All_You_Need_Attention_Control_for_CVPR_2025_paper.html","url":"https://dblp.org/rec/conf/cvpr/KimE025"},
+"url":"URL#336002"
+},
+{
+"@score":"6",
+"@id":"487909",
+"info":{"authors":{"author":[{"@pid":"57/7330","text":"Nils Graef"},{"@pid":"383/2117","text":"Andrew Wasielewski"}]},"title":"Slim attention: cut your context memory in half without loss of accuracy - K-cache is all you need for MHA.","venue":"CoRR","volume":"abs/2503.05840","year":"2025","type":"Informal and Other Publications","access":"open","key":"journals/corr/abs-2503-05840","doi":"10.48550/ARXIV.2503.05840","ee":"https://doi.org/10.48550/arXiv.2503.05840","url":"https://dblp.org/rec/journals/corr/abs-2503-05840"},
+"url":"URL#487909"
+},
+{
+"@score":"6",
+"@id":"512275",
+"info":{"authors":{"author":{"@pid":"408/0506","text":"Isaac Gerber"}},"title":"Attention Is Not All You Need: The Importance of Feedforward Networks in Transformer Models.","venue":"CoRR","volume":"abs/2505.06633","year":"2025","type":"Informal and Other Publications","access":"open","key":"journals/corr/abs-2505-06633","doi":"10.48550/ARXIV.2505.06633","ee":"https://doi.org/10.48550/arXiv.2505.06633","url":"https://dblp.org/rec/journals/corr/abs-2505-06633"},
+"url":"URL#512275"
+},
+{
+"@score":"6",
+"@id":"649956",
+"info":{"authors":{"author":[{"@pid":"06/6785-125","text":"Yang Zhang 0125"},{"@pid":"376/2537","text":"Caiqi Liu"},{"@pid":"312/0694","text":"Mujiexin Liu"},{"@pid":"148/1951","text":"Tianyuan Liu"},{"@pid":"89/3472-1","text":"Hao Lin 0001"},{"@pid":"374/1271","text":"Cheng-Bing Huang"},{"@pid":"38/3526-2","text":"Lin Ning 0002"}]},"title":"Attention is all you need: utilizing attention in AI-enabled drug discovery.","venue":"Briefings Bioinform.","volume":"25","number":"1","year":"2024","type":"Journal Articles","access":"open","key":"journals/bib/ZhangLLLLHN24","doi":"10.1093/BIB/BBAD467","ee":"https://doi.org/10.1093/bib/bbad467","url":"https://dblp.org/rec/journals/bib/ZhangLLLLHN24"},
+"url":"URL#649956"
+}
+]
+}
+}
+}

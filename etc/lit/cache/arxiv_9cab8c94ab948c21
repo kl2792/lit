@@ -1,0 +1,45 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/4aiTOYJlXi123mWiSSrdwL0pCDw</id>
+  <title>arXiv Query: search_query=&amp;id_list=2102.12425&amp;start=0&amp;max_results=10</title>
+  <updated>2026-03-01T07:25:43Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=&amp;start=0&amp;max_results=10&amp;id_list=2102.12425" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>10</opensearch:itemsPerPage>
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2102.12425v1</id>
+    <title>Synthetic Returns for Long-Term Credit Assignment</title>
+    <updated>2021-02-24T17:43:02Z</updated>
+    <link href="https://arxiv.org/abs/2102.12425v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2102.12425v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Since the earliest days of reinforcement learning, the workhorse method for assigning credit to actions over time has been temporal-difference (TD) learning, which propagates credit backward timestep-by-timestep. This approach suffers when delays between actions and rewards are long and when intervening unrelated events contribute variance to long-term returns. We propose state-associative (SA) learning, where the agent learns associations between states and arbitrarily distant future rewards, then propagates credit directly between the two. In this work, we use SA-learning to model the contribution of past states to the current reward. With this model we can predict each state's contribution to the far future, a quantity we call "synthetic returns". TD-learning can then be applied to select actions that maximize these synthetic returns (SRs). We demonstrate the effectiveness of augmenting agents with SRs across a range of tasks on which TD-learning alone fails. We show that the learned SRs are interpretable: they spike for states that occur after critical actions are taken. Finally, we show that our IMPALA-based SR agent solves Atari Skiing -- a game with a lengthy reward delay that posed a major hurdle to deep-RL agents -- 25 times faster than the published state-of-the-art.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2021-02-24T17:43:02Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>David Raposo</name>
+    </author>
+    <author>
+      <name>Sam Ritter</name>
+    </author>
+    <author>
+      <name>Adam Santoro</name>
+    </author>
+    <author>
+      <name>Greg Wayne</name>
+    </author>
+    <author>
+      <name>Theophane Weber</name>
+    </author>
+    <author>
+      <name>Matt Botvinick</name>
+    </author>
+    <author>
+      <name>Hado van Hasselt</name>
+    </author>
+    <author>
+      <name>Francis Song</name>
+    </author>
+  </entry>
+</feed>

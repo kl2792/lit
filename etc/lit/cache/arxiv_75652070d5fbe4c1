@@ -1,0 +1,38 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/gOz/m2cIiC010Zg5MtMLynTbnP8</id>
+  <title>arXiv Query: search_query=&amp;id_list=2602.11988&amp;start=0&amp;max_results=10</title>
+  <updated>2026-02-27T09:47:27Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=&amp;start=0&amp;max_results=10&amp;id_list=2602.11988" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>10</opensearch:itemsPerPage>
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2602.11988v1</id>
+    <title>Evaluating AGENTS.md: Are Repository-Level Context Files Helpful for Coding Agents?</title>
+    <updated>2026-02-12T14:15:22Z</updated>
+    <link href="https://arxiv.org/abs/2602.11988v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2602.11988v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>A widespread practice in software development is to tailor coding agents to repositories using context files, such as AGENTS.md, by either manually or automatically generating them. Although this practice is strongly encouraged by agent developers, there is currently no rigorous investigation into whether such context files are actually effective for real-world tasks. In this work, we study this question and evaluate coding agents' task completion performance in two complementary settings: established SWE-bench tasks from popular repositories, with LLM-generated context files following agent-developer recommendations, and a novel collection of issues from repositories containing developer-committed context files.
+  Across multiple coding agents and LLMs, we find that context files tend to reduce task success rates compared to providing no repository context, while also increasing inference cost by over 20%. Behaviorally, both LLM-generated and developer-provided context files encourage broader exploration (e.g., more thorough testing and file traversal), and coding agents tend to respect their instructions. Ultimately, we conclude that unnecessary requirements from context files make tasks harder, and human-written context files should describe only minimal requirements.</summary>
+    <category term="cs.SE" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2026-02-12T14:15:22Z</published>
+    <arxiv:primary_category term="cs.SE"/>
+    <author>
+      <name>Thibaud Gloaguen</name>
+    </author>
+    <author>
+      <name>Niels Mündler</name>
+    </author>
+    <author>
+      <name>Mark Müller</name>
+    </author>
+    <author>
+      <name>Veselin Raychev</name>
+    </author>
+    <author>
+      <name>Martin Vechev</name>
+    </author>
+  </entry>
+</feed>
