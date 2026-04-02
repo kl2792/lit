@@ -257,10 +257,103 @@ pub fn parse_bib_file(content: &str) -> Vec<BibEntry> {
     entries
 }
 
-/// Append a BibTeX entry string to a file.
+/// Write a BibTeX entry to a file, replacing any existing entry with the same citekey.
 ///
-/// Adds a blank line separator before the entry if the file already exists
-/// and is non-empty.
+/// If an entry with the matching citekey already exists, it is replaced in-place
+/// (preserving surrounding content). Otherwise the entry is appended.
+pub fn upsert_to_file(path: &Path, entry: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let new_key = extract_entry_key(entry).ok_or("could not parse citekey from BibTeX entry")?;
+
+    let content = match fs::read_to_string(path) {
+        Ok(s) if !s.is_empty() => s,
+        _ => return append_to_file(path, entry),
+    };
+    if let Some(new_content) = replace_entry_block(&content, &new_key, entry) {
+        fs::write(path, new_content)?;
+        Ok(())
+    } else {
+        append_to_file(path, entry)
+    }
+}
+
+/// Extract the citekey from a BibTeX entry string (e.g. `@article{key,` → `"key"`).
+pub fn extract_entry_key(entry: &str) -> Option<String> {
+    let after_brace = entry.find('{').map(|i| &entry[i + 1..])?;
+    let key = after_brace.split(|c| c == ',' || c == '\n').next()?.trim();
+    if key.is_empty() { None } else { Some(key.to_string()) }
+}
+
+/// Replace the block for `key` in `content` with `new_entry`.
+///
+/// Returns `Some(new_content)` if the key was found and replaced, `None` otherwise.
+fn replace_entry_block(content: &str, key: &str, new_entry: &str) -> Option<String> {
+    let bytes = content.as_bytes();
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        let offset = match content[pos..].find('@') {
+            Some(o) => o,
+            None => break,
+        };
+        let at_pos = pos + offset;
+        pos = at_pos + 1;
+
+        // Read entry type (up to '{')
+        while pos < bytes.len() && bytes[pos] != b'{' && !bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        while pos < bytes.len() && bytes[pos] != b'{' {
+            pos += 1;
+        }
+        if pos >= bytes.len() { break; }
+        pos += 1; // skip '{'
+
+        // Skip whitespace
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+
+        // Read key
+        let key_start = pos;
+        while pos < bytes.len() && bytes[pos] != b',' && !bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        let found_key = content[key_start..pos].trim();
+
+        // Scan to end of this entry (depth 1 since we already consumed the opening '{')
+        let mut depth: i32 = 1;
+        while pos < bytes.len() && depth > 0 {
+            if bytes[pos] == b'{' { depth += 1; }
+            else if bytes[pos] == b'}' { depth -= 1; }
+            pos += 1;
+        }
+        let entry_end = pos;
+
+        if found_key != key {
+            continue;
+        }
+
+        // Found the entry to replace: [at_pos, entry_end)
+        // Skip trailing newline(s) after the old entry
+        let mut tail_start = entry_end;
+        while tail_start < bytes.len() && (bytes[tail_start] == b'\n' || bytes[tail_start] == b'\r') {
+            tail_start += 1;
+        }
+
+        let mut result = String::with_capacity(content.len());
+        result.push_str(&content[..at_pos]);
+        result.push_str(new_entry.trim());
+        result.push('\n');
+        if tail_start < content.len() {
+            result.push('\n');
+            result.push_str(&content[tail_start..]);
+        }
+        return Some(result);
+    }
+
+    None
+}
+
 pub fn append_to_file(path: &Path, entry: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 

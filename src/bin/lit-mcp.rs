@@ -112,6 +112,7 @@ fn tool_definitions() -> Value {
                 "properties": {
                     "bib_file": {"type": "string"},
                     "dry_run": {"type": "boolean", "description": "Default true. Set false to remove malformed+duplicate entries."},
+                    "prune": {"type": "boolean", "description": "Default false. Set true (with dry_run=false) to also remove orphaned entries."},
                     "tex_dir": {"type": "string", "description": "Directory to scan for .tex files to find orphans"}
                 },
                 "required": ["bib_file"]
@@ -183,8 +184,6 @@ async fn handle_lookup(ctx: &cmd::Context, args: &Value) -> Result<String, Strin
 
 async fn handle_read(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
     let query = args["query"].as_str().ok_or("missing 'query'")?;
-    let source = args["source"].as_bool().unwrap_or(false);
-
     // Try local first
     match cmd::read::run_data(ctx, query) {
         Ok(result) => {
@@ -211,8 +210,8 @@ async fn handle_read(ctx: &cmd::Context, args: &Value) -> Result<String, String>
                 || normalized.starts_with("arxiv:");
 
             if looks_like_arxiv {
-                // Download, then retry read
-                cmd::download::run(ctx, normalized, source, false, None)
+                // Download LaTeX source (run_pdf doesn't save to disk), then retry read
+                cmd::download::run(ctx, normalized, true, false, None)
                     .await
                     .map_err(|e| format!("auto-download failed: {}", e))?;
 
@@ -288,12 +287,13 @@ async fn handle_path(ctx: &cmd::Context, args: &Value) -> Result<String, String>
 fn handle_clean(args: &Value) -> Result<String, String> {
     let bib_file = args["bib_file"].as_str().ok_or("missing 'bib_file'")?;
     let apply = !args["dry_run"].as_bool().unwrap_or(true);
+    let prune = args["prune"].as_bool().unwrap_or(false);
     let tex_dir = args["tex_dir"].as_str();
 
     let tex_path: Option<std::path::PathBuf> = tex_dir.map(std::path::PathBuf::from);
     let tex_refs: Vec<&std::path::Path> = tex_path.as_deref().into_iter().collect();
 
-    let report = cmd::clean::run(std::path::Path::new(bib_file), apply, false, &tex_refs)
+    let report = cmd::clean::run(std::path::Path::new(bib_file), apply, prune, &tex_refs)
         .map_err(|e| e.to_string())?;
 
     let mut result = serde_json::Map::new();
