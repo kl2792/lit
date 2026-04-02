@@ -1,9 +1,11 @@
 pub mod add;
 pub mod check;
+pub mod clean;
 pub mod cites;
 pub mod download;
 pub mod open;
 pub mod path;
+pub mod read;
 pub mod refs;
 pub mod search;
 pub mod verify;

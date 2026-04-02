@@ -118,6 +118,19 @@ enum Commands {
         #[arg(short = 'j', long, default_value = "4")]
         jobs: usize,
     },
+    /// Scan a .bib file for malformed entries, duplicates, and orphans
+    Clean {
+        bib_file: PathBuf,
+        /// Apply fixes: remove malformed and duplicate entries
+        #[arg(long)]
+        apply: bool,
+        /// Also remove orphaned entries (requires --tex)
+        #[arg(long)]
+        prune: bool,
+        /// Directory to scan for .tex files (orphan detection; repeatable)
+        #[arg(long = "tex")]
+        tex_dirs: Vec<PathBuf>,
+    },
     /// Check DB<->filesystem consistency
     Check {
         /// Automatically fix inconsistencies
@@ -262,6 +275,16 @@ async fn main() {
         }) => cmd::download::run(&ctx, &id, source, url_only, dir.as_deref()).await,
         Some(Commands::Add { input, bib_file }) => cmd::add::run(&ctx, &input, &bib_file).await,
         Some(Commands::Verify { bib_file, jobs }) => cmd::verify::run(&ctx, &bib_file, jobs).await,
+        Some(Commands::Clean { bib_file, apply, prune, tex_dirs }) => {
+            let tex_refs: Vec<&std::path::Path> = tex_dirs.iter().map(|p| p.as_path()).collect();
+            match cmd::clean::run(&bib_file, apply, prune, &tex_refs) {
+                Ok(report) => {
+                    cmd::clean::print_report(&report, apply);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
         Some(Commands::Check { fix, conflicts }) => {
             if conflicts {
                 cmd::check::run_conflicts(&ctx)

@@ -42,6 +42,30 @@ fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "read",
+            "description": "Get the file path to a paper's full text. Finds the paper in etc/pdf/, ensures text is available (runs pdftotext if needed or finds LaTeX source), returns the path. Auto-downloads from arXiv if not found locally and an arXiv ID is given. Use Claude's Read tool on the returned path.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Paper identifier: citekey (e.g. 'conmy2023acdc'), arXiv ID, or substring"},
+                    "source": {"type": "boolean", "description": "Prefer arXiv LaTeX source over PDF (default false)"}
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "add",
+            "description": "Fetch BibTeX for a paper and append to a .bib file.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string", "description": "arXiv ID, DOI, ISBN, or search query"},
+                    "bib_file": {"type": "string", "description": "Path to .bib file"}
+                },
+                "required": ["input", "bib_file"]
+            }
+        },
+        {
             "name": "refs",
             "description": "Get references of a paper (papers it cites).",
             "inputSchema": {
@@ -81,23 +105,16 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "add",
-            "description": "Fetch BibTeX for a paper and append to a .bib file.",
+            "name": "clean",
+            "description": "Scan a .bib file for malformed entries, duplicates, and optionally orphaned citations. Returns a report. Set dry_run=false to apply fixes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "input": {"type": "string", "description": "arXiv ID, DOI, ISBN, or search query"},
-                    "bib_file": {"type": "string", "description": "Path to .bib file"}
+                    "bib_file": {"type": "string"},
+                    "dry_run": {"type": "boolean", "description": "Default true. Set false to remove malformed+duplicate entries."},
+                    "tex_dir": {"type": "string", "description": "Directory to scan for .tex files to find orphans"}
                 },
-                "required": ["input", "bib_file"]
-            }
-        },
-        {
-            "name": "db_stats",
-            "description": "Get database statistics: paper count, citation count, cache entries, DB size.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {}
+                "required": ["bib_file"]
             }
         }
     ])
@@ -164,6 +181,67 @@ async fn handle_lookup(ctx: &cmd::Context, args: &Value) -> Result<String, Strin
     serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
 }
 
+async fn handle_read(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
+    let query = args["query"].as_str().ok_or("missing 'query'")?;
+    let source = args["source"].as_bool().unwrap_or(false);
+
+    // Try local first
+    match cmd::read::run_data(ctx, query) {
+        Ok(result) => {
+            let mut json = serde_json::Map::new();
+            json.insert(
+                "path".into(),
+                Value::String(result.path.to_string_lossy().into_owned()),
+            );
+            json.insert("format".into(), Value::String(result.format));
+            if !result.extra_files.is_empty() {
+                json.insert(
+                    "extra_files".into(),
+                    Value::Array(
+                        result.extra_files.iter().map(|f| Value::String(f.clone())).collect(),
+                    ),
+                );
+            }
+            serde_json::to_string_pretty(&Value::Object(json)).map_err(|e| e.to_string())
+        }
+        Err(_) => {
+            // Not found locally — try to auto-download if it looks like an arXiv ID
+            let normalized = query.trim();
+            let looks_like_arxiv = normalized.chars().next().map_or(false, |c| c.is_ascii_digit())
+                || normalized.starts_with("arxiv:");
+
+            if looks_like_arxiv {
+                // Download, then retry read
+                cmd::download::run(ctx, normalized, source, false, None)
+                    .await
+                    .map_err(|e| format!("auto-download failed: {}", e))?;
+
+                let result = cmd::read::run_data(ctx, query)
+                    .map_err(|e| format!("read after download failed: {}", e))?;
+
+                let mut json = serde_json::Map::new();
+                json.insert(
+                    "path".into(),
+                    Value::String(result.path.to_string_lossy().into_owned()),
+                );
+                json.insert("format".into(), Value::String(result.format));
+                json.insert("auto_downloaded".into(), Value::Bool(true));
+                if !result.extra_files.is_empty() {
+                    json.insert(
+                        "extra_files".into(),
+                        Value::Array(
+                            result.extra_files.iter().map(|f| Value::String(f.clone())).collect(),
+                        ),
+                    );
+                }
+                serde_json::to_string_pretty(&Value::Object(json)).map_err(|e| e.to_string())
+            } else {
+                Err(format!("paper '{}' not found locally. Download it first with an arXiv ID.", query))
+            }
+        }
+    }
+}
+
 async fn handle_refs(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
     let paper_id = args["paper_id"].as_str().ok_or("missing 'paper_id'")?;
     let hops = args["hops"].as_u64().unwrap_or(1) as usize;
@@ -207,6 +285,46 @@ async fn handle_path(ctx: &cmd::Context, args: &Value) -> Result<String, String>
     }
 }
 
+fn handle_clean(args: &Value) -> Result<String, String> {
+    let bib_file = args["bib_file"].as_str().ok_or("missing 'bib_file'")?;
+    let apply = !args["dry_run"].as_bool().unwrap_or(true);
+    let tex_dir = args["tex_dir"].as_str();
+
+    let tex_path: Option<std::path::PathBuf> = tex_dir.map(std::path::PathBuf::from);
+    let tex_refs: Vec<&std::path::Path> = tex_path.as_deref().into_iter().collect();
+
+    let report = cmd::clean::run(std::path::Path::new(bib_file), apply, false, &tex_refs)
+        .map_err(|e| e.to_string())?;
+
+    let mut result = serde_json::Map::new();
+    result.insert(
+        "malformed".into(),
+        Value::Array(report.malformed.iter().map(|k| Value::String(k.clone())).collect()),
+    );
+    result.insert(
+        "duplicates".into(),
+        Value::Array(
+            report
+                .duplicates
+                .iter()
+                .map(|(kept, removed)| json!({"kept": kept, "removed": removed}))
+                .collect(),
+        ),
+    );
+    result.insert(
+        "orphans".into(),
+        Value::Array(report.orphans.iter().map(|k| Value::String(k.clone())).collect()),
+    );
+    if apply {
+        result.insert(
+            "removed".into(),
+            Value::Array(report.removed.iter().map(|k| Value::String(k.clone())).collect()),
+        );
+    }
+
+    serde_json::to_string_pretty(&Value::Object(result)).map_err(|e| e.to_string())
+}
+
 async fn handle_add(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
     let input = args["input"].as_str().ok_or("missing 'input'")?;
     let bib_file = args["bib_file"].as_str().ok_or("missing 'bib_file'")?;
@@ -219,17 +337,6 @@ async fn handle_add(ctx: &cmd::Context, args: &Value) -> Result<String, String> 
         "bibtex": result.bib_text,
     });
     serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
-}
-
-fn handle_db_stats(ctx: &cmd::Context) -> Result<String, String> {
-    let stats = ctx.db.db_stats().map_err(|e| e.to_string())?;
-    let result = json!({
-        "paper_count": stats.paper_count,
-        "citation_count": stats.citation_count,
-        "cache_entries": stats.cache_entries,
-        "db_size_bytes": stats.db_size_bytes,
-    });
-    serde_json::to_string_pretty(&result).map_err(|e| e.to_string())
 }
 
 // -- JSON-RPC dispatch ------------------------------------------------------
@@ -317,11 +424,12 @@ async fn handle_message(ctx: &cmd::Context, msg: &Value) -> Option<Value> {
             let result = match name {
                 "search" => handle_search(ctx, &args).await,
                 "lookup" => handle_lookup(ctx, &args).await,
+                "read" => handle_read(ctx, &args).await,
+                "add" => handle_add(ctx, &args).await,
                 "refs" => handle_refs(ctx, &args).await,
                 "cites" => handle_cites(ctx, &args).await,
                 "path" => handle_path(ctx, &args).await,
-                "add" => handle_add(ctx, &args).await,
-                "db_stats" => handle_db_stats(ctx),
+                "clean" => handle_clean(&args),
                 _ => Err(format!("unknown tool: {}", name)),
             };
 

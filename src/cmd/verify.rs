@@ -144,9 +144,11 @@ fn parse_entries(content: &str) -> Vec<BibEntry> {
                 .map(|t| braces_re.replace_all(t, "").to_string())
                 .unwrap_or_default();
 
-            if title.is_empty() {
-                return None;
-            }
+            let title = if title.is_empty() {
+                "[no title]".to_string()
+            } else {
+                title
+            };
 
             // Extract last name of first author
             let author = be
