@@ -1,6 +1,7 @@
 pub mod add;
 pub mod check;
 pub mod clean;
+pub mod misc;
 pub mod cites;
 pub mod download;
 pub mod open;

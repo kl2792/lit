@@ -48,7 +48,9 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path) -> Result<Add
 
             if let Ok(body) = s2_body {
                 if let Ok(s2) = s2_api::parse_paper(&body) {
-                    if result.venue.is_none() { result.venue = s2.venue; }
+                    if result.venue.is_none() {
+                        result.venue = s2.venue.filter(|v| !is_junk_venue(v));
+                    }
                 }
             }
 
@@ -260,6 +262,17 @@ fn normalize_bibtex_key_from_content(bib: &str) -> String {
         return replace_bib_key(bib, &new_key);
     }
     bib.to_string()
+}
+
+/// Returns true if the venue string is a known junk/non-venue from Semantic Scholar.
+///
+/// S2 returns preprint servers as venue names (e.g. "arXiv.org"), which would
+/// cause `generate_arxiv_bibtex` to emit `@inproceedings` with a bogus booktitle.
+fn is_junk_venue(v: &str) -> bool {
+    matches!(
+        v.to_lowercase().as_str(),
+        "arxiv.org" | "arxiv" | "biorxiv.org" | "biorxiv"
+    )
 }
 
 /// Replace the first citekey in a BibTeX string with `new_key`.
