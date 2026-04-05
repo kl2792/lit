@@ -105,6 +105,30 @@ fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "misc",
+            "description": "Add a @misc BibTeX entry (blog post, forum post, unpublished work) to a .bib file.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "citekey": {"type": "string"},
+                    "title": {"type": "string"},
+                    "authors": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of author names in 'First Last' format"
+                    },
+                    "year": {"type": "string"},
+                    "howpublished": {
+                        "type": "string",
+                        "description": "e.g. \\url{https://...}"
+                    },
+                    "note": {"type": "string"},
+                    "bib_file": {"type": "string"}
+                },
+                "required": ["citekey", "title", "authors", "year", "bib_file"]
+            }
+        },
+        {
             "name": "clean",
             "description": "Scan a .bib file for malformed entries, duplicates, and optionally orphaned citations. Returns a report. Set dry_run=false to apply fixes.",
             "inputSchema": {
@@ -325,6 +349,30 @@ fn handle_clean(args: &Value) -> Result<String, String> {
     serde_json::to_string_pretty(&Value::Object(result)).map_err(|e| e.to_string())
 }
 
+fn handle_misc(args: &Value) -> Result<String, String> {
+    let citekey = args["citekey"].as_str().ok_or("missing 'citekey'")?.to_string();
+    let title = args["title"].as_str().ok_or("missing 'title'")?.to_string();
+    let authors: Vec<String> = args["authors"]
+        .as_array()
+        .ok_or("missing 'authors'")?
+        .iter()
+        .map(|v| v.as_str().unwrap_or("").to_string())
+        .collect();
+    let year = args["year"].as_str().ok_or("missing 'year'")?.to_string();
+    let howpublished = args["howpublished"].as_str().map(str::to_string);
+    let note = args["note"].as_str().map(str::to_string);
+    let bib_file = args["bib_file"].as_str().ok_or("missing 'bib_file'")?;
+
+    let params = cmd::misc::MiscParams { citekey, title, authors, year, howpublished, note };
+    let result = cmd::misc::run_data(&params, Path::new(bib_file)).map_err(|e| e.to_string())?;
+    let json = json!({
+        "entry_key": result.entry_key,
+        "bib_file": bib_file,
+        "bibtex": result.bib_text,
+    });
+    serde_json::to_string_pretty(&json).map_err(|e| e.to_string())
+}
+
 async fn handle_add(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
     let input = args["input"].as_str().ok_or("missing 'input'")?;
     let bib_file = args["bib_file"].as_str().ok_or("missing 'bib_file'")?;
@@ -426,6 +474,7 @@ async fn handle_message(ctx: &cmd::Context, msg: &Value) -> Option<Value> {
                 "lookup" => handle_lookup(ctx, &args).await,
                 "read" => handle_read(ctx, &args).await,
                 "add" => handle_add(ctx, &args).await,
+                "misc" => handle_misc(&args),
                 "refs" => handle_refs(ctx, &args).await,
                 "cites" => handle_cites(ctx, &args).await,
                 "path" => handle_path(ctx, &args).await,
