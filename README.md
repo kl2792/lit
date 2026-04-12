@@ -6,10 +6,10 @@ Stop copy-pasting BibTeX from Google Scholar.
 
 ```bash
 $ lit "attention is all you need"
-  1. Vaswani et al. (2017) — Attention Is All You Need  [arXiv:1706.03762]
-  2. Niu et al. (2021) — A Review on the Attention Mechanism  [doi:10.1016/j.neucom.2021.03.091]
-  3. Galassi et al. (2020) — Attention in Natural Language Processing  [arXiv:1902.02181]
-  ...
+1. Vaswani 2017 | Attention is All you Need | arXiv:1706.03762
+2. Subakan 2020 | Attention Is All You Need In Speech Separation | arXiv:2010.13154
+3. Choi 2020 | Channel Attention Is All You Need for Video Frame... | DOI:10.1609/AAAI.V34I07.6693
+...
 
 $ lit add 1706.03762 refs.bib
 Added vaswani2017attention to refs.bib
@@ -20,7 +20,9 @@ Added vaswani2017attention to refs.bib
 ```bash
 $ lit cites 1706.03762                   # who cited this paper?
 $ lit refs 1706.03762                    # what does it cite?
-$ lit read 1706.03762 -p                 # read the full paper
+$ lit download 1706.03762                # download the PDF
+$ lit read 1706.03762                    # get the file path
+$ lit read 1706.03762 -p                 # print full text to stdout
 $ lit verify refs.bib                    # check all entries against APIs
 $ lit clean refs.bib --apply             # remove duplicates + malformed entries
 ```
