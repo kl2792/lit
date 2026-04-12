@@ -1,7 +1,7 @@
-/// Citation key generation.
-///
-/// Generates BibTeX citation keys in the format `lastname2017firstword`,
-/// matching Google Scholar style.
+//! Citation key generation.
+//!
+//! Generates BibTeX citation keys in the format `lastname2017firstword`,
+//! matching Google Scholar style.
 
 use std::sync::LazyLock;
 

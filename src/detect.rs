@@ -1,8 +1,8 @@
-/// Input type detection and normalization.
-///
-/// Detects whether user input is an arXiv ID/URL, DOI, ISBN, DBLP URL,
-/// Semantic Scholar URL, or a free-text search query. Matches the behavior
-/// of the bash `detect_type()` function exactly.
+//! Input type detection and normalization.
+//!
+//! Detects whether user input is an arXiv ID/URL, DOI, ISBN, DBLP URL,
+//! Semantic Scholar URL, or a free-text search query. Matches the behavior
+//! of the bash `detect_type()` function exactly.
 
 use std::sync::LazyLock;
 

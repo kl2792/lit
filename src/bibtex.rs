@@ -1,7 +1,7 @@
-/// BibTeX parsing and generation.
-///
-/// Handles parsing `.bib` files into structured entries, extracting BibTeX
-/// blocks from mixed output, and appending entries to files.
+//! BibTeX parsing and generation.
+//!
+//! Handles parsing `.bib` files into structured entries, extracting BibTeX
+//! blocks from mixed output, and appending entries to files.
 
 use std::fs;
 use std::path::Path;
@@ -19,13 +19,13 @@ pub struct BibEntry {
 
 impl std::fmt::Display for BibEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "@{}{{{},\n", self.entry_type, self.key)?;
+        writeln!(f, "@{}{{{},", self.entry_type, self.key)?;
         for (i, (name, value)) in self.fields.iter().enumerate() {
             if i < self.fields.len() - 1 {
-                write!(f, "  {} = {{{}}},\n", name, value)?;
+                writeln!(f, "  {} = {{{}}},", name, value)?;
             } else {
                 // Last field: no trailing comma
-                write!(f, "  {} = {{{}}}\n", name, value)?;
+                writeln!(f, "  {} = {{{}}}", name, value)?;
             }
         }
         write!(f, "}}")
@@ -279,7 +279,7 @@ pub fn upsert_to_file(path: &Path, entry: &str) -> Result<(), Box<dyn std::error
 /// Extract the citekey from a BibTeX entry string (e.g. `@article{key,` → `"key"`).
 pub fn extract_entry_key(entry: &str) -> Option<String> {
     let after_brace = entry.find('{').map(|i| &entry[i + 1..])?;
-    let key = after_brace.split(|c| c == ',' || c == '\n').next()?.trim();
+    let key = after_brace.split([',', '\n']).next()?.trim();
     if key.is_empty() { None } else { Some(key.to_string()) }
 }
 
@@ -354,6 +354,7 @@ fn replace_entry_block(content: &str, key: &str, new_entry: &str) -> Option<Stri
     None
 }
 
+/// Append a BibTeX entry to a file, creating it if necessary.
 pub fn append_to_file(path: &Path, entry: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 

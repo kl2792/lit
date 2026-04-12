@@ -206,7 +206,7 @@ fn is_atom_ns(e: &quick_xml::events::BytesStart<'_>, _reader: &Reader<&[u8]>) ->
     let full = name.as_ref();
     // If there's no colon, it's in the default namespace (Atom for arXiv responses).
     // If there is a colon, check for known Atom prefix patterns.
-    if full.iter().any(|&b| b == b':') {
+    if full.contains(&b':') {
         // Check if namespace resolves to Atom -- we look at the prefix.
         // In practice, arXiv uses default namespace for Atom, so this is rare.
         // As a fallback, check the element's namespace declarations.

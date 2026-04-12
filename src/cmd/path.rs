@@ -1,11 +1,11 @@
-/// `lit path <paper_a> <paper_b>` -- Find shortest citation path between two papers.
-///
-/// Uses bidirectional BFS: expands references from A and citations toward B,
-/// meeting in the middle. Treats the citation graph as undirected (follows
-/// both refs and cites at each hop) since two papers may be connected through
-/// a shared reference even if neither cites the other.
+//! `lit path <paper_a> <paper_b>` -- Find shortest citation path between two papers.
+//!
+//! Uses bidirectional BFS: expands references from A and citations toward B,
+//! meeting in the middle. Treats the citation graph as undirected (follows
+//! both refs and cites at each hop) since two papers may be connected through
+//! a shared reference even if neither cites the other.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 
 use super::Context;
 use crate::api::semantic_scholar;
@@ -107,6 +107,7 @@ pub async fn run_data(
     Ok(None)
 }
 
+/// Find and print the shortest citation path between two papers.
 pub async fn run(
     ctx: &Context,
     paper_a: &str,
@@ -123,7 +124,7 @@ pub async fn run(
 /// Fetch both refs and cites for a paper, returning (id, title) pairs.
 async fn fetch_neighbors(
     client: &crate::http::Client,
-    ctx: &Context,
+    _ctx: &Context,
     paper_id: &str,
     api_calls: &mut usize,
 ) -> Vec<(String, String)> {
@@ -134,15 +135,14 @@ async fn fetch_neighbors(
         *api_calls += 1;
         let key = db::Db::cache_key("refs", paper_id);
         let url = semantic_scholar::refs_url(paper_id);
-        if let Ok(body) = client.get_cached(&key, &url, db::TTL_SEARCH).await {
-            if let Ok(results) = semantic_scholar::parse_refs(&body) {
+        if let Ok(body) = client.get_cached(&key, &url, db::ttl_search()).await
+            && let Ok(results) = semantic_scholar::parse_refs(&body) {
                 for p in &results {
                     if let Some(id) = super::s2_api_id(p) {
                         neighbors.push((id, p.title.clone()));
                     }
                 }
             }
-        }
     }
 
     // Fetch cites
@@ -150,15 +150,14 @@ async fn fetch_neighbors(
         *api_calls += 1;
         let key = db::Db::cache_key("cites", paper_id);
         let url = semantic_scholar::cites_url(paper_id);
-        if let Ok(body) = client.get_cached(&key, &url, db::TTL_SEARCH).await {
-            if let Ok(results) = semantic_scholar::parse_cites(&body) {
+        if let Ok(body) = client.get_cached(&key, &url, db::ttl_search()).await
+            && let Ok(results) = semantic_scholar::parse_cites(&body) {
                 for p in &results {
                     if let Some(id) = super::s2_api_id(p) {
                         neighbors.push((id, p.title.clone()));
                     }
                 }
             }
-        }
     }
 
     neighbors
@@ -186,15 +185,10 @@ fn reconstruct_path(
 
     // Walk back from meeting point to B (skip meeting point itself — already in path_a)
     let mut cur = meeting.to_string();
-    loop {
-        match parent_b.get(&cur) {
-            Some(Some((parent, _))) => {
-                cur = parent.clone();
-                let title = titles.get(&cur).cloned().unwrap_or_else(|| cur.clone());
-                path_a.push((cur.clone(), title));
-            }
-            _ => break,
-        }
+    while let Some(Some((parent, _))) = parent_b.get(&cur) {
+        cur = parent.clone();
+        let title = titles.get(&cur).cloned().unwrap_or_else(|| cur.clone());
+        path_a.push((cur.clone(), title));
     }
 
     path_a

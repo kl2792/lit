@@ -1,8 +1,8 @@
-/// `lit download <id>` -- Download PDF or arXiv LaTeX source.
-///
-/// Default: find open-access PDF via Unpaywall and print URL.
-/// `--source`: download arXiv LaTeX source tarball, extract, write source.yaml.
-/// `--url-only`: print PDF URL without downloading.
+//! `lit download <id>` -- Download PDF or arXiv LaTeX source.
+//!
+//! Default: find open-access PDF via Unpaywall and print URL.
+//! `--source`: download arXiv LaTeX source tarball, extract, write source.yaml.
+//! `--url-only`: print PDF URL without downloading.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,6 +19,7 @@ use crate::format;
 /// Download timeout for source tarballs (seconds).
 const DOWNLOAD_TIMEOUT_SECS: u64 = 60;
 
+/// Download a PDF URL or arXiv LaTeX source for a paper.
 pub async fn run(
     ctx: &Context,
     input: &str,
@@ -54,9 +55,9 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool) -> Result<(), Box<d
 
     // Fetch all three concurrently.
     let (uw_body, s2_body, oa_body) = tokio::join!(
-        client.get_cached(&uw_key, &uw_url, db::TTL_DOI),
-        client.get_cached(&s2_key, &s2_url, db::TTL_DOI),
-        client.get_cached(&oa_key, &oa_url, db::TTL_DOI),
+        client.get_cached(&uw_key, &uw_url, db::ttl_lookup()),
+        client.get_cached(&s2_key, &s2_url, db::ttl_lookup()),
+        client.get_cached(&oa_key, &oa_url, db::ttl_lookup()),
     );
 
     // Parse Unpaywall result (used for both title and PDF URL).
@@ -160,11 +161,10 @@ async fn run_source(
                 .arg("-f")
                 .arg(&tarball)
                 .status();
-            if let Ok(gs) = gunzip_status {
-                if !gs.success() {
+            if let Ok(gs) = gunzip_status
+                && !gs.success() {
                     format::warn("gunzip also failed; tarball may be in an unexpected format");
                 }
-            }
         }
         Err(e) => return Err(format!("failed to run tar: {}", e).into()),
     }
@@ -192,27 +192,14 @@ async fn run_source(
 // -- Helpers (moved from source.rs) -------------------------------------------
 
 fn default_output_dir() -> PathBuf {
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut dir = cwd.as_path();
-        loop {
-            let candidate = dir.join("etc/pdf");
-            if candidate.is_dir() {
-                return candidate;
-            }
-            match dir.parent() {
-                Some(p) => dir = p,
-                None => break,
-            }
-        }
-    }
-    PathBuf::from("etc/pdf")
+    crate::find_pdf_base().expect("cannot resolve paper storage directory")
 }
 
 async fn fetch_metadata(ctx: &Context, arxiv_id: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
     let url = arxiv::query_url(arxiv_id);
     let client = ctx.client();
     let cache_key = db::Db::cache_key("arxiv", arxiv_id);
-    let body = client.get_cached_deferred(&cache_key, &url, db::TTL_DOI).await?;
+    let body = client.get_cached_deferred(&cache_key, &url, db::ttl_lookup()).await?;
     let result = arxiv::parse_entry(&body)?;
     client.cache_set(&cache_key, &url, &body);
     Ok(result)

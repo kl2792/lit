@@ -1,9 +1,10 @@
-/// Output formatting with auto-detected color support.
-///
-/// Colors are enabled only when both stdout and stderr are TTYs, matching
-/// the bash script's `[ -t 1 ] && [ -t 2 ]` check.
+//! Output formatting with auto-detected color support.
+//!
+//! Colors are enabled only when both stdout and stderr are TTYs, matching
+//! the bash script's `[ -t 1 ] && [ -t 2 ]` check.
 
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // ANSI color codes
 const RED: &str = "\x1b[0;31m";
@@ -11,16 +12,24 @@ const YELLOW: &str = "\x1b[0;33m";
 const BLUE: &str = "\x1b[0;34m";
 const NC: &str = "\x1b[0m";
 
+/// Global flag set by `--no-color` CLI flag via [`set_no_color`].
+static NO_COLOR: AtomicBool = AtomicBool::new(false);
+
+/// Disable colored output. Call once from main before printing.
+pub fn set_no_color() {
+    NO_COLOR.store(true, Ordering::Relaxed);
+}
+
 /// Returns true if color output should be used.
 ///
-/// Disabled when either stream is not a TTY, or when the `NO_COLOR` env var
-/// is set to any non-empty value (per <https://no-color.org>).
-/// The `--no-color` CLI flag sets `NO_COLOR=1` at startup.
+/// Disabled when either stream is not a TTY, when [`set_no_color`] has been
+/// called, or when `NO_COLOR` is set via env var or `.litconfig`.
 fn use_color() -> bool {
-    if let Ok(val) = std::env::var("NO_COLOR") {
-        if !val.is_empty() {
-            return false;
-        }
+    if NO_COLOR.load(Ordering::Relaxed) {
+        return false;
+    }
+    if crate::config::Config::get().no_color() {
+        return false;
     }
     std::io::stdout().is_terminal() && std::io::stderr().is_terminal()
 }

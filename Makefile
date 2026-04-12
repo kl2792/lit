@@ -28,6 +28,7 @@ test-parallel: ## Run parallel stress test (JOBS=N, default 8)
 
 install: release ## Install to /usr/local/bin
 	cp target/release/lit /usr/local/bin/lit
+	cp target/release/lit-mcp /usr/local/bin/lit-mcp
 
 clean: ## Remove build artifacts and test cache
 	cargo clean

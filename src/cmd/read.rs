@@ -1,14 +1,14 @@
-/// `lit read <id>` -- Get path to readable text of a downloaded paper.
-///
-/// Searches `etc/pdf/` for a matching directory, ensures text is available
-/// (runs pdftotext if needed), and returns the file path.
-/// The caller (Claude) can then use Read tool with offset/limit.
+//! `lit read <id>` -- Get path to readable text of a downloaded paper.
+//!
+//! Searches the paper storage directory for a matching paper, ensures text is available
+//! (runs pdftotext if needed), and returns the file path.
+//! The caller (Claude) can then use Read tool with offset/limit.
 
 use std::path::{Path, PathBuf};
 
 use super::Context;
 
-/// Find the paper directory in etc/pdf/ matching the given query.
+/// Find the paper directory in the paper storage dir matching the given query.
 ///
 /// Tries exact match first, then substring match on directory names,
 /// then checks source.yaml for arxiv ID matches.
@@ -51,13 +51,11 @@ fn find_paper_dir(query: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
                 continue;
             }
             let yaml_path = entry.path().join("source.yaml");
-            if yaml_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&yaml_path) {
-                    if content.to_lowercase().contains(&normalized) {
+            if yaml_path.exists()
+                && let Ok(content) = std::fs::read_to_string(&yaml_path)
+                    && content.to_lowercase().contains(&normalized) {
                         matches.push(entry.path());
                     }
-                }
-            }
         }
     }
 
@@ -75,20 +73,7 @@ fn find_paper_dir(query: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 fn find_pdf_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut dir = cwd.as_path();
-        loop {
-            let candidate = dir.join("etc/pdf");
-            if candidate.is_dir() {
-                return Ok(candidate);
-            }
-            match dir.parent() {
-                Some(p) => dir = p,
-                None => break,
-            }
-        }
-    }
-    Err("etc/pdf/ directory not found".into())
+    crate::find_pdf_base()
 }
 
 /// Ensure readable text exists and return the path.
@@ -138,7 +123,7 @@ fn find_main_tex(dir: &Path) -> Option<PathBuf> {
         .ok()?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |e| e == "tex"))
+        .filter(|p| p.extension().is_some_and(|e| e == "tex"))
         .collect();
 
     if tex_files.is_empty() {
@@ -172,7 +157,7 @@ fn list_tex_files(dir: &Path) -> Vec<String> {
                 .filter(|e| {
                     e.path()
                         .extension()
-                        .map_or(false, |ext| ext == "tex")
+                        .is_some_and(|ext| ext == "tex")
                 })
                 .map(|e| e.path().to_string_lossy().into_owned())
                 .collect()
@@ -180,20 +165,49 @@ fn list_tex_files(dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Run pdftotext and write output to txt_path.
+/// Extract text from a PDF.
+///
+/// If `pdf_extractor` is configured (via `.litconfig` or `LIT_PDF_EXTRACTOR`),
+/// runs that command as `<cmd> <pdf> <output>`.
+/// Otherwise falls back to `pdftotext -layout <pdf> <output>`.
 fn run_pdftotext(pdf: &Path, txt_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let status = std::process::Command::new("pdftotext")
-        .arg("-layout")
-        .arg(pdf)
-        .arg(txt_path)
-        .status()?;
-
-    if !status.success() {
-        return Err("pdftotext failed".into());
+    if let Some(extractor) = crate::config::Config::get().pdf_extractor() {
+        let ext_path = std::path::Path::new(extractor);
+        if !ext_path.is_absolute() {
+            return Err(format!(
+                "pdf_extractor must be an absolute path, got: {}",
+                extractor
+            )
+            .into());
+        }
+        if !ext_path.is_file() {
+            return Err(format!(
+                "pdf_extractor does not exist or is not a file: {}",
+                extractor
+            )
+            .into());
+        }
+        let status = std::process::Command::new(extractor)
+            .arg(pdf)
+            .arg(txt_path)
+            .status()?;
+        if !status.success() {
+            return Err(format!("{} failed", extractor).into());
+        }
+    } else {
+        let status = std::process::Command::new("pdftotext")
+            .arg("-layout")
+            .arg(pdf)
+            .arg(txt_path)
+            .status()?;
+        if !status.success() {
+            return Err("pdftotext failed".into());
+        }
     }
     Ok(())
 }
 
+/// Result of resolving a paper to readable text.
 pub struct ReadResult {
     pub path: PathBuf,
     pub format: String,
@@ -214,10 +228,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_find_pdf_base_exists() {
-        // This test only works when run from within the ice repo
-        if let Ok(base) = find_pdf_base() {
-            assert!(base.ends_with("etc/pdf"));
-        }
+    fn test_find_pdf_base_returns_path() {
+        // With XDG default, find_pdf_base always succeeds (creates dir if needed)
+        let base = find_pdf_base().expect("find_pdf_base should succeed");
+        assert!(base.is_dir());
     }
 }

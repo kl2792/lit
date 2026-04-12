@@ -3,7 +3,7 @@ use lit::{api, cmd, db, format};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "lit", about = "Literature search tool for academic papers")]
+#[command(name = "lit", about = "Literature search tool for academic papers", version)]
 pub struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -73,8 +73,8 @@ enum Commands {
         /// Number of BFS hops (1 = direct only)
         #[arg(long, default_value = "1")]
         hops: usize,
-        /// Maximum total papers to fetch
-        #[arg(long, default_value = "1000")]
+        /// Maximum total papers to fetch (default: unlimited)
+        #[arg(long, default_value = "999999")]
         max_papers: usize,
     },
     /// Get papers that cite this paper
@@ -83,8 +83,8 @@ enum Commands {
         /// Number of BFS hops (1 = direct only)
         #[arg(long, default_value = "1")]
         hops: usize,
-        /// Maximum total papers to fetch
-        #[arg(long, default_value = "1000")]
+        /// Maximum total papers to fetch (default: unlimited)
+        #[arg(long, default_value = "999999")]
         max_papers: usize,
     },
     /// Find shortest citation path between two papers
@@ -151,23 +151,16 @@ enum Commands {
 enum DbAction {
     /// Show database statistics
     Stats,
-    /// Rebuild database from etc/pdf/**/source.yaml files
+    /// Rebuild database from source.yaml files in paper storage directory
     Rebuild,
-    /// Rollback database to a previous state (not yet implemented)
-    Rollback {
-        /// Timestamp to roll back to (ISO 8601)
-        timestamp: String,
-    },
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    // If --no-color was passed, set NO_COLOR env var so format::use_color() picks it up.
-    // SAFETY: This runs before any threads are spawned, so no data race.
     if cli.no_color {
-        unsafe { std::env::set_var("NO_COLOR", "1") };
+        format::set_no_color();
     }
 
     let (bib_file, bib_stdout) = match cli.bib {
@@ -177,16 +170,7 @@ async fn main() {
     };
 
     // Resolve DB path (used by rebuild and normal open)
-    let db_path = std::env::var("LIT_DB_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let exe = std::env::current_exe().unwrap_or_default();
-            exe.parent()
-                .unwrap_or(std::path::Path::new("."))
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join("etc/lit/lit.db")
-        });
+    let db_path = lit::resolve_db_path();
 
     // Handle `lit db rebuild` before opening the DB — rebuild creates a fresh DB
     // and doesn't need the old one (which may have a stale schema version).
@@ -294,13 +278,7 @@ async fn main() {
         }
         Some(Commands::Db { action }) => match action {
             DbAction::Stats => run_db_stats(&ctx),
-            DbAction::Rebuild => {
-                cmd::check::rebuild(&db_path).map_err(|e| e.into())
-            }
-            DbAction::Rollback { timestamp } => {
-                eprintln!("rollback to {}: not yet implemented", timestamp);
-                Ok(())
-            }
+            DbAction::Rebuild => cmd::check::rebuild(&db_path),
         },
         None => {
             let input = cli.input.join(" ");
@@ -337,7 +315,7 @@ fn run_local_search(
     if ctx.json {
         let arr: Vec<serde_json::Value> = results
             .iter()
-            .map(|p| cmd::paper_to_json(p))
+            .map(cmd::paper_to_json)
             .collect();
         println!("{}", serde_json::to_string_pretty(&arr).unwrap());
         return Ok(());

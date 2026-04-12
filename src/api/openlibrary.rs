@@ -56,7 +56,7 @@ pub fn parse_isbn(body: &str) -> Result<PaperResult, Box<dyn std::error::Error>>
 
     let year = book["publish_date"]
         .as_str()
-        .map(|d| extract_year_from_date(d))
+        .map(extract_year_from_date)
         .unwrap_or_else(|| "?".to_string());
 
     // Extract ISBN from identifiers
@@ -128,7 +128,7 @@ pub fn parse_isbn_detail(body: &str) -> Result<BookDetail, Box<dyn std::error::E
     let publish_date = book["publish_date"].as_str().map(|s| s.to_string());
     let year = publish_date
         .as_deref()
-        .map(|d| extract_year_from_date(d))
+        .map(extract_year_from_date)
         .unwrap_or_else(|| "?".to_string());
 
     let ids = &book["identifiers"];

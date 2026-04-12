@@ -222,7 +222,7 @@ async fn fetch_backend(
 ) -> Vec<PaperResult> {
     let key = db::Db::cache_key(backend.prefix, query);
     let url = (backend.url)(query, limit);
-    match client.get_cached(&key, &url, db::TTL_SEARCH).await {
+    match client.get_cached(&key, &url, db::ttl_search()).await {
         Ok(body) => match (backend.parse)(&body) {
             Ok(results) => results,
             Err(e) => {
@@ -314,7 +314,7 @@ fn print_results(ctx: &Context, results: &[PaperResult]) {
     if ctx.json {
         let arr: Vec<serde_json::Value> = results
             .iter()
-            .map(|p| super::paper_to_json(p))
+            .map(super::paper_to_json)
             .collect();
         println!("{}", serde_json::to_string_pretty(&arr).unwrap());
         return;

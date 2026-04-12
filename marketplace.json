@@ -1,0 +1,14 @@
+{
+  "marketplace_version": "1.0.0",
+  "name": "lit-marketplace",
+  "description": "Academic literature tools for Claude Code",
+  "plugins": [
+    {
+      "name": "lit",
+      "display_name": "Lit",
+      "version": "0.1.0",
+      "description": "Search papers, fetch BibTeX, manage citations",
+      "source": "./"
+    }
+  ]
+}

@@ -1,11 +1,11 @@
-/// `lit verify <bib_file> [jobs]` -- Verify .bib entries against multiple APIs.
-///
-/// Parses the .bib file, skips `% lit:skip`-annotated entries, and checks each
-/// entry against CrossRef (DOI), arXiv (eprint), OpenAlex (title search),
-/// Semantic Scholar (title+author search), and OpenLibrary (books).
-///
-/// Reports mismatches in year, author, and title. Suggests missing DOIs.
-/// Exits with non-zero status if any entries are UNKNOWN or MISMATCH.
+//! `lit verify <bib_file> [jobs]` -- Verify .bib entries against multiple APIs.
+//!
+//! Parses the .bib file, skips `% lit:skip`-annotated entries, and checks each
+//! entry against CrossRef (DOI), arXiv (eprint), OpenAlex (title search),
+//! Semantic Scholar (title+author search), and OpenLibrary (books).
+//!
+//! Reports mismatches in year, author, and title. Suggests missing DOIs.
+//! Exits with non-zero status if any entries are UNKNOWN or MISMATCH.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -51,6 +51,7 @@ struct VerifyResult {
     issues: Vec<String>,
 }
 
+/// Verify .bib entries against CrossRef, arXiv, OpenAlex, S2, and OpenLibrary.
 pub async fn run(ctx: &Context, bib_file: &Path, jobs: usize) -> Result<(), Box<dyn std::error::Error>> {
     if !bib_file.exists() {
         return Err(format!("File not found: {}", bib_file.display()).into());
@@ -138,7 +139,7 @@ fn parse_entries(content: &str) -> Vec<BibEntry> {
 
     bib_entries
         .into_iter()
-        .filter_map(|be| {
+        .map(|be| {
             let title = be
                 .get_field("title")
                 .map(|t| braces_re.replace_all(t, "").to_string())
@@ -176,7 +177,7 @@ fn parse_entries(content: &str) -> Vec<BibEntry> {
                 .unwrap_or("")
                 .to_string();
 
-            Some(BibEntry {
+            BibEntry {
                 entry_type: be.entry_type,
                 key: be.key,
                 title,
@@ -184,7 +185,7 @@ fn parse_entries(content: &str) -> Vec<BibEntry> {
                 year,
                 doi,
                 eprint,
-            })
+            }
         })
         .collect()
 }
@@ -247,34 +248,30 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
     if !entry.doi.is_empty() {
         let url = api::crossref::doi_url(&entry.doi);
         let cache_key = db::Db::cache_key("verify_doi", &entry.doi);
-        if let Ok(body) = client.get_cached(&cache_key, &url, db::TTL_SEARCH).await {
-            if body.contains("\"title\"") {
-                if let Ok(result) = api::crossref::parse_doi(&body) {
+        if let Ok(body) = client.get_cached(&cache_key, &url, db::ttl_search()).await
+            && body.contains("\"title\"")
+                && let Ok(result) = api::crossref::parse_doi(&body) {
                     found_title = result.title;
                     found_year = result.year;
                     found_author = api::first_author_lastname(&result.authors);
                     status = Status::Ok;
                     source = "DOI".to_string();
                 }
-            }
-        }
     }
 
     // 2. Check arXiv if eprint present
     if !entry.eprint.is_empty() && matches!(status, Status::Unknown) {
         let url = api::arxiv::query_url(&entry.eprint);
         let cache_key = db::Db::cache_key("verify_arxiv", &entry.eprint);
-        if let Ok(body) = client.get_cached(&cache_key, &url, db::TTL_SEARCH).await {
-            if body.contains("<entry>") {
-                if let Ok(result) = api::arxiv::parse_entry(&body) {
+        if let Ok(body) = client.get_cached(&cache_key, &url, db::ttl_search()).await
+            && body.contains("<entry>")
+                && let Ok(result) = api::arxiv::parse_entry(&body) {
                     found_title = result.title;
                     found_year = result.year;
                     found_author = api::first_author_lastname(&result.authors);
                     status = Status::Ok;
                     source = "arXiv".to_string();
                 }
-            }
-        }
     }
 
     // 3. Search OpenAlex by title
@@ -292,10 +289,10 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
 
         let url = api::openalex::title_search_url(&search_title, 5);
         let cache_key = db::Db::cache_key("verify_oa", &entry.title);
-        if let Ok(body) = client.get_cached(&cache_key, &url, db::TTL_SEARCH).await {
-            if body.contains("\"results\"") {
-                if let Ok(results) = api::openalex::parse_search(&body) {
-                    if let Some((best, best_author_match)) =
+        if let Ok(body) = client.get_cached(&cache_key, &url, db::ttl_search()).await
+            && body.contains("\"results\"")
+                && let Ok(results) = api::openalex::parse_search(&body)
+                    && let Some((best, best_author_match)) =
                         find_best_openalex_match(&results, entry)
                     {
                         found_title = best.title.clone();
@@ -303,8 +300,8 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
                         found_author = api::first_author_lastname(&best.authors);
 
                         // Check for DOI suggestion
-                        if let Some(ref found_doi) = best.doi {
-                            if entry.doi.is_empty() && best_author_match {
+                        if let Some(ref found_doi) = best.doi
+                            && entry.doi.is_empty() && best_author_match {
                                 let year_close = years_within(
                                     &entry.year,
                                     &found_year,
@@ -331,7 +328,6 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
                                     }
                                 }
                             }
-                        }
 
                         if !found_title.is_empty() {
                             if best_author_match {
@@ -343,9 +339,6 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
                             }
                         }
                     }
-                }
-            }
-        }
     }
 
     // 4. Search Semantic Scholar
@@ -359,19 +352,16 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
         );
         let url = api::semantic_scholar::search_url(&search_query, 5);
         let cache_key = db::Db::cache_key("verify_ss", &entry.title);
-        if let Ok(body) = client.get_cached(&cache_key, &url, db::TTL_SEARCH).await {
-            if body.contains("\"data\"") {
-                if let Ok(results) = api::semantic_scholar::parse_search(&body) {
-                    if let Some(matched) = find_ss_match(&results, entry) {
+        if let Ok(body) = client.get_cached(&cache_key, &url, db::ttl_search()).await
+            && body.contains("\"data\"")
+                && let Ok(results) = api::semantic_scholar::parse_search(&body)
+                    && let Some(matched) = find_ss_match(&results, entry) {
                         found_title = matched.title.clone();
                         found_year = matched.year.clone();
                         found_author = api::first_author_lastname(&matched.authors);
                         status = Status::Ok;
                         source = "SemanticScholar".to_string();
                     }
-                }
-            }
-        }
     }
 
     // 5. Search OpenLibrary for books
@@ -383,9 +373,9 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
         );
         let url = api::openlibrary::search_url(&search_query, 5);
         let cache_key = db::Db::cache_key("verify_book", &entry.title);
-        if let Ok(body) = client.get_cached(&cache_key, &url, db::TTL_SEARCH).await {
-            if body.contains("\"docs\"") {
-                if let Ok(results) = api::openlibrary::parse_search(&body) {
+        if let Ok(body) = client.get_cached(&cache_key, &url, db::ttl_search()).await
+            && body.contains("\"docs\"")
+                && let Ok(results) = api::openlibrary::parse_search(&body) {
                     let title_norm = normalize_title(&entry.title);
                     for p in &results {
                         let pt_norm = normalize_title(&p.title);
@@ -402,8 +392,6 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
                         }
                     }
                 }
-            }
-        }
     }
 
     // Compare metadata for OK/TENTATIVE entries

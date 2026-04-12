@@ -1,5 +1,7 @@
 /target
+.env
 etc/lit/lit.db
 etc/lit/lit.db-shm
 etc/lit/lit.db-wal
 etc/lit/lit.db.bak
+etc/lit/cache/

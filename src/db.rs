@@ -1,7 +1,7 @@
-/// SQLite database backend for the lit tool.
-///
-/// Replaces the filesystem-based `Cache` with a single SQLite database that
-/// stores papers, citations, API cache entries, and full-text search indices.
+//! SQLite database backend for the lit tool.
+//!
+//! Replaces the filesystem-based `Cache` with a single SQLite database that
+//! stores papers, citations, API cache entries, and full-text search indices.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,14 +11,23 @@ use anyhow::{bail, Context, Result};
 use md5::{Digest, Md5};
 use rusqlite::{params, Connection, OptionalExtension};
 
-/// TTL for search results: 24 hours.
-pub const TTL_SEARCH: u64 = 86400;
+/// TTL for search results (default: 24 hours).
+///
+/// Reads from `.litconfig` `[cache] ttl_search` or `LIT_TTL_SEARCH` env var.
+pub fn ttl_search() -> u64 {
+    crate::config::Config::get().ttl_search()
+}
 
-/// TTL for DOI/arXiv/ISBN lookups: 7 days.
-pub const TTL_DOI: u64 = 604800;
+/// TTL for DOI/arXiv/ISBN lookups (default: 7 days).
+///
+/// Reads from `.litconfig` `[cache] ttl_lookup` or `LIT_TTL_LOOKUP` env var.
+pub fn ttl_lookup() -> u64 {
+    crate::config::Config::get().ttl_lookup()
+}
 
 const SCHEMA_VERSION: &str = "2";
 
+/// SQLite-backed paper database with caching, FTS, and citation graph.
 pub struct Db {
     conn: Mutex<Connection>,
     in_bulk: AtomicBool,
@@ -90,6 +99,28 @@ impl Db {
             [],
         )?;
 
+        Ok(Db {
+            conn: Mutex::new(conn),
+            in_bulk: AtomicBool::new(false),
+        })
+    }
+
+    /// Open an in-memory database for testing.
+    ///
+    /// Identical to `open` but uses SQLite's `:memory:` backend.
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory().context("failed to open in-memory database")?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA busy_timeout = 5000;",
+        )?;
+        conn.execute_batch(SCHEMA_SQL)?;
+        conn.execute_batch(INDICES_SQL)?;
+        conn.execute_batch(FTS_TRIGGERS_SQL)?;
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
+            params![SCHEMA_VERSION],
+        )?;
         Ok(Db {
             conn: Mutex::new(conn),
             in_bulk: AtomicBool::new(false),
@@ -187,7 +218,7 @@ impl Db {
 
     /// Enter bulk mode: drop FTS triggers and suppress changelog writes.
     pub fn begin_bulk(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute_batch(
             "DROP TRIGGER IF EXISTS papers_fts_insert;
              DROP TRIGGER IF EXISTS papers_fts_delete;
@@ -200,7 +231,7 @@ impl Db {
 
     /// Exit bulk mode: rebuild FTS index, recreate triggers, checkpoint WAL.
     pub fn end_bulk(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute_batch("INSERT INTO papers_fts(papers_fts) VALUES('rebuild');")?;
         conn.execute_batch(FTS_TRIGGERS_SQL)?;
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
@@ -500,11 +531,41 @@ impl Db {
         Ok(results)
     }
 
+}
+
+/// Sanitize user input for use in an FTS5 MATCH expression.
+///
+/// Strips FTS5 syntax characters (quotes, operators, column filters) and wraps
+/// each whitespace-delimited token in double quotes to force literal phrase
+/// matching. Returns an empty string if no tokens survive sanitization.
+fn sanitize_fts5_query(raw: &str) -> String {
+    let tokens: Vec<String> = raw
+        .chars()
+        .filter(|c| !matches!(c, '"' | '*' | '+' | '-' | '^' | ':' | '(' | ')' | '{' | '}'))
+        .collect::<String>()
+        .split_whitespace()
+        // Drop FTS5 keywords that could alter query semantics
+        .filter(|t| {
+            !matches!(
+                t.to_uppercase().as_str(),
+                "AND" | "OR" | "NOT" | "NEAR"
+            )
+        })
+        .map(|t| format!("\"{}\"", t))
+        .collect();
+    tokens.join(" ")
+}
+
+impl Db {
     /// Full-text search of local papers using FTS5.
     ///
     /// Returns up to `limit` non-deleted papers matching the FTS5 query,
     /// ranked by bm25 relevance.
     pub fn search_local(&self, query: &str, limit: usize) -> Result<Vec<PaperRow>> {
+        let sanitized = sanitize_fts5_query(query);
+        if sanitized.is_empty() {
+            return Ok(Vec::new());
+        }
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT p.id, p.entry_type, p.title, p.authors, p.year,
@@ -519,7 +580,7 @@ impl Db {
              ORDER BY bm25(papers_fts)
              LIMIT ?2",
         )?;
-        Self::collect_paper_rows(&mut stmt, params![query, limit])
+        Self::collect_paper_rows(&mut stmt, params![sanitized, limit])
     }
 
     /// Insert a citation edge (source cites target). Idempotent.
