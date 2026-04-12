@@ -1,6 +1,29 @@
 # lit
 
-Command-line tool for searching, fetching, and managing academic papers.
+Stop copy-pasting BibTeX from Google Scholar.
+
+`lit` is a command-line tool for searching, citing, and reading academic papers. It searches 6 APIs (Semantic Scholar, OpenAlex, CrossRef, DBLP, arXiv, OpenLibrary), caches everything locally, and works as a [Claude Code](https://claude.ai/code) plugin.
+
+```bash
+$ lit "attention is all you need"
+  1. Vaswani et al. (2017) — Attention Is All You Need  [arXiv:1706.03762]
+  2. Niu et al. (2021) — A Review on the Attention Mechanism  [doi:10.1016/j.neucom.2021.03.091]
+  3. Galassi et al. (2020) — Attention in Natural Language Processing  [arXiv:1902.02181]
+  ...
+
+$ lit add 1706.03762 refs.bib
+Added vaswani2017attention to refs.bib
+```
+
+### Also
+
+```bash
+$ lit cites 1706.03762                   # who cited this paper?
+$ lit refs 1706.03762                    # what does it cite?
+$ lit read 1706.03762 -p                 # read the full paper
+$ lit verify refs.bib                    # check all entries against APIs
+$ lit clean refs.bib --apply             # remove duplicates + malformed entries
+```
 
 ## Install
 
