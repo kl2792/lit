@@ -131,6 +131,9 @@ All other commands (search, add, download, refs, cites, verify, clean) work with
 
 ### Example: Claude Code conversation
 
+<!-- TODO: replace with actual screenshot -->
+<!-- ![Claude Code demo](assets/demo.png) -->
+
 ```
 You: Find papers on causal inference in RL, add the top 3 to refs.bib,
      then show me what Buesing 2019 cites.
