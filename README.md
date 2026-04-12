@@ -1,10 +1,11 @@
 # lit
 
-Stop copy-pasting BibTeX from Google Scholar.
+Your research library, from the terminal.
 
-`lit` is a command-line tool for searching, citing, and reading academic papers. It searches 6 APIs (Semantic Scholar, OpenAlex, CrossRef, DBLP, arXiv, OpenLibrary), caches everything locally, and works as a [Claude Code](https://claude.ai/code) plugin.
+`lit` is a command-line tool for searching, citing, and reading academic papers. It searches 6 APIs (Semantic Scholar, OpenAlex, CrossRef, DBLP, arXiv, OpenLibrary), caches results locally, and works as a [Claude Code](https://claude.ai/code) plugin — your AI agent can search, read, and cite papers autonomously.
 
 ```bash
+# Search → add to bibliography → download → read
 $ lit "attention is all you need"
 1. Vaswani 2017 | Attention is All you Need | arXiv:1706.03762
 2. Subakan 2020 | Attention Is All You Need In Speech Separation | arXiv:2010.13154
@@ -13,41 +14,44 @@ $ lit "attention is all you need"
 
 $ lit add 1706.03762 refs.bib
 Added vaswani2017attention to refs.bib
+
+$ lit download 1706.03762
+Saved to ~/.local/share/lit/pdf/vaswani2017attention/paper.pdf
+
+$ lit read 1706.03762 -p | head -20
+Attention Is All You Need
+Ashish Vaswani, Noam Shazeer, Niki Parmar...
 ```
 
-### Also
+Explore the citation graph:
 
 ```bash
-$ lit cites 1706.03762                   # who cited this paper?
-$ lit refs 1706.03762                    # what does it cite?
-$ lit download 1706.03762                # download the PDF
-$ lit read 1706.03762                    # extract text, return file path
-$ lit read 1706.03762 -p                 # extract text, print to stdout
-$ lit verify refs.bib                    # check all entries against APIs
+$ lit cites 1706.03762                   # 120,000+ papers that cited this
+$ lit refs 1706.03762                    # what Vaswani et al. cited
+$ lit path 1706.03762 2002.04745         # shortest citation path between two papers
+```
+
+Keep your .bib clean:
+
+```bash
+$ lit verify refs.bib                    # check titles, years, DOIs against APIs
 $ lit clean refs.bib --apply             # remove duplicates + malformed entries
 ```
 
 ## Install
 
-### Dependencies
-
-Text extraction requires `pdftotext` (from poppler):
-
-```bash
-brew install poppler       # macOS
-apt install poppler-utils  # Linux
-```
-
-Or set `LIT_PDF_EXTRACTOR` to a custom extractor (see [Configuration](#configuration)).
-
-### Claude Code plugin (recommended)
+### Claude Code plugin (recommended, no Rust needed)
 
 ```
 /plugin marketplace add kl2792/lit
 /plugin install lit@kl2792-lit
 ```
 
-### From source (requires Rust 1.85+)
+The plugin bundles pre-built binaries. Use it from any Claude Code conversation — Claude can search papers, add citations, and read full text.
+
+### From source
+
+Requires [Rust](https://rustup.rs/) 1.85+.
 
 ```bash
 cargo install --git https://github.com/kl2792/lit
@@ -55,40 +59,32 @@ cargo install --git https://github.com/kl2792/lit
 
 Builds two binaries: `lit` (CLI) and `lit-mcp` (MCP server).
 
-### Development
+### Dependencies
+
+Text extraction (`lit read`) requires `pdftotext`:
 
 ```bash
-git clone https://github.com/kl2792/lit && cd lit
-cargo install --path .
+brew install poppler         # macOS
+sudo apt install poppler-utils  # Linux
 ```
 
-## Quick start
-
-```bash
-lit 2006.11239                        # arXiv lookup
-lit 10.1145/3442188.3445899           # DOI lookup
-lit https://arxiv.org/abs/2006.11239  # arXiv URL
-lit 978-0262039246                    # ISBN lookup
-lit "attention is all you need"       # search
-```
-
-Paste any identifier or URL and lit auto-detects the type, fetches metadata, and prints a summary with BibTeX.
+All other commands (search, add, download, refs, cites, verify, clean) work without it. You can also set `LIT_PDF_EXTRACTOR` to a custom extractor (see [Configuration](#configuration)).
 
 ## CLI commands
 
 | Command | Description |
 |---------|-------------|
 | `lit <input>` | Auto-detect input type and look up paper |
-| `lit search <query>` | Search (local DB first, auto-falls back to remote APIs if no results) |
-| `lit search <query> --remote` | Search remote APIs directly (use `-s oa/ss/cr/dblp/book/all`) |
+| `lit search <query>` | Search (local DB first, auto-falls back to remote if no results) |
+| `lit search <query> --remote` | Search remote APIs directly (`-s oa/ss/cr/dblp/book/all`) |
 | `lit refs <id>` | Get references of a paper (`--hops N`, `--max-papers N`) |
 | `lit cites <id>` | Get citing papers (`--hops N`, `--max-papers N`) |
-| `lit path <id_a> <id_b>` | Find shortest citation path between two papers |
+| `lit path <id_a> <id_b>` | Find shortest citation path between two papers (BFS over citation graph) |
 | `lit download <id>` | Download PDF (`--source` for arXiv LaTeX, `--url-only` for URL) |
-| `lit read <query>` | Get path to paper's full text (`-p` to print contents) |
+| `lit read <query>` | Extract text, return file path (`-p` to print to stdout) |
 | `lit add <id> <bib_file>` | Fetch BibTeX and append to .bib file |
-| `lit verify <bib_file>` | Verify .bib entries against APIs (`-j N` for parallelism) |
-| `lit clean <bib_file>` | Scan for malformed entries, duplicates, orphans (`--apply` to fix) |
+| `lit verify <bib_file>` | Check titles, years, and DOIs against 5 APIs (`-j N` for parallelism) |
+| `lit clean <bib_file>` | Find malformed entries, duplicates, orphans (`--apply` to fix in place) |
 | `lit check` | Check DB/filesystem consistency (`--fix` to repair) |
 | `lit db stats` | Show database statistics |
 | `lit db rebuild` | Rebuild database from source.yaml files |
@@ -107,11 +103,7 @@ Paste any identifier or URL and lit auto-detects the type, fetches metadata, and
 
 ## MCP server
 
-`lit-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io/) server that exposes lit's functionality to LLM agents. It reads JSON-RPC 2.0 from stdin and writes responses to stdout.
-
-### Setup
-
-Add to `.mcp.json`:
+`lit-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io/) server for LLM agents. If you installed via the Claude Code plugin, it's already configured. For manual setup, add to `.mcp.json`:
 
 ```json
 {
@@ -129,7 +121,7 @@ Add to `.mcp.json`:
 |------|-------------|
 | `search` | Search papers (local DB or remote APIs) |
 | `lookup` | Look up a paper by arXiv ID, DOI, or ISBN |
-| `read` | Get path to a paper's full text (auto-downloads from arXiv if needed) |
+| `read` | Get path to full text (auto-downloads arXiv papers) |
 | `add` | Fetch BibTeX and append to .bib file |
 | `misc` | Add a @misc BibTeX entry (blog post, unpublished work) |
 | `refs` | Get references of a paper (paginated) |
@@ -139,74 +131,53 @@ Add to `.mcp.json`:
 
 ## Configuration
 
-All settings can be specified via environment variables, `.litconfig` files, or both. Env vars take highest priority.
-
-### Environment variables
+All settings: environment variables, `.litconfig` files, or both. Env vars take highest priority.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LIT_DB_PATH` | Platform-specific (see below) | SQLite database path |
-| `LIT_PDF_DIR` | Platform-specific (see below) | Paper storage directory |
-| `LIT_PDF_EXTRACTOR` | `pdftotext` | Absolute path to PDF-to-text command (`<cmd> <pdf> <output>`) |
-| `LIT_EMAIL` | `lit-user@example.com` | Email for Unpaywall API |
+| `LIT_DB_PATH` | Platform data dir (see below) | SQLite database path |
+| `LIT_PDF_DIR` | Platform data dir (see below) | Paper storage directory |
+| `LIT_PDF_EXTRACTOR` | `pdftotext` | PDF-to-text command (`<cmd> <pdf> <output>`) |
+| `LIT_EMAIL` | `lit-user@example.com` | Email for Unpaywall API (set to your email for reliable access) |
 | `S2_API_KEY` | *(unset)* | Semantic Scholar API key (free, avoids rate limits) |
 | `CURL_TIMEOUT` | `15` | HTTP timeout in seconds |
-| `LIT_TTL_SEARCH` | `86400` (24h) | Cache TTL for search results (seconds, 0 = no cache) |
-| `LIT_TTL_LOOKUP` | `604800` (7d) | Cache TTL for lookups (seconds, 0 = no cache) |
+| `LIT_TTL_SEARCH` | `86400` (24h) | Cache TTL for search results (0 = no cache) |
+| `LIT_TTL_LOOKUP` | `604800` (7d) | Cache TTL for lookups (0 = no cache) |
 | `NO_COLOR` | *(unset)* | Disable colored output |
 
-### Platform defaults
-
-| Platform | Database | Paper storage |
-|----------|----------|---------------|
-| macOS | `~/Library/Application Support/lit/lit.db` | `~/Library/Application Support/lit/pdf/` |
-| Linux | `~/.local/share/lit/lit.db` | `~/.local/share/lit/pdf/` |
-| Windows | `%APPDATA%\lit\lit.db` | `%APPDATA%\lit\pdf\` |
+Data is stored in the platform data directory: `~/Library/Application Support/lit/` (macOS), `~/.local/share/lit/` (Linux), `%APPDATA%\lit\` (Windows).
 
 ### Configuration file
 
-Settings can also be specified in `.litconfig` files (TOML format), read in order of increasing priority:
+Settings can also go in `.litconfig` files (TOML), read in order:
 
-1. `/etc/litconfig` — system-wide defaults
+1. `/etc/litconfig` — system-wide
 2. `~/.litconfig` — user global
-3. `<cwd>/.litconfig` — project-specific
-4. Environment variables — override everything
-
-Example `~/.litconfig`:
+3. `.litconfig` — project-specific (in cwd)
+4. Environment variables — override all
 
 ```toml
+# ~/.litconfig
 [core]
-db_path = "~/.local/share/lit/lit.db"
 pdf_dir = "~/papers"
 email = "me@example.com"
-timeout = 15
-
-[cache]
-ttl_search = 86400
-ttl_lookup = 604800
 
 [api]
-s2_key = "your-semantic-scholar-key"
-
-[extract]
-pdf_extractor = "/usr/local/bin/my-pdf-extractor"
+s2_key = "your-key"
 ```
 
-Path values support tilde expansion (`~` expands to `$HOME`).
+Path values support `~` expansion.
 
 ## Paper storage
 
-Papers are stored in directories named by citekey:
+Papers are stored by citekey under `LIT_PDF_DIR`:
 
 ```
-<LIT_PDF_DIR>/
-  vaswani2017attention/
-    paper.pdf         # downloaded PDF
-    paper.txt         # extracted text (auto-generated on first read)
-    source.yaml       # metadata (arXiv ID, DOI, title)
+vaswani2017attention/
+  paper.pdf         # downloaded PDF
+  paper.txt         # extracted text (auto-generated on first read)
+  source.yaml       # metadata (arXiv ID, DOI, title)
 ```
-
-The `read` command auto-extracts text using `pdftotext` or the command set by `LIT_PDF_EXTRACTOR`. Use `download --source` to fetch arXiv LaTeX source.
 
 ## License
 
