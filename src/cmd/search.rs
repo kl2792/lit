@@ -361,8 +361,6 @@ fn print_results(ctx: &Context, results: &[PaperResult]) {
 fn print_cascade_error(ctx: &Context, source: &str, error: &dyn std::fmt::Display) {
     if ctx.verbose {
         eprintln!("note: {} unavailable: {}", source, error);
-    } else {
-        eprintln!("note: {} unavailable", source);
     }
 }
 

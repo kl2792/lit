@@ -140,8 +140,8 @@ pub fn parse_entry(xml: &str) -> Result<PaperResult, Box<dyn std::error::Error>>
     let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
 
     // Truncate abstract to 200 chars
-    let abstract_text = if summary.len() > 200 {
-        let truncated = &summary[..summary.floor_char_boundary(200)];
+    let abstract_text = if summary.chars().count() > 200 {
+        let truncated: String = summary.chars().take(200).collect();
         Some(format!("{}...", truncated.trim()))
     } else {
         Some(summary.trim().to_string())

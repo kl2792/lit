@@ -111,9 +111,6 @@ impl Client {
                 Ok(r) => r,
                 Err(e) if e.is_timeout() || e.is_connect() => {
                     if attempt < max_attempts - 1 {
-                        eprintln!("note: {} (attempt {}/{}), retrying in {}s...",
-                            if e.is_timeout() { "timeout" } else { "connection error" },
-                            attempt + 1, max_attempts, backoff.as_secs());
                         tokio::time::sleep(backoff).await;
                         continue;
                     }
@@ -124,7 +121,6 @@ impl Client {
             if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
                 // Cascade to API key on first 429 for S2
                 if is_s2 && !use_s2_key && s2_key.is_some() && !s2_key_failed {
-                    eprintln!("note: rate limited without API key, switching to S2 API key...");
                     use_s2_key = true;
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
@@ -137,8 +133,6 @@ impl Client {
                         .and_then(|v| v.parse::<u64>().ok())
                         .map(|v| v.min(30))
                         .unwrap_or(backoff.as_secs());
-                    eprintln!("note: rate limited (attempt {}/{}), retrying in {}s...",
-                        attempt + 1, max_attempts, wait);
                     tokio::time::sleep(Duration::from_secs(wait)).await;
                     continue;
                 }
@@ -147,15 +141,12 @@ impl Client {
             // If S2 returns 403 with the API key, the key is likely expired/revoked.
             // Fall back to unauthenticated requests with normal rate-limit retries.
             if is_s2 && use_s2_key && resp.status() == reqwest::StatusCode::FORBIDDEN {
-                eprintln!("note: S2 API key rejected (403), falling back to unauthenticated retries...");
                 use_s2_key = false;
                 s2_key_failed = true;
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
             if resp.status().is_server_error() && attempt < max_attempts - 1 {
-                eprintln!("note: HTTP {} (attempt {}/{}), retrying in {}s...",
-                    resp.status(), attempt + 1, max_attempts, backoff.as_secs());
                 tokio::time::sleep(backoff).await;
                 continue;
             }
