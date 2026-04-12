@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "lit": {
-      "command": "lit-mcp",
+      "command": "./bin/lit-mcp-dispatch.sh",
       "args": []
     }
   }

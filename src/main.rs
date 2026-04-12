@@ -118,6 +118,14 @@ enum Commands {
         #[arg(short = 'j', long, default_value = "4")]
         jobs: usize,
     },
+    /// Get readable text path for a downloaded paper
+    Read {
+        /// Paper identifier (arXiv ID, DOI, or directory name)
+        query: Vec<String>,
+        /// Print file contents to stdout instead of just the path
+        #[arg(short, long)]
+        print: bool,
+    },
     /// Scan a .bib file for malformed entries, duplicates, and orphans
     Clean {
         bib_file: PathBuf,
@@ -233,7 +241,7 @@ async fn main() {
                 });
                 cmd::search::run(&ctx, &q, limit, src).await
             } else {
-                run_local_search(&ctx, &q, limit)
+                run_local_search(&ctx, &q, limit).await
             }
         }
         Some(Commands::Refs {
@@ -251,6 +259,24 @@ async fn main() {
             paper_b,
             max_hops,
         }) => cmd::path::run(&ctx, &paper_a, &paper_b, max_hops).await,
+        Some(Commands::Read { query, print }) => {
+            let q = query.join(" ");
+            let read_result = cmd::read::run_data(&ctx, &q);
+            match read_result {
+                Ok(result) => {
+                    if print {
+                        match std::fs::read_to_string(&result.path) {
+                            Ok(contents) => { print!("{}", contents); Ok(()) }
+                            Err(e) => Err(format!("failed to read {}: {}", result.path.display(), e).into())
+                        }
+                    } else {
+                        println!("{}", result.path.display());
+                        Ok(())
+                    }
+                }
+                Err(e) => Err(e),
+            }
+        }
         Some(Commands::Download {
             id,
             source,
@@ -298,7 +324,10 @@ async fn main() {
 }
 
 /// Run local FTS search and display results in the same format as remote search.
-fn run_local_search(
+///
+/// When the local DB returns zero results and `--remote` was not explicitly set,
+/// automatically falls back to remote API search with a stderr notice.
+async fn run_local_search(
     ctx: &cmd::Context,
     query: &str,
     limit: usize,
@@ -308,8 +337,8 @@ fn run_local_search(
     }
     let rows = ctx.db.search_local(query, limit)?;
     if rows.is_empty() {
-        println!("No results found");
-        return Ok(());
+        eprintln!("No local results, searching online...");
+        return cmd::search::run(ctx, query, limit, None).await;
     }
     let results: Vec<api::PaperResult> = rows.iter().map(|r| r.to_paper_result()).collect();
     if ctx.json {

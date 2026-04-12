@@ -199,9 +199,21 @@ fn run_pdftotext(pdf: &Path, txt_path: &Path) -> Result<(), Box<dyn std::error::
             .arg("-layout")
             .arg(pdf)
             .arg(txt_path)
-            .status()?;
+            .status()
+            .map_err(|e| -> Box<dyn std::error::Error> {
+                format!(
+                    "pdftotext not found or failed: {}. Install with: \
+                     brew install poppler (macOS) or apt install poppler-utils (Linux). \
+                     Or set LIT_PDF_EXTRACTOR to a custom extractor.",
+                    e
+                ).into()
+            })?;
         if !status.success() {
-            return Err("pdftotext failed".into());
+            return Err(
+                "pdftotext not found or failed. Install with: \
+                 brew install poppler (macOS) or apt install poppler-utils (Linux). \
+                 Or set LIT_PDF_EXTRACTOR to a custom extractor.".into()
+            );
         }
     }
     Ok(())

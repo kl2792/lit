@@ -1,4 +1,5 @@
 /target
+/bin/lit-*
 .env
 etc/lit/lit.db
 etc/lit/lit.db-shm

@@ -101,6 +101,11 @@ impl Config {
         if let Some(ref p) = self.db_path {
             return PathBuf::from(p);
         }
+        if cfg!(target_os = "windows")
+            && let Ok(appdata) = std::env::var("APPDATA")
+        {
+            return PathBuf::from(appdata).join("lit").join("lit.db");
+        }
         let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
         if cfg!(target_os = "macos") {
             home.join("Library/Application Support/lit/lit.db")
@@ -113,6 +118,11 @@ impl Config {
     pub fn pdf_dir(&self) -> PathBuf {
         if let Some(ref p) = self.pdf_dir {
             return PathBuf::from(p);
+        }
+        if cfg!(target_os = "windows")
+            && let Ok(appdata) = std::env::var("APPDATA")
+        {
+            return PathBuf::from(appdata).join("lit").join("pdf");
         }
         let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
         if cfg!(target_os = "macos") {
