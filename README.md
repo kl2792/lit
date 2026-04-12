@@ -21,13 +21,24 @@ Added vaswani2017attention to refs.bib
 $ lit cites 1706.03762                   # who cited this paper?
 $ lit refs 1706.03762                    # what does it cite?
 $ lit download 1706.03762                # download the PDF
-$ lit read 1706.03762                    # get the file path
-$ lit read 1706.03762 -p                 # print full text to stdout
+$ lit read 1706.03762                    # extract text, return file path
+$ lit read 1706.03762 -p                 # extract text, print to stdout
 $ lit verify refs.bib                    # check all entries against APIs
 $ lit clean refs.bib --apply             # remove duplicates + malformed entries
 ```
 
 ## Install
+
+### Dependencies
+
+Text extraction requires `pdftotext` (from poppler):
+
+```bash
+brew install poppler       # macOS
+apt install poppler-utils  # Linux
+```
+
+Or set `LIT_PDF_EXTRACTOR` to a custom extractor (see [Configuration](#configuration)).
 
 ### Claude Code plugin (recommended)
 
