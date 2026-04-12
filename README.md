@@ -129,6 +129,27 @@ All other commands (search, add, download, refs, cites, verify, clean) work with
 | `path` | Find shortest citation path between two papers |
 | `clean` | Scan .bib file for problems |
 
+### Example: Claude Code conversation
+
+```
+You: Find papers on causal inference in RL, add the top 3 to refs.bib,
+     then show me what Buesing 2019 cites.
+
+Claude: [searches → finds 10 papers → adds 3 to refs.bib → fetches Buesing's references]
+
+  Added buesing2019woulda to refs.bib
+  Added forney2017counterfactual to refs.bib  
+  Added lu2018deconfounding to refs.bib
+
+  Buesing et al. (2019) cites 47 papers, including:
+  1. Pearl 2009 | Causality
+  2. Schulman 2015 | High-Dimensional Continuous Control Using GAE
+  3. Mnih 2016 | Asynchronous Methods for Deep RL
+  ...
+```
+
+Claude handles tool calls automatically — search, add, read, and citation traversal all work without manual steps.
+
 ## Configuration
 
 All settings: environment variables, `.litconfig` files, or both. Env vars take highest priority.
