@@ -4,15 +4,21 @@
 /// tool calls to the lit library, and writes JSON-RPC responses to stdout.
 /// Notifications are pushed to stdout when async tasks complete.
 /// Stderr is free for logging.
+///
+/// Timeout behaviour: every tool call is spawned as a background task.
+/// If it completes within `LIT_INLINE_TIMEOUT_MS` milliseconds (default 1000),
+/// the result is returned inline. Otherwise the call returns immediately with
+/// `{"status":"started","task_id":"..."}` and a `notifications/message` is
+/// pushed when the task finishes.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use lit::mcp::{
-    dispatch_tool, handle_clean, handle_misc, handle_read, handle_search, is_slow_tool,
-    make_context, make_error, make_response, make_tool_error, make_tool_result, tool_definitions,
-    SERVER_NAME, SERVER_VERSION,
+    dispatch_tool, make_context, make_error, make_response, make_tool_error, make_tool_result,
+    tool_definitions, SERVER_NAME, SERVER_VERSION,
 };
 use lit::{cmd, db};
 
@@ -57,6 +63,7 @@ async fn handle_message(
     ctx: &cmd::Context,
     counter: &Arc<AtomicU64>,
     notif_tx: &mpsc::UnboundedSender<Value>,
+    inline_timeout: Duration,
     msg: &Value,
 ) -> Option<Value> {
     let method = msg["method"].as_str().unwrap_or("");
@@ -93,39 +100,44 @@ async fn handle_message(
                 if a.is_null() { json!({}) } else { a }
             };
 
-            if is_slow_tool(name, &args) {
-                // Assign task ID, spawn, return immediately.
-                let seq = counter.fetch_add(1, Ordering::Relaxed) + 1;
-                let task_id = format!("task_{}", seq);
+            let ctx_clone = ctx.clone();
+            let name_owned = name.to_string();
+            let args_clone = args.clone();
 
-                let ctx_clone = ctx.clone();
-                let name_owned = name.to_string();
-                let args_clone = args.clone();
-                let tx = notif_tx.clone();
-                let tid = task_id.clone();
+            // Spawn on the local task set so Box<dyn Error> (non-Send) futures work.
+            // Dropping the JoinHandle does NOT cancel the task in tokio.
+            let mut handle = tokio::task::spawn_local(async move {
+                dispatch_tool(&ctx_clone, &name_owned, &args_clone).await
+            });
 
-                tokio::task::spawn_local(async move {
-                    let outcome = dispatch_tool(&ctx_clone, &name_owned, &args_clone).await;
-                    let notif = make_notification(&tid, outcome);
-                    let _ = tx.send(notif);
-                });
+            match tokio::time::timeout(inline_timeout, &mut handle).await {
+                Ok(join_result) => {
+                    // Completed within timeout — return inline.
+                    let result = join_result.unwrap_or_else(|e| Err(format!("task panicked: {}", e)));
+                    match result {
+                        Ok(text) => Some(make_response(id, make_tool_result(&text))),
+                        Err(e) => Some(make_response(id, make_tool_error(&e))),
+                    }
+                }
+                Err(_elapsed) => {
+                    // Still running — assign a task ID, spawn watcher, return immediately.
+                    let seq = counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    let task_id = format!("task_{}", seq);
+                    let tx = notif_tx.clone();
+                    let tid = task_id.clone();
 
-                Some(make_response(id, make_tool_result(&json!({
-                    "status": "started",
-                    "task_id": task_id,
-                }).to_string())))
-            } else {
-                // Fast/sync path: handle inline.
-                let result = match name {
-                    "search" => handle_search(ctx, &args).await,
-                    "read" => handle_read(ctx, &args).await,
-                    "misc" => handle_misc(&args),
-                    "clean" => handle_clean(&args),
-                    _ => Err(format!("unknown tool: {}", name)),
-                };
-                match result {
-                    Ok(text) => Some(make_response(id, make_tool_result(&text))),
-                    Err(e) => Some(make_response(id, make_tool_error(&e))),
+                    tokio::task::spawn_local(async move {
+                        let outcome = handle
+                            .await
+                            .unwrap_or_else(|e| Err(format!("task panicked: {}", e)));
+                        let notif = make_notification(&tid, outcome);
+                        let _ = tx.send(notif);
+                    });
+
+                    Some(make_response(id, make_tool_result(&json!({
+                        "status": "started",
+                        "task_id": task_id,
+                    }).to_string())))
                 }
             }
         }
@@ -170,6 +182,15 @@ fn main() {
         .expect("tokio runtime");
 
     let local = tokio::task::LocalSet::new();
+
+    let inline_timeout = {
+        let ms = std::env::var("LIT_INLINE_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(1000);
+        Duration::from_millis(ms)
+    };
+    eprintln!("[lit-mcp] inline timeout: {}ms", inline_timeout.as_millis());
 
     local.block_on(&rt, async move {
         let ctx = make_context(database);
@@ -216,7 +237,7 @@ fn main() {
                         }
                     };
 
-                    if let Some(response) = handle_message(&ctx, &counter, &notif_tx, &msg).await {
+                    if let Some(response) = handle_message(&ctx, &counter, &notif_tx, inline_timeout, &msg).await {
                         let out = serde_json::to_string(&response).unwrap();
                         let _ = stdout.write_all(out.as_bytes()).await;
                         let _ = stdout.write_all(b"\n").await;

@@ -541,20 +541,6 @@ pub async fn handle_add(ctx: &cmd::Context, args: &Value) -> Result<String, Stri
     serde_json::to_string(&json).map_err(|e| e.to_string())
 }
 
-// -- Slow/fast tool classification -------------------------------------------
-
-/// Returns true if this tool call should be dispatched asynchronously.
-///
-/// `search` is async only when `remote=true`; all other listed tools are
-/// always async because they make network requests.
-pub fn is_slow_tool(name: &str, args: &Value) -> bool {
-    match name {
-        "search" => args["remote"].as_bool().unwrap_or(false),
-        "add" | "refs" | "cites" | "path" | "lookup" => true,
-        _ => false,
-    }
-}
-
 // -- Tool dispatch -----------------------------------------------------------
 
 /// Dispatch a tool call by name. This is the core dispatch used by both
@@ -579,9 +565,9 @@ pub async fn dispatch_tool(ctx: &cmd::Context, name: &str, args: &Value) -> Resu
 /// Dispatch a single JSON-RPC message and return the response (if any).
 ///
 /// Returns `None` for notifications (no `id`) that don't require a response.
-/// Note: slow tool calls (remote search, add, refs, cites, path, lookup) are
-/// handled in the binary (lit-mcp.rs) with async spawning and MCP notifications.
-/// This function handles all tools inline, used for testing and simple usage.
+/// Note: the binary (lit-mcp.rs) races every tool call against a configurable
+/// inline timeout; if it exceeds the timeout a notification is pushed instead.
+/// This function handles all tools inline (no timeout), used for testing.
 pub async fn handle_message(ctx: &cmd::Context, msg: &Value) -> Option<Value> {
     let method = msg["method"].as_str().unwrap_or("");
     let id = msg.get("id").cloned();
@@ -1089,56 +1075,7 @@ mod tests {
         );
     }
 
-    /// Slow tools (always-async: add, refs, cites, path, lookup) return true
-    /// regardless of args.
-    #[test]
-    fn is_slow_tool_always_async_tools() {
-        for name in &["add", "refs", "cites", "path", "lookup"] {
-            assert!(
-                is_slow_tool(name, &json!({})),
-                "'{}' should be a slow tool",
-                name
-            );
-        }
-    }
-
-    /// `search` is slow only when `remote=true`.
-    #[test]
-    fn is_slow_tool_search_remote_flag() {
-        assert!(
-            is_slow_tool("search", &json!({"remote": true})),
-            "search with remote=true should be slow"
-        );
-        assert!(
-            !is_slow_tool("search", &json!({"remote": false})),
-            "search with remote=false should be fast"
-        );
-        assert!(
-            !is_slow_tool("search", &json!({})),
-            "search with no remote key should be fast"
-        );
-    }
-
-    /// Fast tools (read, misc, clean) are not slow regardless of args.
-    #[test]
-    fn is_slow_tool_fast_tools() {
-        for name in &["read", "misc", "clean"] {
-            assert!(
-                !is_slow_tool(name, &json!({})),
-                "'{}' should not be a slow tool",
-                name
-            );
-        }
-    }
-
-    /// Unknown tools are not classified as slow.
-    #[test]
-    fn is_slow_tool_unknown_is_fast() {
-        assert!(!is_slow_tool("wait", &json!({})));
-        assert!(!is_slow_tool("nonexistent", &json!({})));
-    }
-
-    /// The immediate response for a slow tool call has the shape
+    /// The immediate response for a timed-out tool call has the shape
     /// `{"status":"started","task_id":"..."}` embedded in a `make_tool_result`.
     /// This test verifies the JSON structure that the binary produces.
     #[test]
