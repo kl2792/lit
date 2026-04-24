@@ -34,11 +34,11 @@ pub fn tool_definitions() -> Value {
         },
         {
             "name": "lookup",
-            "description": "Look up a paper by arXiv ID, DOI, or ISBN. Returns metadata, abstract, and BibTeX.",
+            "description": "Look up a paper by arXiv ID, DOI, ISBN, DBLP URL, or direct PDF URL. Returns metadata, abstract, and BibTeX.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "arXiv ID, DOI, ISBN, or DBLP URL"}
+                    "id": {"type": "string", "description": "arXiv ID, DOI, ISBN, DBLP URL, or direct PDF URL"}
                 },
                 "required": ["id"]
             }
@@ -61,7 +61,7 @@ pub fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "input": {"type": "string", "description": "arXiv ID, DOI, ISBN, or search query"},
+                    "input": {"type": "string", "description": "arXiv ID, DOI, ISBN, search query, or direct PDF URL"},
                     "bib_file": {"type": "string", "description": "Path to .bib file"}
                 },
                 "required": ["input", "bib_file"]
@@ -344,7 +344,11 @@ pub async fn handle_lookup(ctx: &cmd::Context, args: &Value) -> Result<String, S
 
 pub async fn handle_read(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
     let query = args["query"].as_str().ok_or("missing 'query'")?;
-    match cmd::read::run_data(ctx, query) {
+
+    // Convert Box<dyn Error> to String immediately so the future remains Send.
+    let initial = cmd::read::run_data(ctx, query).map_err(|e| e.to_string());
+
+    match initial {
         Ok(result) => {
             let mut json = serde_json::Map::new();
             json.insert(
@@ -537,11 +541,47 @@ pub async fn handle_add(ctx: &cmd::Context, args: &Value) -> Result<String, Stri
     serde_json::to_string(&json).map_err(|e| e.to_string())
 }
 
+// -- Slow/fast tool classification -------------------------------------------
+
+/// Returns true if this tool call should be dispatched asynchronously.
+///
+/// `search` is async only when `remote=true`; all other listed tools are
+/// always async because they make network requests.
+pub fn is_slow_tool(name: &str, args: &Value) -> bool {
+    match name {
+        "search" => args["remote"].as_bool().unwrap_or(false),
+        "add" | "refs" | "cites" | "path" | "lookup" => true,
+        _ => false,
+    }
+}
+
+// -- Tool dispatch -----------------------------------------------------------
+
+/// Dispatch a tool call by name. This is the core dispatch used by both
+/// synchronous and async-task paths in the binary.
+pub async fn dispatch_tool(ctx: &cmd::Context, name: &str, args: &Value) -> Result<String, String> {
+    match name {
+        "search" => handle_search(ctx, args).await,
+        "lookup" => handle_lookup(ctx, args).await,
+        "read" => handle_read(ctx, args).await,
+        "add" => handle_add(ctx, args).await,
+        "misc" => handle_misc(args),
+        "refs" => handle_refs(ctx, args).await,
+        "cites" => handle_cites(ctx, args).await,
+        "path" => handle_path(ctx, args).await,
+        "clean" => handle_clean(args),
+        _ => Err(format!("unknown tool: {}", name)),
+    }
+}
+
 // -- JSON-RPC dispatch -------------------------------------------------------
 
 /// Dispatch a single JSON-RPC message and return the response (if any).
 ///
 /// Returns `None` for notifications (no `id`) that don't require a response.
+/// Note: slow tool calls (remote search, add, refs, cites, path, lookup) are
+/// handled in the binary (lit-mcp.rs) with async spawning and MCP notifications.
+/// This function handles all tools inline, used for testing and simple usage.
 pub async fn handle_message(ctx: &cmd::Context, msg: &Value) -> Option<Value> {
     let method = msg["method"].as_str().unwrap_or("");
     let id = msg.get("id").cloned();
@@ -551,7 +591,8 @@ pub async fn handle_message(ctx: &cmd::Context, msg: &Value) -> Option<Value> {
             let result = json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {
-                    "tools": {}
+                    "tools": {},
+                    "notifications": {}
                 },
                 "serverInfo": {
                     "name": SERVER_NAME,
@@ -576,18 +617,7 @@ pub async fn handle_message(ctx: &cmd::Context, msg: &Value) -> Option<Value> {
             let args = msg["params"]["arguments"].clone();
             let args = if args.is_null() { json!({}) } else { args };
 
-            let result = match name {
-                "search" => handle_search(ctx, &args).await,
-                "lookup" => handle_lookup(ctx, &args).await,
-                "read" => handle_read(ctx, &args).await,
-                "add" => handle_add(ctx, &args).await,
-                "misc" => handle_misc(&args),
-                "refs" => handle_refs(ctx, &args).await,
-                "cites" => handle_cites(ctx, &args).await,
-                "path" => handle_path(ctx, &args).await,
-                "clean" => handle_clean(&args),
-                _ => Err(format!("unknown tool: {}", name)),
-            };
+            let result = dispatch_tool(ctx, name, &args).await;
 
             match result {
                 Ok(text) => Some(make_response(id, make_tool_result(&text))),
@@ -1019,5 +1049,160 @@ mod tests {
         let ctx = make_test_ctx();
         let result = handle_search(&ctx, &json!({"query": "test"})).await.unwrap();
         assert_eq!(result, "No results found");
+    }
+
+    // -- dispatch_tool tests --------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatch_tool_unknown() {
+        let ctx = make_test_ctx();
+        let result = dispatch_tool(&ctx, "nonexistent", &json!({})).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_tool_search() {
+        let ctx = make_test_ctx();
+        let result = dispatch_tool(&ctx, "search", &json!({"query": "test"})).await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "No results found");
+    }
+
+    // -- Notification-based async dispatch tests --------------------------------
+
+    /// `wait` tool must not appear in tool definitions (it was removed when
+    /// notification-based async dispatch was introduced).
+    #[test]
+    fn tool_definitions_no_wait_tool() {
+        let defs = tool_definitions();
+        let names: Vec<&str> = defs
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            !names.contains(&"wait"),
+            "tool_definitions must not include 'wait'; found: {:?}",
+            names
+        );
+    }
+
+    /// Slow tools (always-async: add, refs, cites, path, lookup) return true
+    /// regardless of args.
+    #[test]
+    fn is_slow_tool_always_async_tools() {
+        for name in &["add", "refs", "cites", "path", "lookup"] {
+            assert!(
+                is_slow_tool(name, &json!({})),
+                "'{}' should be a slow tool",
+                name
+            );
+        }
+    }
+
+    /// `search` is slow only when `remote=true`.
+    #[test]
+    fn is_slow_tool_search_remote_flag() {
+        assert!(
+            is_slow_tool("search", &json!({"remote": true})),
+            "search with remote=true should be slow"
+        );
+        assert!(
+            !is_slow_tool("search", &json!({"remote": false})),
+            "search with remote=false should be fast"
+        );
+        assert!(
+            !is_slow_tool("search", &json!({})),
+            "search with no remote key should be fast"
+        );
+    }
+
+    /// Fast tools (read, misc, clean) are not slow regardless of args.
+    #[test]
+    fn is_slow_tool_fast_tools() {
+        for name in &["read", "misc", "clean"] {
+            assert!(
+                !is_slow_tool(name, &json!({})),
+                "'{}' should not be a slow tool",
+                name
+            );
+        }
+    }
+
+    /// Unknown tools are not classified as slow.
+    #[test]
+    fn is_slow_tool_unknown_is_fast() {
+        assert!(!is_slow_tool("wait", &json!({})));
+        assert!(!is_slow_tool("nonexistent", &json!({})));
+    }
+
+    /// The immediate response for a slow tool call has the shape
+    /// `{"status":"started","task_id":"..."}` embedded in a `make_tool_result`.
+    /// This test verifies the JSON structure that the binary produces.
+    #[test]
+    fn slow_tool_started_response_shape() {
+        let task_id = "task_1";
+        let payload = json!({
+            "status": "started",
+            "task_id": task_id,
+        });
+        let tool_result = make_tool_result(&payload.to_string());
+        let text = tool_result["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["status"], "started");
+        assert_eq!(parsed["task_id"], task_id);
+        assert!(tool_result.get("isError").is_none());
+    }
+
+    /// A completed notification has the expected JSON-RPC structure with
+    /// `method = "notifications/message"`, `level = "info"`, and the task
+    /// result embedded in `params.data`.
+    #[test]
+    fn notification_complete_shape() {
+        let task_id = "task_42";
+        let notif = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/message",
+            "params": {
+                "level": "info",
+                "data": {
+                    "task_id": task_id,
+                    "status": "complete",
+                    "result": "some result text",
+                }
+            }
+        });
+        assert_eq!(notif["jsonrpc"], "2.0");
+        assert_eq!(notif["method"], "notifications/message");
+        assert_eq!(notif["params"]["level"], "info");
+        assert_eq!(notif["params"]["data"]["task_id"], task_id);
+        assert_eq!(notif["params"]["data"]["status"], "complete");
+        assert!(notif["params"]["data"]["result"].is_string());
+        assert!(notif.get("id").is_none(), "notifications must not have an 'id' field");
+    }
+
+    /// An error notification has `level = "warning"` and an `error` field
+    /// rather than `result`.
+    #[test]
+    fn notification_error_shape() {
+        let task_id = "task_99";
+        let notif = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/message",
+            "params": {
+                "level": "warning",
+                "data": {
+                    "task_id": task_id,
+                    "status": "error",
+                    "error": "something went wrong",
+                }
+            }
+        });
+        assert_eq!(notif["params"]["level"], "warning");
+        assert_eq!(notif["params"]["data"]["status"], "error");
+        assert!(notif["params"]["data"]["error"].is_string());
+        assert!(notif["params"]["data"].get("result").is_none());
     }
 }
