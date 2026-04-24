@@ -17,7 +17,7 @@ use std::sync::Arc;
 use crate::api::PaperResult;
 use crate::db::{Db, PaperRow};
 
-/// Shared state for all command handlers (flags, database, bib output).
+#[derive(Clone)]
 pub struct Context {
     pub verbose: bool,
     pub bib_file: Option<PathBuf>,
@@ -28,7 +28,6 @@ pub struct Context {
 }
 
 impl Context {
-    /// Build an HTTP client using this context's database and cache settings.
     pub fn client(&self) -> crate::http::Client {
         crate::http::Client::new(Arc::clone(&self.db), self.no_cache)
     }
@@ -38,10 +37,11 @@ impl Context {
         if !bibtex.contains('@') {
             return;
         }
-        if let Some(ref path) = self.bib_file
-            && let Err(e) = crate::bibtex::append_to_file(path, bibtex) {
+        if let Some(ref path) = self.bib_file {
+            if let Err(e) = crate::bibtex::append_to_file(path, bibtex) {
                 crate::format::warn(&format!("Failed to append to bib file: {}", e));
             }
+        }
         if self.bib_stdout {
             println!("{}", bibtex);
         }
@@ -68,6 +68,12 @@ pub async fn auto_dispatch(ctx: &Context, input: &str, open: bool) -> Result<(),
         InputType::Isbn => lookup_isbn(ctx, input).await,
         InputType::DblpUrl => lookup_dblp_url(ctx, input).await,
         InputType::SemanticScholarUrl => open::run(ctx, input),
+        InputType::PhilPapersUrl => lookup_philpapers_url(ctx, input).await,
+        InputType::Url => {
+            let lr = lookup_url_data(ctx, input).await?;
+            display_paper(ctx, &lr.paper, lr.bibtex.as_deref());
+            Ok(())
+        }
         InputType::Search => search::run(ctx, input, 10, None).await,
     }
 }
@@ -90,12 +96,15 @@ fn display_paper(ctx: &Context, paper: &PaperResult, bibtex: Option<&str>) {
             println!("{}", bib);
         }
         // Also append to bib_file if given (both can be true).
-        if let Some(ref path) = ctx.bib_file
-            && let Some(bib) = bibtex
-                && bib.contains('@')
-                    && let Err(e) = crate::bibtex::append_to_file(path, bib) {
+        if let Some(ref path) = ctx.bib_file {
+            if let Some(bib) = bibtex {
+                if bib.contains('@') {
+                    if let Err(e) = crate::bibtex::append_to_file(path, bib) {
                         crate::format::warn(&format!("Failed to append to bib file: {}", e));
                     }
+                }
+            }
+        }
         return;
     }
 
@@ -144,12 +153,15 @@ fn display_paper(ctx: &Context, paper: &PaperResult, bibtex: Option<&str>) {
     }
 
     // Append to bib file if --bib <file> was given
-    if let Some(ref path) = ctx.bib_file
-        && let Some(bib) = bibtex
-            && bib.contains('@')
-                && let Err(e) = crate::bibtex::append_to_file(path, bib) {
+    if let Some(ref path) = ctx.bib_file {
+        if let Some(bib) = bibtex {
+            if bib.contains('@') {
+                if let Err(e) = crate::bibtex::append_to_file(path, bib) {
                     crate::format::warn(&format!("Failed to append to bib file: {}", e));
                 }
+            }
+        }
+    }
 }
 
 /// Convert a PaperResult to a JSON value.
@@ -212,9 +224,9 @@ pub fn paper_to_json(paper: &PaperResult) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
-/// Convert a PaperResult to a brief JSON value for search/list results.
+/// Convert a PaperResult to a compact JSON value for space-constrained contexts.
 ///
-/// Truncates abstract to 150 chars, omits categories/published_date/pdf_url.
+/// Omits categories, published_date, and pdf_url. Truncates abstracts to 150 chars.
 pub fn paper_to_json_brief(paper: &PaperResult) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     map.insert("title".into(), serde_json::Value::String(paper.title.clone()));
@@ -242,9 +254,8 @@ pub fn paper_to_json_brief(paper: &PaperResult) -> serde_json::Value {
         map.insert("isbn".into(), serde_json::Value::String(isbn.clone()));
     }
     if let Some(ref abs) = paper.abstract_text {
-        let truncated = if abs.chars().count() > 150 {
-            let s: String = abs.chars().take(150).collect();
-            format!("{s}...")
+        let truncated = if abs.len() > 150 {
+            format!("{}...", &abs[..150])
         } else {
             abs.clone()
         };
@@ -348,7 +359,7 @@ pub async fn fetch_related_data(
             let key = crate::db::Db::cache_key(cache_prefix, api_id);
             let url = url_fn(api_id);
 
-            let body = match client.get_cached(&key, &url, crate::db::ttl_search()).await {
+            let body = match client.get_cached(&key, &url, crate::db::TTL_SEARCH).await {
                 Ok(b) => b,
                 Err(e) => {
                     if ctx.verbose {
@@ -464,10 +475,27 @@ pub async fn lookup_data(ctx: &Context, input: &str) -> Result<LookupResult, Box
         InputType::SemanticScholarUrl => {
             Err("Semantic Scholar URLs are not supported for lookup_data; use open instead".into())
         }
+        InputType::PhilPapersUrl => lookup_philpapers_url_data(ctx, input).await,
+        InputType::Url => lookup_url_data(ctx, input).await,
         InputType::Search => {
             Err("Search queries are not supported for lookup_data; use search instead".into())
         }
     }
+}
+
+/// Look up a paper from an arbitrary HTTPS URL by extracting the title and searching.
+async fn lookup_url_data(ctx: &Context, url: &str) -> Result<LookupResult, Box<dyn std::error::Error>> {
+    let title = add::fetch_title_from_url(url).await?;
+    eprintln!("Extracted title: {}", &title[..title.len().min(80)]);
+    let top = search::resolve_top(ctx, &title).await?;
+    if let Some(ref doi) = top.doi {
+        return lookup_doi_data(ctx, doi).await;
+    }
+    if let Some(ref arxiv_id) = top.arxiv_id {
+        return lookup_arxiv_data(ctx, arxiv_id).await;
+    }
+    // No canonical identifier: return the search result as-is with no BibTeX
+    Ok(LookupResult { paper: top, bibtex: None })
 }
 
 /// Look up an arXiv paper and return structured data.
@@ -489,22 +517,23 @@ async fn lookup_arxiv_data(ctx: &Context, input: &str) -> Result<LookupResult, B
     let s2_cache_key = db::Db::cache_key("s2_paper", &arxiv_id);
 
     let (arxiv_body, s2_body) = tokio::join!(
-        client.get_cached_deferred(&arxiv_cache_key, &arxiv_url, db::ttl_lookup()),
-        client.get_cached(&s2_cache_key, &s2_url, db::ttl_lookup()),
+        client.get_cached_deferred(&arxiv_cache_key, &arxiv_url, db::TTL_DOI),
+        client.get_cached(&s2_cache_key, &s2_url, db::TTL_DOI),
     );
 
     let arxiv_body = arxiv_body?;
     let mut result = arxiv_api::parse_entry(&arxiv_body)?;
     client.cache_set(&arxiv_cache_key, &arxiv_url, &arxiv_body);
 
-    if let Ok(body) = s2_body
-        && let Ok(s2) = s2_api::parse_paper(&body) {
+    if let Ok(body) = s2_body {
+        if let Ok(s2) = s2_api::parse_paper(&body) {
             if result.s2_id.is_none() { result.s2_id = s2.s2_id; }
             if result.doi.is_none() { result.doi = s2.doi; }
             if result.citations.is_none() { result.citations = s2.citations; }
             if result.venue.is_none() { result.venue = s2.venue; }
             if result.pdf_url.is_none() { result.pdf_url = s2.pdf_url; }
         }
+    }
 
     let resolved_id = result.arxiv_id.as_deref().unwrap_or(&arxiv_id);
     let citekey = crate::citekey::generate(&result.authors, &result.year, &result.title);
@@ -537,19 +566,21 @@ async fn lookup_doi_data(ctx: &Context, input: &str) -> Result<LookupResult, Box
     let bib_url = crate::api::crossref::bibtex_url(&doi);
 
     let (cr_body, oa_body, bibtex) = tokio::join!(
-        client.get_cached(&cr_cache_key, &cr_url, db::ttl_lookup()),
-        client.get_cached(&oa_cache_key, &oa_url, db::ttl_lookup()),
+        client.get_cached(&cr_cache_key, &cr_url, db::TTL_DOI),
+        client.get_cached(&oa_cache_key, &oa_url, db::TTL_DOI),
         client.get(&bib_url),
     );
 
     let cr_body = cr_body?;
     let mut paper = crate::api::crossref::parse_doi(&cr_body)?;
 
-    if let Ok(body) = oa_body
-        && let Ok(oa) = oa_api::parse_work(&body)
-            && paper.citations.is_none() {
+    if let Ok(body) = oa_body {
+        if let Ok(oa) = oa_api::parse_work(&body) {
+            if paper.citations.is_none() {
                 paper.citations = oa.citations;
             }
+        }
+    }
 
     try_upsert(ctx, &paper, "crossref");
     Ok(LookupResult { paper, bibtex: bibtex.ok() })
@@ -568,7 +599,7 @@ async fn lookup_isbn_data(ctx: &Context, input: &str) -> Result<LookupResult, Bo
     let client = ctx.client();
     let cache_key = format!("isbn_{}", isbn);
     let url = crate::api::openlibrary::isbn_url(&isbn);
-    let body = client.get_cached(&cache_key, &url, db::ttl_lookup()).await?;
+    let body = client.get_cached(&cache_key, &url, db::TTL_DOI).await?;
 
     let book = crate::api::openlibrary::parse_isbn_detail(&body)?;
 
@@ -649,6 +680,28 @@ async fn lookup_doi(ctx: &Context, input: &str) -> Result<(), Box<dyn std::error
 /// Look up a book by ISBN via OpenLibrary and display results.
 async fn lookup_isbn(ctx: &Context, input: &str) -> Result<(), Box<dyn std::error::Error>> {
     let lr = lookup_isbn_data(ctx, input).await?;
+    display_paper(ctx, &lr.paper, lr.bibtex.as_deref());
+    Ok(())
+}
+
+/// Fetch BibTeX from a PhilPapers rec URL and return structured data.
+async fn lookup_philpapers_url_data(ctx: &Context, url: &str) -> Result<LookupResult, Box<dyn std::error::Error>> {
+    use crate::api::philpapers;
+
+    let id = philpapers::extract_id(url)
+        .ok_or_else(|| format!("Could not extract PhilPapers ID from: {}", url))?;
+
+    let bib_url = philpapers::bib_url(&id);
+    let client = ctx.client();
+    let bib = client.get(&bib_url).await?;
+
+    let paper = philpapers::parse_bib_entry(&bib);
+    Ok(LookupResult { paper, bibtex: Some(bib) })
+}
+
+/// Fetch BibTeX from a PhilPapers rec URL and display it.
+async fn lookup_philpapers_url(ctx: &Context, url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let lr = lookup_philpapers_url_data(ctx, url).await?;
     display_paper(ctx, &lr.paper, lr.bibtex.as_deref());
     Ok(())
 }

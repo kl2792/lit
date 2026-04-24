@@ -1,21 +1,20 @@
-//! `lit open <input>` -- Open a paper in the default browser.
-//!
-//! Detects the input type and constructs the appropriate URL:
-//! - Arxiv -> `https://arxiv.org/abs/{id}`
-//! - DOI -> `https://doi.org/{doi}`
-//! - DblpUrl / SemanticScholarUrl -> use as-is
-//! - ISBN -> `https://openlibrary.org/isbn/{stripped}`
-//! - Search -> `https://www.semanticscholar.org/search?q={encoded}`
-//!
-//! Prints the URL to stderr, then opens with `open` (macOS) or `xdg-open` (Linux).
-//! Falls back to printing the URL to stdout if neither is available.
+/// `lit open <input>` -- Open a paper in the default browser.
+///
+/// Detects the input type and constructs the appropriate URL:
+/// - Arxiv -> `https://arxiv.org/abs/{id}`
+/// - DOI -> `https://doi.org/{doi}`
+/// - DblpUrl / SemanticScholarUrl -> use as-is
+/// - ISBN -> `https://openlibrary.org/isbn/{stripped}`
+/// - Search -> `https://www.semanticscholar.org/search?q={encoded}`
+///
+/// Prints the URL to stderr, then opens with `open` (macOS) or `xdg-open` (Linux).
+/// Falls back to printing the URL to stdout if neither is available.
 
 use super::Context;
 use crate::api::urlencode;
 use crate::detect::{detect_type, normalize_arxiv, normalize_doi, normalize_isbn, InputType};
 use crate::format;
 
-/// Open a paper in the default browser based on detected input type.
 pub fn run(_ctx: &Context, input: &str) -> Result<(), Box<dyn std::error::Error>> {
     let url = match detect_type(input) {
         InputType::Arxiv => {
@@ -26,7 +25,7 @@ pub fn run(_ctx: &Context, input: &str) -> Result<(), Box<dyn std::error::Error>
             let doi = normalize_doi(input);
             format!("https://doi.org/{}", doi)
         }
-        InputType::DblpUrl | InputType::SemanticScholarUrl => input.to_string(),
+        InputType::DblpUrl | InputType::SemanticScholarUrl | InputType::PhilPapersUrl | InputType::Url => input.to_string(),
         InputType::Isbn => {
             let stripped = normalize_isbn(input);
             format!("https://openlibrary.org/isbn/{}", stripped)
@@ -64,9 +63,11 @@ fn try_open_browser(url: &str) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        && status.success() {
+    {
+        if status.success() {
             return true;
         }
+    }
 
     false
 }

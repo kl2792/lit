@@ -3,7 +3,7 @@ use lit::{api, cmd, db, format};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "lit", about = "Literature search tool for academic papers", version)]
+#[command(name = "lit", about = "Literature search tool for academic papers")]
 pub struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -48,6 +48,8 @@ enum SearchSource {
     Dblp,
     /// OpenLibrary books
     Book,
+    /// PhilPapers (philosophy)
+    Philpapers,
     /// All sources, merge results
     All,
 }
@@ -73,8 +75,8 @@ enum Commands {
         /// Number of BFS hops (1 = direct only)
         #[arg(long, default_value = "1")]
         hops: usize,
-        /// Maximum total papers to fetch (default: unlimited)
-        #[arg(long, default_value = "999999")]
+        /// Maximum total papers to fetch
+        #[arg(long, default_value = "1000")]
         max_papers: usize,
     },
     /// Get papers that cite this paper
@@ -83,8 +85,8 @@ enum Commands {
         /// Number of BFS hops (1 = direct only)
         #[arg(long, default_value = "1")]
         hops: usize,
-        /// Maximum total papers to fetch (default: unlimited)
-        #[arg(long, default_value = "999999")]
+        /// Maximum total papers to fetch
+        #[arg(long, default_value = "1000")]
         max_papers: usize,
     },
     /// Find shortest citation path between two papers
@@ -117,14 +119,6 @@ enum Commands {
         bib_file: PathBuf,
         #[arg(short = 'j', long, default_value = "4")]
         jobs: usize,
-    },
-    /// Get readable text path for a downloaded paper
-    Read {
-        /// Paper identifier (arXiv ID, DOI, or directory name)
-        query: Vec<String>,
-        /// Print file contents to stdout instead of just the path
-        #[arg(short, long)]
-        print: bool,
     },
     /// Scan a .bib file for malformed entries, duplicates, and orphans
     Clean {
@@ -159,16 +153,23 @@ enum Commands {
 enum DbAction {
     /// Show database statistics
     Stats,
-    /// Rebuild database from source.yaml files in paper storage directory
+    /// Rebuild database from etc/pdf/**/source.yaml files
     Rebuild,
+    /// Rollback database to a previous state (not yet implemented)
+    Rollback {
+        /// Timestamp to roll back to (ISO 8601)
+        timestamp: String,
+    },
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
+    // If --no-color was passed, set NO_COLOR env var so format::use_color() picks it up.
+    // SAFETY: This runs before any threads are spawned, so no data race.
     if cli.no_color {
-        format::set_no_color();
+        unsafe { std::env::set_var("NO_COLOR", "1") };
     }
 
     let (bib_file, bib_stdout) = match cli.bib {
@@ -178,7 +179,16 @@ async fn main() {
     };
 
     // Resolve DB path (used by rebuild and normal open)
-    let db_path = lit::resolve_db_path();
+    let db_path = std::env::var("LIT_DB_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let exe = std::env::current_exe().unwrap_or_default();
+            exe.parent()
+                .unwrap_or(std::path::Path::new("."))
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("etc/lit/lit.db")
+        });
 
     // Handle `lit db rebuild` before opening the DB — rebuild creates a fresh DB
     // and doesn't need the old one (which may have a stale schema version).
@@ -237,11 +247,12 @@ async fn main() {
                     SearchSource::Cr => cmd::search::Source::Cr,
                     SearchSource::Dblp => cmd::search::Source::Dblp,
                     SearchSource::Book => cmd::search::Source::Book,
+                    SearchSource::Philpapers => cmd::search::Source::PhilPapers,
                     SearchSource::All => cmd::search::Source::All,
                 });
                 cmd::search::run(&ctx, &q, limit, src).await
             } else {
-                run_local_search(&ctx, &q, limit).await
+                run_local_search(&ctx, &q, limit)
             }
         }
         Some(Commands::Refs {
@@ -259,24 +270,6 @@ async fn main() {
             paper_b,
             max_hops,
         }) => cmd::path::run(&ctx, &paper_a, &paper_b, max_hops).await,
-        Some(Commands::Read { query, print }) => {
-            let q = query.join(" ");
-            let read_result = cmd::read::run_data(&ctx, &q);
-            match read_result {
-                Ok(result) => {
-                    if print {
-                        match std::fs::read_to_string(&result.path) {
-                            Ok(contents) => { print!("{}", contents); Ok(()) }
-                            Err(e) => Err(format!("failed to read {}: {}", result.path.display(), e).into())
-                        }
-                    } else {
-                        println!("{}", result.path.display());
-                        Ok(())
-                    }
-                }
-                Err(e) => Err(e),
-            }
-        }
         Some(Commands::Download {
             id,
             source,
@@ -304,7 +297,13 @@ async fn main() {
         }
         Some(Commands::Db { action }) => match action {
             DbAction::Stats => run_db_stats(&ctx),
-            DbAction::Rebuild => cmd::check::rebuild(&db_path),
+            DbAction::Rebuild => {
+                cmd::check::rebuild(&db_path).map_err(|e| e.into())
+            }
+            DbAction::Rollback { timestamp } => {
+                eprintln!("rollback to {}: not yet implemented", timestamp);
+                Ok(())
+            }
         },
         None => {
             let input = cli.input.join(" ");
@@ -324,10 +323,7 @@ async fn main() {
 }
 
 /// Run local FTS search and display results in the same format as remote search.
-///
-/// When the local DB returns zero results and `--remote` was not explicitly set,
-/// automatically falls back to remote API search with a stderr notice.
-async fn run_local_search(
+fn run_local_search(
     ctx: &cmd::Context,
     query: &str,
     limit: usize,
@@ -337,14 +333,14 @@ async fn run_local_search(
     }
     let rows = ctx.db.search_local(query, limit)?;
     if rows.is_empty() {
-        eprintln!("No local results, searching online...");
-        return cmd::search::run(ctx, query, limit, None).await;
+        println!("No results found");
+        return Ok(());
     }
     let results: Vec<api::PaperResult> = rows.iter().map(|r| r.to_paper_result()).collect();
     if ctx.json {
         let arr: Vec<serde_json::Value> = results
             .iter()
-            .map(cmd::paper_to_json)
+            .map(|p| cmd::paper_to_json(p))
             .collect();
         println!("{}", serde_json::to_string_pretty(&arr).unwrap());
         return Ok(());

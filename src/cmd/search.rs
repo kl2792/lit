@@ -12,6 +12,7 @@ pub enum Source {
     Cr,
     Dblp,
     Book,
+    PhilPapers,
     All,
 }
 
@@ -54,6 +55,12 @@ const BACKENDS: &[Backend] = &[
         url: crate::api::openlibrary::search_url,
         parse: crate::api::openlibrary::parse_search,
     },
+    Backend {
+        name: "PhilPapers",
+        prefix: "philpapers",
+        url: crate::api::philpapers::search_url,
+        parse: crate::api::philpapers::parse_search,
+    },
 ];
 
 fn backend_for(source: Source) -> &'static Backend {
@@ -63,6 +70,7 @@ fn backend_for(source: Source) -> &'static Backend {
         Source::Cr => &BACKENDS[2],
         Source::Dblp => &BACKENDS[3],
         Source::Book => &BACKENDS[4],
+        Source::PhilPapers => &BACKENDS[5],
         Source::All => unreachable!(),
     }
 }
@@ -222,7 +230,7 @@ async fn fetch_backend(
 ) -> Vec<PaperResult> {
     let key = db::Db::cache_key(backend.prefix, query);
     let url = (backend.url)(query, limit);
-    match client.get_cached(&key, &url, db::ttl_search()).await {
+    match client.get_cached(&key, &url, db::TTL_SEARCH).await {
         Ok(body) => match (backend.parse)(&body) {
             Ok(results) => results,
             Err(e) => {
@@ -314,7 +322,7 @@ fn print_results(ctx: &Context, results: &[PaperResult]) {
     if ctx.json {
         let arr: Vec<serde_json::Value> = results
             .iter()
-            .map(super::paper_to_json)
+            .map(|p| super::paper_to_json(p))
             .collect();
         println!("{}", serde_json::to_string_pretty(&arr).unwrap());
         return;
@@ -361,6 +369,8 @@ fn print_results(ctx: &Context, results: &[PaperResult]) {
 fn print_cascade_error(ctx: &Context, source: &str, error: &dyn std::fmt::Display) {
     if ctx.verbose {
         eprintln!("note: {} unavailable: {}", source, error);
+    } else {
+        eprintln!("note: {} unavailable", source);
     }
 }
 

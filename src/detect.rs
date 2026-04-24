@@ -1,8 +1,8 @@
-//! Input type detection and normalization.
-//!
-//! Detects whether user input is an arXiv ID/URL, DOI, ISBN, DBLP URL,
-//! Semantic Scholar URL, or a free-text search query. Matches the behavior
-//! of the bash `detect_type()` function exactly.
+/// Input type detection and normalization.
+///
+/// Detects whether user input is an arXiv ID/URL, DOI, ISBN, DBLP URL,
+/// Semantic Scholar URL, or a free-text search query. Matches the behavior
+/// of the bash `detect_type()` function exactly.
 
 use std::sync::LazyLock;
 
@@ -16,6 +16,8 @@ static DBLP_URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://dblp\.org/").unwrap());
 static SS_URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://www\.semanticscholar\.org/").unwrap());
+static PHILPAPERS_URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^https?://philpapers\.org/rec/").unwrap());
 static ARXIV_NEW_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(arXiv:|arxiv:)?[0-9]{4}\.[0-9]{4,5}(v[0-9]+)?$").unwrap());
 static ARXIV_OLD_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -35,6 +37,8 @@ pub enum InputType {
     Isbn,
     DblpUrl,
     SemanticScholarUrl,
+    PhilPapersUrl,
+    Url,
     Search,
 }
 
@@ -64,6 +68,15 @@ pub fn detect_type(input: &str) -> InputType {
 
     if SS_URL_RE.is_match(input) {
         return InputType::SemanticScholarUrl;
+    }
+
+    if PHILPAPERS_URL_RE.is_match(input) {
+        return InputType::PhilPapersUrl;
+    }
+
+    // Any remaining https/http URL not matched above
+    if input.starts_with("https://") || input.starts_with("http://") {
+        return InputType::Url;
     }
 
     if ARXIV_NEW_RE.is_match(input) {
@@ -301,6 +314,22 @@ mod tests {
         assert_eq!(
             detect_type("https://www.semanticscholar.org/paper/abc123"),
             InputType::SemanticScholarUrl
+        );
+    }
+
+    #[test]
+    fn detect_philpapers_url() {
+        assert_eq!(
+            detect_type("https://philpapers.org/rec/ANDCIT-6"),
+            InputType::PhilPapersUrl
+        );
+    }
+
+    #[test]
+    fn detect_philpapers_url_http() {
+        assert_eq!(
+            detect_type("http://philpapers.org/rec/PEACAO"),
+            InputType::PhilPapersUrl
         );
     }
 

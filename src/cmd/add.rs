@@ -1,14 +1,16 @@
-//! `lit add <input> <bib_file>` -- Fetch BibTeX and append to a .bib file.
-//!
-//! Detects the input type (arXiv, DOI, ISBN), fetches the corresponding
-//! BibTeX entry, validates it starts with `@`, appends to the bib file,
-//! and prints confirmation with the entry.
-//!
-//! When the input is a free-text search query (not a recognized identifier),
-//! searches for the paper, takes the top result, extracts the best available
-//! identifier (DOI > arXiv > ISBN), and uses that to fetch BibTeX.
+/// `lit add <input> <bib_file>` -- Fetch BibTeX and append to a .bib file.
+///
+/// Detects the input type (arXiv, DOI, ISBN), fetches the corresponding
+/// BibTeX entry, validates it starts with `@`, appends to the bib file,
+/// and prints confirmation with the entry.
+///
+/// When the input is a free-text search query (not a recognized identifier),
+/// searches for the paper, takes the top result, extracts the best available
+/// identifier (DOI > arXiv > ISBN), and uses that to fetch BibTeX.
 
 use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
 
 use super::Context;
 use crate::api::crossref;
@@ -39,18 +41,20 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path) -> Result<Add
             let s2_url = s2_api::paper_url(&format!("arXiv:{}", id));
 
             let (arxiv_body, s2_body) = tokio::join!(
-                client.get_cached(&arxiv_key, &arxiv_url, db::ttl_lookup()),
-                client.get_cached(&s2_key, &s2_url, db::ttl_lookup()),
+                client.get_cached(&arxiv_key, &arxiv_url, db::TTL_DOI),
+                client.get_cached(&s2_key, &s2_url, db::TTL_DOI),
             );
 
             let arxiv_body = arxiv_body?;
             let mut result = crate::api::arxiv::parse_entry(&arxiv_body)?;
 
-            if let Ok(body) = s2_body
-                && let Ok(s2) = s2_api::parse_paper(&body)
-                    && result.venue.is_none() {
+            if let Ok(body) = s2_body {
+                if let Ok(s2) = s2_api::parse_paper(&body) {
+                    if result.venue.is_none() {
                         result.venue = s2.venue.filter(|v| !is_junk_venue(v));
                     }
+                }
+            }
 
             // S2 venue is now used by generate_arxiv_bibtex; no need to hit CrossRef.
             // CrossRef has inconsistent author ordering vs arXiv, so we prefer our
@@ -68,12 +72,25 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path) -> Result<Add
             let stripped = normalize_isbn(input);
             let key = db::Db::cache_key("isbn", &stripped);
             let url = crate::api::openlibrary::isbn_url(&stripped);
-            let body = client.get_cached(&key, &url, db::ttl_lookup()).await?;
+            let body = client.get_cached(&key, &url, db::TTL_DOI).await?;
             let result = crate::api::openlibrary::parse_isbn(&body)?;
             generate_book_bibtex(&result)
         }
         InputType::Search => {
             let top = super::search::resolve_top(ctx, input).await?;
+            resolve_bibtex_from_result(ctx, &top).await?
+        }
+        InputType::PhilPapersUrl => {
+            let id = crate::api::philpapers::extract_id(input)
+                .ok_or_else(|| format!("Could not extract PhilPapers ID from: {}", input))?;
+            let url = crate::api::philpapers::bib_url(&id);
+            let bib = client.get(&url).await?;
+            normalize_bibtex_key_from_content(&bib)
+        }
+        InputType::Url => {
+            let title = fetch_title_from_url(input).await?;
+            eprintln!("Extracted title: {}", &title[..title.len().min(80)]);
+            let top = super::search::resolve_top(ctx, &title).await?;
             resolve_bibtex_from_result(ctx, &top).await?
         }
         _ => {
@@ -98,19 +115,21 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path) -> Result<Add
             let id = normalize_arxiv(input);
             let key = db::Db::cache_key("arxiv", &id);
             let url = crate::api::arxiv::query_url(&id);
-            if let Ok(body) = client.get_cached(&key, &url, db::ttl_lookup()).await
-                && let Ok(result) = crate::api::arxiv::parse_entry(&body) {
+            if let Ok(body) = client.get_cached(&key, &url, db::TTL_DOI).await {
+                if let Ok(result) = crate::api::arxiv::parse_entry(&body) {
                     super::try_upsert(ctx, &result, "arxiv");
                 }
+            }
         }
         InputType::Doi => {
             let doi = normalize_doi(input);
             let key = db::Db::cache_key("doi", &doi);
             let url = crate::api::crossref::doi_url(&doi);
-            if let Ok(body) = client.get_cached(&key, &url, db::ttl_lookup()).await
-                && let Ok(result) = crate::api::crossref::parse_doi(&body) {
+            if let Ok(body) = client.get_cached(&key, &url, db::TTL_DOI).await {
+                if let Ok(result) = crate::api::crossref::parse_doi(&body) {
                     super::try_upsert(ctx, &result, "crossref");
                 }
+            }
         }
         _ => {}
     }
@@ -120,12 +139,46 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path) -> Result<Add
     Ok(AddResult { entry_key, bib_text })
 }
 
-/// Fetch BibTeX for a paper and append it to a .bib file, printing the result.
 pub async fn run(ctx: &Context, input: &str, bib_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let result = run_data(ctx, input, bib_file).await?;
     println!("Added {} to {}", result.entry_key, bib_file.display());
     println!("{}", result.bib_text);
     Ok(())
+}
+
+/// Download a PDF from a URL and extract its title using `pdftotext`.
+///
+/// Downloads the bytes to a temp file, runs `pdftotext <file> -`, and returns
+/// the first line of extracted text with more than 15 characters.
+pub async fn fetch_title_from_url(url: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()?;
+
+    let bytes = client.get(url).send().await?.bytes().await?;
+
+    let tmp_path = std::env::temp_dir().join("lit_url_download.pdf");
+    std::fs::write(&tmp_path, &bytes)?;
+
+    let output = Command::new("pdftotext")
+        .arg(&tmp_path)
+        .arg("-")
+        .output();
+
+    // Clean up temp file regardless of pdftotext result
+    let _ = std::fs::remove_file(&tmp_path);
+
+    let output = output?;
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    let title = text
+        .lines()
+        .map(str::trim)
+        .find(|line| line.len() > 15)
+        .ok_or("Could not extract title from PDF: no line with >15 chars found")?
+        .to_string();
+
+    Ok(title)
 }
 
 /// Generate BibTeX for an arXiv paper from a PaperResult.
@@ -180,7 +233,7 @@ async fn resolve_bibtex_from_result(
         eprintln!("Resolved: {} (arXiv:{})", truncated, arxiv_id);
         let key = db::Db::cache_key("arxiv", arxiv_id);
         let url = crate::api::arxiv::query_url(arxiv_id);
-        let body = client.get_cached(&key, &url, db::ttl_lookup()).await?;
+        let body = client.get_cached(&key, &url, db::TTL_DOI).await?;
         let parsed = crate::api::arxiv::parse_entry(&body)?;
         return Ok(generate_arxiv_bibtex(&parsed, arxiv_id));
     }
@@ -190,7 +243,7 @@ async fn resolve_bibtex_from_result(
         eprintln!("Resolved: {} (ISBN:{})", truncated, isbn);
         let key = db::Db::cache_key("isbn", isbn);
         let url = crate::api::openlibrary::isbn_url(isbn);
-        let body = client.get_cached(&key, &url, db::ttl_lookup()).await?;
+        let body = client.get_cached(&key, &url, db::TTL_DOI).await?;
         let parsed = crate::api::openlibrary::parse_isbn(&body)?;
         return Ok(generate_book_bibtex(&parsed));
     }
@@ -277,7 +330,7 @@ fn replace_bib_key(bib: &str, new_key: &str) -> String {
     if let Some(open) = bib.find('{') {
         // Find the end of the old key: first ',' or newline after the '{'
         let after_brace = &bib[open + 1..];
-        if let Some(end_offset) = after_brace.find([',', '\n']) {
+        if let Some(end_offset) = after_brace.find(|c| c == ',' || c == '\n') {
             let rest = &bib[open + 1 + end_offset..]; // from ',' onward
             return format!("{}{{{}{}", &bib[..open], new_key, rest);
         }
