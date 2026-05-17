@@ -1,7 +1,7 @@
-//! BibTeX parsing and generation.
-//!
-//! Handles parsing `.bib` files into structured entries, extracting BibTeX
-//! blocks from mixed output, and appending entries to files.
+/// BibTeX parsing and generation.
+///
+/// Handles parsing `.bib` files into structured entries, extracting BibTeX
+/// blocks from mixed output, and appending entries to files.
 
 use std::fs;
 use std::path::Path;
@@ -19,13 +19,13 @@ pub struct BibEntry {
 
 impl std::fmt::Display for BibEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "@{}{{{},", self.entry_type, self.key)?;
+        write!(f, "@{}{{{},\n", self.entry_type, self.key)?;
         for (i, (name, value)) in self.fields.iter().enumerate() {
             if i < self.fields.len() - 1 {
-                writeln!(f, "  {} = {{{}}},", name, value)?;
+                write!(f, "  {} = {{{}}},\n", name, value)?;
             } else {
                 // Last field: no trailing comma
-                writeln!(f, "  {} = {{{}}}", name, value)?;
+                write!(f, "  {} = {{{}}}\n", name, value)?;
             }
         }
         write!(f, "}}")
@@ -279,7 +279,7 @@ pub fn upsert_to_file(path: &Path, entry: &str) -> Result<(), Box<dyn std::error
 /// Extract the citekey from a BibTeX entry string (e.g. `@article{key,` → `"key"`).
 pub fn extract_entry_key(entry: &str) -> Option<String> {
     let after_brace = entry.find('{').map(|i| &entry[i + 1..])?;
-    let key = after_brace.split([',', '\n']).next()?.trim();
+    let key = after_brace.split(|c| c == ',' || c == '\n').next()?.trim();
     if key.is_empty() { None } else { Some(key.to_string()) }
 }
 
@@ -354,7 +354,80 @@ fn replace_entry_block(content: &str, key: &str, new_entry: &str) -> Option<Stri
     None
 }
 
-/// Append a BibTeX entry to a file, creating it if necessary.
+/// Remove the entry with the given citekey from a .bib file.
+///
+/// Returns `Ok(true)` if the entry was found and removed, `Ok(false)` if no entry
+/// with that key existed in the file.
+pub fn remove_from_file(path: &Path, key: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    let content = match fs::read_to_string(path) {
+        Ok(s) if !s.is_empty() => s,
+        _ => return Ok(false),
+    };
+    if let Some(new_content) = remove_entry_block(&content, key) {
+        fs::write(path, new_content)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// Remove the block for `key` from `content`, returning the new content if found.
+fn remove_entry_block(content: &str, key: &str) -> Option<String> {
+    let bytes = content.as_bytes();
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        let offset = content[pos..].find('@')?;
+        let at_pos = pos + offset;
+        pos = at_pos + 1;
+
+        while pos < bytes.len() && bytes[pos] != b'{' && !bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        while pos < bytes.len() && bytes[pos] != b'{' {
+            pos += 1;
+        }
+        if pos >= bytes.len() { break; }
+        pos += 1;
+
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+
+        let key_start = pos;
+        while pos < bytes.len() && bytes[pos] != b',' && !bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        let found_key = content[key_start..pos].trim();
+
+        let mut depth: i32 = 1;
+        while pos < bytes.len() && depth > 0 {
+            if bytes[pos] == b'{' { depth += 1; }
+            else if bytes[pos] == b'}' { depth -= 1; }
+            pos += 1;
+        }
+        let entry_end = pos;
+
+        if found_key != key {
+            continue;
+        }
+
+        let mut tail_start = entry_end;
+        while tail_start < bytes.len() && (bytes[tail_start] == b'\n' || bytes[tail_start] == b'\r') {
+            tail_start += 1;
+        }
+
+        let mut result = String::with_capacity(content.len());
+        result.push_str(&content[..at_pos]);
+        if tail_start < content.len() {
+            result.push_str(&content[tail_start..]);
+        }
+        return Some(result);
+    }
+
+    None
+}
+
 pub fn append_to_file(path: &Path, entry: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 
@@ -548,5 +621,83 @@ mod tests {
         let entries = parse_bib_file(bib);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].key, "real2021");
+    }
+
+    #[test]
+    fn remove_existing_entry_from_multi_entry_file() {
+        let dir = std::env::temp_dir().join("lit_bibtex_remove_test_1");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.bib");
+
+        std::fs::write(
+            &path,
+            "@article{first2020,\n  title = {First},\n  year = {2020}\n}\n\n@article{drop2021,\n  title = {Drop Me},\n  year = {2021}\n}\n\n@article{third2022,\n  title = {Third},\n  year = {2022}\n}\n",
+        )
+        .unwrap();
+
+        let removed = remove_from_file(&path, "drop2021").unwrap();
+        assert!(removed);
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("@article{first2020"));
+        assert!(content.contains("@article{third2022"));
+        assert!(!content.contains("drop2021"));
+        assert!(!content.contains("Drop Me"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_nonexistent_key_returns_false() {
+        let dir = std::env::temp_dir().join("lit_bibtex_remove_test_2");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.bib");
+
+        std::fs::write(
+            &path,
+            "@article{exists2020,\n  title = {Exists},\n  year = {2020}\n}\n",
+        )
+        .unwrap();
+        let original = std::fs::read_to_string(&path).unwrap();
+
+        let removed = remove_from_file(&path, "ghost2099").unwrap();
+        assert!(!removed);
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(original, after);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_only_entry_leaves_empty_file() {
+        let dir = std::env::temp_dir().join("lit_bibtex_remove_test_3");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.bib");
+
+        std::fs::write(
+            &path,
+            "@article{lonely2020,\n  title = {Alone},\n  year = {2020}\n}\n",
+        )
+        .unwrap();
+
+        let removed = remove_from_file(&path, "lonely2020").unwrap();
+        assert!(removed);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.contains("lonely2020"));
+        assert!(!content.contains("@article"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_from_missing_file_returns_false() {
+        let path = std::env::temp_dir().join("lit_bibtex_remove_test_4_nonexistent.bib");
+        let _ = std::fs::remove_file(&path);
+        let removed = remove_from_file(&path, "any2020").unwrap();
+        assert!(!removed);
     }
 }

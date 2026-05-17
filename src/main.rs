@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use lit::{api, cmd, db, format};
+use lit::{api, bibtex, cmd, db, format};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -146,6 +146,43 @@ enum Commands {
     Db {
         #[command(subcommand)]
         action: DbAction,
+    },
+    /// Locate (and if needed extract) the text of a paper. Prints file path.
+    Read {
+        /// Paper identifier (arXiv ID, DOI, or local cite-key).
+        /// Auto-downloads arXiv PDFs if not cached.
+        id: String,
+    },
+    /// Remove an entry from a .bib file by citekey.
+    Remove {
+        /// Citation key to remove.
+        citekey: String,
+        /// Target .bib file.
+        bib_file: PathBuf,
+    },
+    /// Append a hand-rolled `@misc` BibTeX entry to a .bib file.
+    /// Use this for textbooks, working papers, blog posts, and other works
+    /// without a resolvable identifier.
+    Misc {
+        /// Citation key (e.g. "halpern2016actual").
+        citekey: String,
+        /// Target .bib file.
+        bib_file: PathBuf,
+        /// Title.
+        #[arg(short, long)]
+        title: String,
+        /// Year (string; accepts non-numeric like "forthcoming").
+        #[arg(short, long)]
+        year: String,
+        /// Author in "First Last" form. Repeat for each author.
+        #[arg(short, long = "author", required = true)]
+        authors: Vec<String>,
+        /// Free-text venue (e.g. "Working paper", "Tech report TR-1").
+        #[arg(long)]
+        howpublished: Option<String>,
+        /// Optional note field.
+        #[arg(long)]
+        note: Option<String>,
     },
 }
 
@@ -295,6 +332,17 @@ async fn main() {
                 cmd::check::run(&ctx, fix).await
             }
         }
+        Some(Commands::Read { id }) => run_read(&ctx, &id).await,
+        Some(Commands::Remove { citekey, bib_file }) => run_remove(&ctx, &citekey, &bib_file),
+        Some(Commands::Misc {
+            citekey,
+            bib_file,
+            title,
+            year,
+            authors,
+            howpublished,
+            note,
+        }) => run_misc(&ctx, citekey, &bib_file, title, year, authors, howpublished, note),
         Some(Commands::Db { action }) => match action {
             DbAction::Stats => run_db_stats(&ctx),
             DbAction::Rebuild => {
@@ -379,5 +427,97 @@ fn run_db_stats(ctx: &cmd::Context) -> Result<(), Box<dyn std::error::Error>> {
     println!("Citations: {}", stats.citation_count);
     println!("Cache:     {} entries", stats.cache_entries);
     println!("DB size:   {}", size);
+    Ok(())
+}
+
+/// Run `lit read`: locate paper text, auto-downloading from arXiv if needed.
+async fn run_read(ctx: &cmd::Context, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let result = match cmd::read::run_data(ctx, id) {
+        Ok(r) => r,
+        Err(_) => {
+            let normalized = id.trim();
+            let looks_like_arxiv = normalized
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+                || normalized.starts_with("arxiv:");
+            if !looks_like_arxiv {
+                return Err(format!(
+                    "paper '{}' not found locally. Download it first with an arXiv ID.",
+                    id
+                )
+                .into());
+            }
+            cmd::download::run(ctx, normalized, true, false, None).await?;
+            cmd::read::run_data(ctx, id)?
+        }
+    };
+
+    if ctx.json {
+        let json = serde_json::json!({
+            "path": result.path.to_string_lossy(),
+            "format": result.format,
+            "extra_files": result.extra_files,
+        });
+        println!("{}", serde_json::to_string_pretty(&json)?);
+    } else {
+        println!("{}", result.path.display());
+    }
+    Ok(())
+}
+
+/// Run `lit remove`: delete an entry from a .bib file by citekey.
+fn run_remove(
+    ctx: &cmd::Context,
+    citekey: &str,
+    bib_file: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let removed = bibtex::remove_from_file(bib_file, citekey)?;
+    if ctx.json {
+        let json = serde_json::json!({
+            "entry_key": citekey,
+            "bib_file": bib_file.display().to_string(),
+            "removed": removed,
+        });
+        println!("{}", serde_json::to_string_pretty(&json)?);
+    } else if removed {
+        println!("Removed @{{{}}} from {}", citekey, bib_file.display());
+    } else {
+        eprintln!("No entry with key '{}' in {}", citekey, bib_file.display());
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+/// Run `lit misc`: append a hand-rolled `@misc` BibTeX entry.
+#[allow(clippy::too_many_arguments)]
+fn run_misc(
+    ctx: &cmd::Context,
+    citekey: String,
+    bib_file: &std::path::Path,
+    title: String,
+    year: String,
+    authors: Vec<String>,
+    howpublished: Option<String>,
+    note: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let params = cmd::misc::MiscParams {
+        citekey,
+        title,
+        authors,
+        year,
+        howpublished,
+        note,
+    };
+    let result = cmd::misc::run_data(&params, bib_file)?;
+    if ctx.json {
+        let json = serde_json::json!({
+            "entry_key": result.entry_key,
+            "bib_file": bib_file.display().to_string(),
+        });
+        println!("{}", serde_json::to_string_pretty(&json)?);
+    } else {
+        println!("Added @misc{{{}}} to {}", result.entry_key, bib_file.display());
+    }
     Ok(())
 }
