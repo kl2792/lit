@@ -1,7 +1,7 @@
-//! HTTP client wrapper with caching support.
-//!
-//! Wraps `reqwest::Client` and integrates with the SQLite-backed `Db`
-//! for transparent request deduplication.
+/// HTTP client wrapper with caching support.
+///
+/// Wraps `reqwest::Client` and integrates with the SQLite-backed `Db`
+/// for transparent request deduplication.
 
 use crate::db::Db;
 use std::sync::Arc;
@@ -10,7 +10,6 @@ use std::time::Duration;
 /// Maximum response body size: 50 MB.
 const MAX_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
 
-/// HTTP client with transparent SQLite-backed response caching.
 pub struct Client {
     inner: reqwest::Client,
     db: Arc<Db>,
@@ -23,7 +22,10 @@ impl Client {
     /// When `no_cache` is true, all requests bypass the cache (no reads or writes).
     /// Timeout defaults to 15 seconds, overridden by `$CURL_TIMEOUT` env var.
     pub fn new(db: Arc<Db>, no_cache: bool) -> Self {
-        let timeout_secs: u64 = crate::config::Config::get().timeout();
+        let timeout_secs: u64 = std::env::var("CURL_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15);
 
         let inner = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
@@ -50,10 +52,11 @@ impl Client {
         url: &str,
         ttl: u64,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        if !self.no_cache
-            && let Some(cached) = self.db.cache_get(cache_key, ttl) {
+        if !self.no_cache {
+            if let Some(cached) = self.db.cache_get(cache_key, ttl) {
                 return Ok(cached);
             }
+        }
 
         let body = self.get(url).await?;
         if !self.no_cache && looks_valid(&body) {
@@ -73,10 +76,11 @@ impl Client {
         url: &str,
         ttl: u64,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        if !self.no_cache
-            && let Some(cached) = self.db.cache_get(cache_key, ttl) {
+        if !self.no_cache {
+            if let Some(cached) = self.db.cache_get(cache_key, ttl) {
                 return Ok(cached);
             }
+        }
         self.get(url).await
     }
 
@@ -91,27 +95,25 @@ impl Client {
     ///
     /// Returns an error for non-success (non-2xx) HTTP status codes.
     /// For 429 (rate limited), includes the Retry-After hint if present.
-    /// For Semantic Scholar: tries without API key first, cascades to API key on 429.
-    /// Retries with exponential backoff (1s, 2s, 4s, ..., capped at 30s).
+    /// Automatically adds `x-api-key` header for Semantic Scholar if `$S2_API_KEY` is set.
     /// Rejects responses larger than 50 MB.
     pub async fn get(&self, url: &str) -> Result<String, Box<dyn std::error::Error>> {
-        let max_attempts = 10;
-        let is_s2 = url.contains("semanticscholar.org");
-        let s2_key = if is_s2 { crate::config::Config::get().s2_api_key().map(String::from) } else { None };
-        let mut use_s2_key = false; // start without API key, cascade on 429
-        let mut s2_key_failed = false; // true if API key returned 403, don't retry it
+        let max_attempts = 60;
         for attempt in 0..max_attempts {
             let mut req = self.inner.get(url);
-            if is_s2 && use_s2_key
-                && let Some(ref key) = s2_key {
+            if url.contains("semanticscholar.org") {
+                if let Ok(key) = std::env::var("S2_API_KEY") {
                     req = req.header("x-api-key", key);
                 }
-            let backoff = Duration::from_secs((1u64 << attempt).min(30));
+            }
             let resp = match req.send().await {
                 Ok(r) => r,
                 Err(e) if e.is_timeout() || e.is_connect() => {
                     if attempt < max_attempts - 1 {
-                        tokio::time::sleep(backoff).await;
+                        eprintln!("note: {} (attempt {}/{}), retrying in 1s...",
+                            if e.is_timeout() { "timeout" } else { "connection error" },
+                            attempt + 1, max_attempts);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     }
                     return Err(e.into());
@@ -119,49 +121,40 @@ impl Client {
                 Err(e) => return Err(e.into()),
             };
             if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                // Cascade to API key on first 429 for S2
-                if is_s2 && !use_s2_key && s2_key.is_some() && !s2_key_failed {
-                    use_s2_key = true;
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
                 if attempt < max_attempts - 1 {
                     let wait = resp
                         .headers()
                         .get("retry-after")
                         .and_then(|v| v.to_str().ok())
                         .and_then(|v| v.parse::<u64>().ok())
-                        .map(|v| v.min(30))
-                        .unwrap_or(backoff.as_secs());
+                        .unwrap_or(1)
+                        .min(5); // cap wait at 5s per retry
+                    eprintln!("note: rate limited (attempt {}/{}), retrying in {}s...",
+                        attempt + 1, max_attempts, wait);
                     tokio::time::sleep(Duration::from_secs(wait)).await;
                     continue;
                 }
-                return Err(format!("HTTP 429 Too Many Requests for {} (retried {}x)", url, max_attempts).into());
-            }
-            // If S2 returns 403 with the API key, the key is likely expired/revoked.
-            // Fall back to unauthenticated requests with normal rate-limit retries.
-            if is_s2 && use_s2_key && resp.status() == reqwest::StatusCode::FORBIDDEN {
-                use_s2_key = false;
-                s2_key_failed = true;
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
+                return Err(format!("HTTP 429 Too Many Requests for {} (retried {}x over ~60s)", url, max_attempts).into());
             }
             if resp.status().is_server_error() && attempt < max_attempts - 1 {
-                tokio::time::sleep(backoff).await;
+                eprintln!("note: HTTP {} (attempt {}/{}), retrying in 1s...",
+                    resp.status(), attempt + 1, max_attempts);
+                tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
             if !resp.status().is_success() {
                 return Err(format!("HTTP {} for {}", resp.status(), url).into());
             }
             // Check Content-Length header if present
-            if let Some(len) = resp.content_length()
-                && len as usize > MAX_RESPONSE_BYTES {
+            if let Some(len) = resp.content_length() {
+                if len as usize > MAX_RESPONSE_BYTES {
                     return Err(format!(
                         "Response too large ({} bytes) for {}",
                         len, url
                     )
                     .into());
                 }
+            }
             let body = resp.text().await?;
             if body.len() > MAX_RESPONSE_BYTES {
                 return Err(format!(

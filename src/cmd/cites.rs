@@ -1,8 +1,8 @@
-//! `lit cites <paper_id>` -- Get papers citing a given paper via Semantic Scholar.
-//!
-//! Same as refs but uses the citations endpoint and `citingPaper` key.
-//! Prints first 20 citing papers in `{rank}. {title} ({year}) - {author}` format.
-//! With `--hops N`, performs BFS traversal up to N hops deep.
+/// `lit cites <paper_id>` -- Get papers citing a given paper via Semantic Scholar.
+///
+/// Same as refs but uses the citations endpoint and `citingPaper` key.
+/// Prints first 20 citing papers in `{rank}. {title} ({year}) - {author}` format.
+/// With `--hops N`, performs BFS traversal up to N hops deep.
 
 use super::Context;
 use crate::api::{semantic_scholar, PaperResult};
@@ -27,7 +27,6 @@ pub async fn run_data(
     .await
 }
 
-/// Fetch and print papers citing a given paper via Semantic Scholar.
 pub async fn run(
     ctx: &Context,
     paper_id: &str,

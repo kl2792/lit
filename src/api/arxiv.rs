@@ -140,8 +140,8 @@ pub fn parse_entry(xml: &str) -> Result<PaperResult, Box<dyn std::error::Error>>
     let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
 
     // Truncate abstract to 200 chars
-    let abstract_text = if summary.chars().count() > 200 {
-        let truncated: String = summary.chars().take(200).collect();
+    let abstract_text = if summary.len() > 200 {
+        let truncated = &summary[..summary.floor_char_boundary(200)];
         Some(format!("{}...", truncated.trim()))
     } else {
         Some(summary.trim().to_string())
@@ -206,7 +206,7 @@ fn is_atom_ns(e: &quick_xml::events::BytesStart<'_>, _reader: &Reader<&[u8]>) ->
     let full = name.as_ref();
     // If there's no colon, it's in the default namespace (Atom for arXiv responses).
     // If there is a colon, check for known Atom prefix patterns.
-    if full.contains(&b':') {
+    if full.iter().any(|&b| b == b':') {
         // Check if namespace resolves to Atom -- we look at the prefix.
         // In practice, arXiv uses default namespace for Atom, so this is rare.
         // As a fallback, check the element's namespace declarations.

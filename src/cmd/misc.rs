@@ -1,5 +1,5 @@
-//! `mcp__lit__misc` — Insert a `@misc` BibTeX entry from a blog post, forum post,
-//! or other unpublished work that has no arXiv ID or DOI.
+/// `mcp__lit__misc` — Insert a `@misc` BibTeX entry from a blog post, forum post,
+/// or other unpublished work that has no arXiv ID or DOI.
 
 use std::path::Path;
 

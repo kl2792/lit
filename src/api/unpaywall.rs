@@ -3,7 +3,8 @@ use serde_json::Value;
 
 /// Build URL for looking up open-access PDF by DOI.
 pub fn pdf_url(doi: &str) -> String {
-    let email = crate::config::Config::get().email();
+    let email = std::env::var("LIT_EMAIL")
+        .unwrap_or_else(|_| "lit-cli@users.noreply.github.com".to_string());
     format!(
         "https://api.unpaywall.org/v2/{}?email={}",
         doi, email

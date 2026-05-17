@@ -1,12 +1,12 @@
-//! `lit clean <bib_file>` -- Detect and optionally remove problematic .bib entries.
-//!
-//! Detects three problem categories:
-//! - **Malformed**: citekey contains `=`, `http`, or starts with a digit; OR has no title, author, or year.
-//! - **Duplicates**: two entries share the same `eprint` or `doi` field (keeps first occurrence).
-//! - **Orphans**: entries not cited in any .tex file (only when `--tex <dir>` is provided).
-//!
-//! By default runs in dry-run mode (report only). With `--apply`, rewrites the bib file
-//! removing malformed and duplicate entries (orphans are only pruned with `--prune`).
+/// `lit clean <bib_file>` -- Detect and optionally remove problematic .bib entries.
+///
+/// Detects three problem categories:
+/// - **Malformed**: citekey contains `=`, `http`, or starts with a digit; OR has no title, author, or year.
+/// - **Duplicates**: two entries share the same `eprint` or `doi` field (keeps first occurrence).
+/// - **Orphans**: entries not cited in any .tex file (only when `--tex <dir>` is provided).
+///
+/// By default runs in dry-run mode (report only). With `--apply`, rewrites the bib file
+/// removing malformed and duplicate entries (orphans are only pruned with `--prune`).
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -222,7 +222,7 @@ fn collect_citations_in_dir(
         let path = entry.path();
         if path.is_dir() {
             collect_citations_in_dir(&path, cited)?;
-        } else if path.extension().is_some_and(|e| e == "tex") {
+        } else if path.extension().map_or(false, |e| e == "tex") {
             let mut content = String::new();
             std::fs::File::open(&path)?.read_to_string(&mut content)?;
             extract_citekeys(&content, cited);

@@ -1,8 +1,8 @@
-//! `lit check [--fix]` -- Validate DB<->filesystem consistency.
-//!
-//! Two checks:
-//! 1. DB->FS: papers with non-null local_path must have the directory on disk.
-//! 2. FS->DB: paper storage dirs with source.yaml should have a corresponding paper in DB.
+/// `lit check [--fix]` -- Validate DB<->filesystem consistency.
+///
+/// Two checks:
+/// 1. DB->FS: papers with non-null local_path must have the directory on disk.
+/// 2. FS->DB: etc/pdf/*/ dirs with source.yaml should have a corresponding paper in DB.
 
 use std::path::{Path, PathBuf};
 
@@ -10,11 +10,26 @@ use super::Context;
 use crate::db::PaperRow;
 use crate::format;
 
-/// Resolve the paper storage directory.
-///
-/// Delegates to `crate::find_pdf_base()`.
-fn pdf_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    crate::find_pdf_base()
+/// Resolve the project root: grandparent of the current executable,
+/// or walk up from cwd looking for `etc/pdf/`.
+fn project_root() -> PathBuf {
+    // Walk up from cwd looking for a non-empty etc/pdf/ directory.
+    // This is more robust than exe-based resolution since the lit binary
+    // may live in a subdirectory (lit/bin/) of the actual project root.
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut dir = cwd.as_path();
+        loop {
+            let pdf_dir = dir.join("etc/pdf");
+            if pdf_dir.is_dir() && std::fs::read_dir(&pdf_dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
+                return dir.to_path_buf();
+            }
+            match dir.parent() {
+                Some(p) => dir = p,
+                None => break,
+            }
+        }
+    }
+    PathBuf::from(".")
 }
 
 /// Parse a source.yaml file into a PaperRow.
@@ -96,9 +111,9 @@ pub fn parse_source_yaml(content: &str, local_path: &str) -> PaperRow {
     }
 }
 
-/// Check DB-to-filesystem consistency and optionally fix issues.
 pub async fn run(ctx: &Context, fix: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let pdf_dir = pdf_base()?;
+    let root = project_root();
+    let pdf_dir = root.join("etc/pdf");
     let mut issues = 0;
 
     // --- Check 1: DB -> FS consistency ---
@@ -107,7 +122,7 @@ pub async fn run(ctx: &Context, fix: bool) -> Result<(), Box<dyn std::error::Err
         let full = if Path::new(path).is_absolute() {
             PathBuf::from(path)
         } else {
-            pdf_dir.join(Path::new(path).file_name().unwrap_or_default())
+            root.join(path)
         };
         if !full.is_dir() {
             issues += 1;
@@ -134,8 +149,12 @@ pub async fn run(ctx: &Context, fix: bool) -> Result<(), Box<dyn std::error::Err
                 continue;
             }
 
-            // Use absolute path as local_path
-            let rel_path = dir_path.to_string_lossy().to_string();
+            // Compute relative path for local_path
+            let rel_path = dir_path
+                .strip_prefix(&root)
+                .unwrap_or(&dir_path)
+                .to_string_lossy()
+                .to_string();
 
             let has_paper = ctx.db.has_paper_with_local_path(&rel_path)?;
             if !has_paper {
@@ -204,21 +223,166 @@ pub fn run_conflicts(ctx: &Context) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Fields extracted from a cached API response for conflict detection.
+struct ConflictFields {
+    title: Option<String>,
+    year: Option<String>,
+    authors: Vec<String>,
+}
+
+/// Extract title, year, and authors from a cached API response body.
+///
+/// Supports arXiv (XML), CrossRef, Semantic Scholar, and OpenAlex (JSON).
+fn extract_conflict_fields(source: &str, body: &str) -> Option<ConflictFields> {
+    let trimmed = body.trim_start();
+    if trimmed.starts_with('<') {
+        // XML (arXiv)
+        // Simple extraction: look for <title> and <published> tags.
+        let title = extract_xml_tag(body, "title");
+        let year = extract_xml_tag(body, "published")
+            .and_then(|d| {
+                d.get(..4)
+                    .filter(|y| y.chars().all(|c| c.is_ascii_digit()))
+                    .map(|y| y.to_string())
+            });
+        let authors = extract_xml_authors(body);
+        Some(ConflictFields { title, year, authors })
+    } else if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        // JSON — try to parse
+        let data: serde_json::Value = serde_json::from_str(body).ok()?;
+        extract_json_fields(source, &data)
+    } else {
+        None
+    }
+}
+
+fn extract_json_fields(source: &str, data: &serde_json::Value) -> Option<ConflictFields> {
+    // CrossRef: message.title[], message.author[], message.published
+    if let Some(msg) = data.get("message") {
+        let title = msg["title"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let year = msg["published"]["date-parts"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|a| a.as_array())
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_u64())
+            .map(|y| y.to_string());
+        let authors: Vec<String> = msg["author"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|a| {
+                        let family = a["family"].as_str().unwrap_or("");
+                        if family.is_empty() { None } else { Some(family.to_string()) }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Some(ConflictFields { title, year, authors });
+    }
+
+    // Semantic Scholar: paperId, title, year, authors[].name
+    if data.get("paperId").is_some() {
+        let title = data["title"].as_str().map(|s| s.to_string());
+        let year = data["year"].as_u64().map(|y| y.to_string());
+        let authors: Vec<String> = data["authors"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|a| a["name"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Some(ConflictFields { title, year, authors });
+    }
+
+    // OpenAlex: id starts with https://openalex.org, title, publication_year
+    if data.get("id").and_then(|v| v.as_str()).map_or(false, |s| s.contains("openalex.org")) {
+        let title = data["title"].as_str().map(|s| s.to_string());
+        let year = data["publication_year"].as_u64().map(|y| y.to_string());
+        let authors: Vec<String> = data["authorships"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|a| a["author"]["display_name"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Some(ConflictFields { title, year, authors });
+    }
+
+    // Generic fallback: try common field names
+    let _ = source;
+    let title = data["title"].as_str().map(|s| s.to_string());
+    let year = data["year"]
+        .as_u64()
+        .or_else(|| data["publication_year"].as_u64())
+        .map(|y| y.to_string());
+    if title.is_some() || year.is_some() {
+        Some(ConflictFields {
+            title,
+            year,
+            authors: Vec::new(),
+        })
+    } else {
+        None
+    }
+}
+
+/// Simple XML tag extraction (first occurrence).
+fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}", tag);
+    let close = format!("</{}>", tag);
+    let start = xml.find(&open)?;
+    let after_open = xml[start..].find('>')? + start + 1;
+    let end = xml[after_open..].find(&close)? + after_open;
+    Some(xml[after_open..end].trim().to_string())
+}
+
+/// Extract author names from arXiv XML (<author><name>...).
+fn extract_xml_authors(xml: &str) -> Vec<String> {
+    let mut authors = Vec::new();
+    let mut search_from = 0;
+    while let Some(start) = xml[search_from..].find("<name>") {
+        let abs_start = search_from + start + 6;
+        if let Some(end) = xml[abs_start..].find("</name>") {
+            authors.push(xml[abs_start..abs_start + end].trim().to_string());
+            search_from = abs_start + end + 7;
+        } else {
+            break;
+        }
+    }
+    authors
+}
+
+/// Case-insensitive title comparison, ignoring leading/trailing whitespace.
+fn titles_match(a: &str, b: &str) -> bool {
+    a.trim().eq_ignore_ascii_case(b.trim())
+}
+
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    if s.len() <= max {
         s.to_string()
     } else {
-        let truncated: String = s.chars().take(max).collect();
-        format!("{truncated}...")
+        format!("{}...", &s[..max])
     }
 }
 
 /// Rebuild the database from source.yaml files.
 ///
-/// Creates a new DB at `{db_path}.new`, scans the paper storage directory for
-/// `source.yaml` files, upserts each, then atomically replaces the old DB.
+/// Creates a new DB at `{db_path}.new`, scans `etc/pdf/**/source.yaml`,
+/// upserts each, then atomically replaces the old DB.
 pub fn rebuild(db_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let pdf_dir = pdf_base()?;
+    let root = project_root();
+    let pdf_dir = root.join("etc/pdf");
+
+    if !pdf_dir.is_dir() {
+        return Err(format!("etc/pdf/ not found at {}", pdf_dir.display()).into());
+    }
 
     let new_path = db_path.with_extension("db.new");
     let bak_path = db_path.with_extension("db.bak");
@@ -246,6 +410,8 @@ pub fn rebuild(db_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     for yaml_path in &yaml_files {
         let dir_path = yaml_path.parent().unwrap();
         let rel_path = dir_path
+            .strip_prefix(&root)
+            .unwrap_or(dir_path)
             .to_string_lossy()
             .to_string();
 
@@ -383,6 +549,71 @@ bibtex_key: lewis1973causation
             paper.url,
             Some("https://www.jstor.org/stable/2025310".to_string())
         );
+    }
+
+    #[test]
+    fn test_extract_conflict_fields_crossref() {
+        let body = r#"{
+            "message": {
+                "title": ["Causality"],
+                "author": [{"given": "Judea", "family": "Pearl"}],
+                "published": {"date-parts": [[2009]]}
+            }
+        }"#;
+        let f = extract_conflict_fields("crossref", body).unwrap();
+        assert_eq!(f.title.as_deref(), Some("Causality"));
+        assert_eq!(f.year.as_deref(), Some("2009"));
+        assert_eq!(f.authors, vec!["Pearl"]);
+    }
+
+    #[test]
+    fn test_extract_conflict_fields_s2() {
+        let body = r#"{
+            "paperId": "abc",
+            "title": "Test Paper",
+            "year": 2020,
+            "authors": [{"name": "Alice Smith"}]
+        }"#;
+        let f = extract_conflict_fields("s2", body).unwrap();
+        assert_eq!(f.title.as_deref(), Some("Test Paper"));
+        assert_eq!(f.year.as_deref(), Some("2020"));
+        assert_eq!(f.authors, vec!["Alice Smith"]);
+    }
+
+    #[test]
+    fn test_extract_conflict_fields_openalex() {
+        let body = r#"{
+            "id": "https://openalex.org/W123",
+            "title": "OA Paper",
+            "publication_year": 2021,
+            "authorships": [{"author": {"display_name": "Bob Jones"}}]
+        }"#;
+        let f = extract_conflict_fields("openalex", body).unwrap();
+        assert_eq!(f.title.as_deref(), Some("OA Paper"));
+        assert_eq!(f.year.as_deref(), Some("2021"));
+        assert_eq!(f.authors, vec!["Bob Jones"]);
+    }
+
+    #[test]
+    fn test_extract_conflict_fields_arxiv_xml() {
+        let body = r#"<?xml version="1.0"?>
+        <entry>
+            <title>My ArXiv Paper</title>
+            <published>2023-01-15</published>
+            <author><name>Carol White</name></author>
+            <author><name>Dan Black</name></author>
+        </entry>"#;
+        let f = extract_conflict_fields("arxiv", body).unwrap();
+        assert_eq!(f.title.as_deref(), Some("My ArXiv Paper"));
+        assert_eq!(f.year.as_deref(), Some("2023"));
+        assert_eq!(f.authors, vec!["Carol White", "Dan Black"]);
+    }
+
+    #[test]
+    fn test_titles_match_case_insensitive() {
+        assert!(titles_match("Causality", "causality"));
+        assert!(titles_match("  Foo  ", "Foo"));
+        assert!(!titles_match("Causality", "Probability"));
     }
 
     #[test]

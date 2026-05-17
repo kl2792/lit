@@ -2,14 +2,6 @@
 name = "lit"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
-description = "CLI tool for searching, downloading, and managing academic papers"
-license = "MIT"
-repository = "https://github.com/kl2792/lit"
-authors = ["Kai-Zhan Lee"]
-readme = "README.md"
-keywords = ["academic", "papers", "bibtex", "arxiv", "citations"]
-categories = ["command-line-utilities", "science"]
 
 [[bin]]
 name = "lit"
@@ -30,7 +22,6 @@ md-5 = "0.10"
 regex = "1"
 anyhow = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
-toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

@@ -26,6 +26,41 @@ pub struct Config {
     pub ttl_search: Option<u64>,
     pub ttl_lookup: Option<u64>,
     pub no_color: Option<bool>,
+    pub dump_enabled: Option<bool>,
+    pub dump_auto_download: Option<bool>,
+    pub dump_max_age_days: Option<u64>,
+    pub lit_source: Option<LitSource>,
+}
+
+/// Per-invocation source override for query commands.
+///
+/// Controls the order of dump vs. API lookups. See
+/// `etc/projects/meta/lit-s2-dump-spec.md` for the full routing table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LitSource {
+    /// Use the local dump even if stale.
+    Stale,
+    /// Require a fresh local dump; error if stale.
+    Fresh,
+    /// Force the S2 web API regardless of local state.
+    Web,
+    /// Use the routing table (default).
+    Auto,
+}
+
+impl LitSource {
+    /// Parse a source override from its string representation.
+    ///
+    /// Accepts `stale`, `fresh`, `web`, `auto` (case-insensitive).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "stale" => Some(LitSource::Stale),
+            "fresh" => Some(LitSource::Fresh),
+            "web" => Some(LitSource::Web),
+            "auto" => Some(LitSource::Auto),
+            _ => None,
+        }
+    }
 }
 
 /// Intermediate TOML representation.
@@ -35,6 +70,14 @@ struct ConfigFile {
     cache: Option<CacheSection>,
     api: Option<ApiSection>,
     extract: Option<ExtractSection>,
+    dump: Option<DumpSection>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct DumpSection {
+    enabled: Option<bool>,
+    auto_download: Option<bool>,
+    max_age_days: Option<u64>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -75,6 +118,9 @@ impl Config {
         // 2. User global
         if let Some(home) = home_dir() {
             cfg.merge_file(&home.join(".litconfig"));
+            // Per spec: ~/.lit/config.toml is the canonical location for the
+            // [dump] section. Treated as an additional user-global layer.
+            cfg.merge_file(&home.join(".lit").join("config.toml"));
         }
 
         // 3. Project-specific
@@ -167,6 +213,26 @@ impl Config {
         self.no_color.unwrap_or(false)
     }
 
+    /// Whether the S2 local dump backend is enabled. Default: true.
+    pub fn dump_enabled(&self) -> bool {
+        self.dump_enabled.unwrap_or(true)
+    }
+
+    /// Whether to auto-download the dump when missing or stale. Default: true.
+    pub fn dump_auto_download(&self) -> bool {
+        self.dump_auto_download.unwrap_or(true)
+    }
+
+    /// Stale threshold for the local dump (days). Default: 90.
+    pub fn dump_max_age_days(&self) -> u64 {
+        self.dump_max_age_days.unwrap_or(90)
+    }
+
+    /// Effective source override. Default: Auto.
+    pub fn lit_source(&self) -> LitSource {
+        self.lit_source.unwrap_or(LitSource::Auto)
+    }
+
     /// Merge values from a TOML file. Missing or invalid files are skipped.
     fn merge_file(&mut self, path: &Path) {
         let content = match std::fs::read_to_string(path) {
@@ -221,6 +287,17 @@ impl Config {
         {
             self.pdf_extractor.clone_from(&extract.pdf_extractor);
         }
+        if let Some(ref dump) = file.dump {
+            if dump.enabled.is_some() {
+                self.dump_enabled = dump.enabled;
+            }
+            if dump.auto_download.is_some() {
+                self.dump_auto_download = dump.auto_download;
+            }
+            if dump.max_age_days.is_some() {
+                self.dump_max_age_days = dump.max_age_days;
+            }
+        }
     }
 
     /// Apply environment variable overrides.
@@ -259,6 +336,18 @@ impl Config {
             && !v.is_empty()
         {
             self.no_color = Some(true);
+        }
+        if let Ok(v) = std::env::var("LIT_DUMP_ENABLED") {
+            match v.trim() {
+                "0" | "false" | "FALSE" | "no" | "NO" => self.dump_enabled = Some(false),
+                "1" | "true" | "TRUE" | "yes" | "YES" => self.dump_enabled = Some(true),
+                _ => {}
+            }
+        }
+        if let Ok(v) = std::env::var("LIT_SOURCE")
+            && let Some(src) = LitSource::parse(&v)
+        {
+            self.lit_source = Some(src);
         }
     }
 
@@ -468,6 +557,53 @@ timeout = 10
         let mut cfg = Config::default();
         cfg.merge_file(&path);
         assert!(cfg.db_path.is_none());
+    }
+
+    #[test]
+    fn dump_defaults() {
+        let cfg = Config::default();
+        assert_eq!(cfg.dump_enabled(), true);
+        assert_eq!(cfg.dump_auto_download(), true);
+        assert_eq!(cfg.dump_max_age_days(), 90);
+        assert_eq!(cfg.lit_source(), LitSource::Auto);
+    }
+
+    #[test]
+    fn parse_dump_toml() {
+        let toml = r#"
+[dump]
+enabled = false
+auto_download = false
+max_age_days = 30
+"#;
+        let cfg = Config::from_toml(toml);
+        assert_eq!(cfg.dump_enabled.unwrap(), false);
+        assert_eq!(cfg.dump_auto_download.unwrap(), false);
+        assert_eq!(cfg.dump_max_age_days.unwrap(), 30);
+        assert_eq!(cfg.dump_enabled(), false);
+        assert_eq!(cfg.dump_max_age_days(), 30);
+    }
+
+    #[test]
+    fn env_overrides_dump() {
+        let mut cfg = Config::default();
+        // SAFETY: test-only, single-threaded.
+        unsafe { std::env::set_var("LIT_DUMP_ENABLED", "0"); }
+        unsafe { std::env::set_var("LIT_SOURCE", "web"); }
+        cfg.apply_env();
+        assert_eq!(cfg.dump_enabled(), false);
+        assert_eq!(cfg.lit_source(), LitSource::Web);
+        unsafe { std::env::remove_var("LIT_DUMP_ENABLED"); }
+        unsafe { std::env::remove_var("LIT_SOURCE"); }
+    }
+
+    #[test]
+    fn lit_source_parse() {
+        assert_eq!(LitSource::parse("stale"), Some(LitSource::Stale));
+        assert_eq!(LitSource::parse("FRESH"), Some(LitSource::Fresh));
+        assert_eq!(LitSource::parse("Web"), Some(LitSource::Web));
+        assert_eq!(LitSource::parse("auto"), Some(LitSource::Auto));
+        assert_eq!(LitSource::parse("bogus"), None);
     }
 
     #[test]
