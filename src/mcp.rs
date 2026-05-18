@@ -20,13 +20,13 @@ pub fn tool_definitions() -> Value {
     json!([
         {
             "name": "search",
-            "description": "Search for academic papers. Searches local database by default. Use remote=true to search APIs.",
+            "description": "Search for academic papers. Searches remote APIs by default. Use local=true to search only downloaded papers.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
                     "limit": {"type": "integer", "description": "Max results (default 10)"},
-                    "remote": {"type": "boolean", "description": "Search remote APIs instead of local DB"},
+                    "local": {"type": "boolean", "description": "Search local DB only (downloaded papers)"},
                     "brief": {"type": "boolean", "description": "Return compact results (default true)"}
                 },
                 "required": ["query"]
@@ -311,10 +311,10 @@ pub fn papers_to_json_string(papers: &[crate::PaperResult], brief: bool) -> Resu
 pub async fn handle_search(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
     let query = args["query"].as_str().ok_or("missing 'query'")?;
     let limit = args["limit"].as_u64().unwrap_or(10) as usize;
-    let remote = args["remote"].as_bool().unwrap_or(false);
+    let local = args["local"].as_bool().unwrap_or(false);
     let brief = args["brief"].as_bool().unwrap_or(true);
 
-    if remote {
+    if !local {
         let results = cmd::search::run_data(ctx, query, limit, None)
             .await
             .map_err(|e| e.to_string())?;

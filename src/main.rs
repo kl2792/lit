@@ -56,18 +56,18 @@ enum SearchSource {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Search papers (local DB by default, --remote for API search)
+    /// Search papers (remote APIs by default, --local for downloaded-only search)
     Search {
         query: Vec<String>,
         /// Maximum number of results
         #[arg(short, long, default_value = "10")]
         limit: usize,
-        /// Search source (implies --remote)
+        /// Search source (remote)
         #[arg(short, long)]
         source: Option<SearchSource>,
-        /// Search remote APIs instead of local database
+        /// Search local DB only (only papers you have downloaded)
         #[arg(long)]
-        remote: bool,
+        local: bool,
     },
     /// Get references of a paper
     Refs {
@@ -273,10 +273,10 @@ async fn main() {
             query,
             limit,
             source,
-            remote,
+            local,
         }) => {
             let q = query.join(" ");
-            let use_remote = remote || source.is_some();
+            let use_remote = !local || source.is_some();
             if use_remote {
                 let src = source.map(|s| match s {
                     SearchSource::Oa => cmd::search::Source::Oa,
