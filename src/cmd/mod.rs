@@ -69,6 +69,10 @@ pub async fn auto_dispatch(ctx: &Context, input: &str, open: bool) -> Result<(),
         InputType::DblpUrl => lookup_dblp_url(ctx, input).await,
         InputType::SemanticScholarUrl => open::run(ctx, input),
         InputType::PhilPapersUrl => lookup_philpapers_url(ctx, input).await,
+        InputType::OpenLibraryUrl => {
+            // OL URL: open it in the browser (lookup not supported)
+            open::run(ctx, input)
+        }
         InputType::Url => {
             let lr = lookup_url_data(ctx, input).await?;
             display_paper(ctx, &lr.paper, lr.bibtex.as_deref());
@@ -476,6 +480,9 @@ pub async fn lookup_data(ctx: &Context, input: &str) -> Result<LookupResult, Box
             Err("Semantic Scholar URLs are not supported for lookup_data; use open instead".into())
         }
         InputType::PhilPapersUrl => lookup_philpapers_url_data(ctx, input).await,
+        InputType::OpenLibraryUrl => {
+            Err("Open Library URLs are not supported for lookup_data; use lit add instead".into())
+        }
         InputType::Url => lookup_url_data(ctx, input).await,
         InputType::Search => {
             Err("Search queries are not supported for lookup_data; use search instead".into())

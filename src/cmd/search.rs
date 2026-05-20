@@ -166,7 +166,11 @@ async fn fetch_cascade(
         }
 
         // Check if the top result is relevant enough to stop
-        let top_score = relevance_score(&results[0], &query_tokens);
+        let top_score = if is_book_review(&results[0].title) {
+            0.0  // Book review false-positive: keep cascading
+        } else {
+            relevance_score(&results[0], &query_tokens)
+        };
         if top_score >= RELEVANCE_THRESHOLD {
             if ctx.verbose {
                 format::info(&format!(
@@ -366,6 +370,12 @@ fn print_results(ctx: &Context, results: &[PaperResult]) {
 }
 
 /// Print a diagnostic message to stderr when an API source fails in the cascade.
+/// Returns true if the title looks like a book review that should not stop the cascade.
+fn is_book_review(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    lower.contains("book review") || lower.starts_with("review of ") || lower.contains("reviews:")
+}
+
 fn print_cascade_error(ctx: &Context, source: &str, error: &dyn std::fmt::Display) {
     if ctx.verbose {
         eprintln!("note: {} unavailable: {}", source, error);
@@ -441,6 +451,16 @@ mod tests {
         };
         let results = rerank(vec![bad, good], "PPO proximal policy optimization schulman");
         assert_eq!(results[0].title, "Proximal Policy Optimization Algorithms");
+    }
+
+    #[test]
+    fn is_book_review_matches_patterns() {
+        assert!(is_book_review("Book Reviews: Statistics for Psychologists by William L. Hays"));
+        assert!(is_book_review("book review of something"));
+        assert!(is_book_review("Reviews: Analysis of Variance"));
+        assert!(is_book_review("review of statistical methods"));
+        assert!(!is_book_review("Statistical methods for research workers"));
+        assert!(!is_book_review("Reviewing the evidence for X"));
     }
 
     #[test]

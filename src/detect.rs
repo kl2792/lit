@@ -18,6 +18,8 @@ static SS_URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://www\.semanticscholar\.org/").unwrap());
 static PHILPAPERS_URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://philpapers\.org/rec/").unwrap());
+static OL_URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^https?://openlibrary\.org/(works|books)/").unwrap());
 static ARXIV_NEW_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(arXiv:|arxiv:)?[0-9]{4}\.[0-9]{4,5}(v[0-9]+)?$").unwrap());
 static ARXIV_OLD_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -38,6 +40,7 @@ pub enum InputType {
     DblpUrl,
     SemanticScholarUrl,
     PhilPapersUrl,
+    OpenLibraryUrl,
     Url,
     Search,
 }
@@ -72,6 +75,10 @@ pub fn detect_type(input: &str) -> InputType {
 
     if PHILPAPERS_URL_RE.is_match(input) {
         return InputType::PhilPapersUrl;
+    }
+
+    if OL_URL_RE.is_match(input) {
+        return InputType::OpenLibraryUrl;
     }
 
     // Any remaining https/http URL not matched above
@@ -330,6 +337,38 @@ mod tests {
         assert_eq!(
             detect_type("http://philpapers.org/rec/PEACAO"),
             InputType::PhilPapersUrl
+        );
+    }
+
+    #[test]
+    fn detect_openlibrary_works_url() {
+        assert_eq!(
+            detect_type("https://openlibrary.org/works/OL1153861W"),
+            InputType::OpenLibraryUrl
+        );
+    }
+
+    #[test]
+    fn detect_openlibrary_books_url() {
+        assert_eq!(
+            detect_type("https://openlibrary.org/books/OL13955598M"),
+            InputType::OpenLibraryUrl
+        );
+    }
+
+    #[test]
+    fn detect_openlibrary_works_json_suffix() {
+        assert_eq!(
+            detect_type("https://openlibrary.org/works/OL1153861W.json"),
+            InputType::OpenLibraryUrl
+        );
+    }
+
+    #[test]
+    fn detect_openlibrary_http() {
+        assert_eq!(
+            detect_type("http://openlibrary.org/books/OL13955598M"),
+            InputType::OpenLibraryUrl
         );
     }
 

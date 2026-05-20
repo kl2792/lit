@@ -25,7 +25,7 @@ pub fn run(_ctx: &Context, input: &str) -> Result<(), Box<dyn std::error::Error>
             let doi = normalize_doi(input);
             format!("https://doi.org/{}", doi)
         }
-        InputType::DblpUrl | InputType::SemanticScholarUrl | InputType::PhilPapersUrl | InputType::Url => input.to_string(),
+        InputType::DblpUrl | InputType::SemanticScholarUrl | InputType::PhilPapersUrl | InputType::OpenLibraryUrl | InputType::Url => input.to_string(),
         InputType::Isbn => {
             let stripped = normalize_isbn(input);
             format!("https://openlibrary.org/isbn/{}", stripped)

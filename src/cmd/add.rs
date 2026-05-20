@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use super::Context;
 use crate::api::crossref;
+use crate::api::openlibrary;
 use crate::api::semantic_scholar as s2_api;
 use crate::bibtex;
 use crate::db;
@@ -87,6 +88,9 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path) -> Result<Add
             let bib = client.get(&url).await?;
             normalize_bibtex_key_from_content(&bib)
         }
+        InputType::OpenLibraryUrl => {
+            fetch_ol_bibtex(ctx, input).await?
+        }
         InputType::Url => {
             let title = fetch_title_from_url(input).await?;
             eprintln!("Extracted title: {}", &title[..title.len().min(80)]);
@@ -144,6 +148,88 @@ pub async fn run(ctx: &Context, input: &str, bib_file: &Path) -> Result<(), Box<
     println!("Added {} to {}", result.entry_key, bib_file.display());
     println!("{}", result.bib_text);
     Ok(())
+}
+
+/// Normalize an OL author name to "First Last" display order for citekey generation.
+///
+/// OL sometimes returns `name` in "Last, First" format (e.g. "Ezekiel, Mordecai").
+/// Converting to "First Last" ensures `extract_last_name` picks the surname correctly.
+fn normalize_ol_author(name: &str) -> String {
+    if let Some(comma_pos) = name.find(',') {
+        let last = name[..comma_pos].trim();
+        let rest = name[comma_pos + 1..].trim();
+        if rest.is_empty() {
+            last.to_string()
+        } else {
+            format!("{} {}", rest, last)
+        }
+    } else {
+        name.to_string()
+    }
+}
+
+/// Fetch an Open Library works or books URL and return BibTeX for the book.
+async fn fetch_ol_bibtex(ctx: &Context, url: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let parts = openlibrary::parse_ol_url(url)
+        .ok_or_else(|| format!("Could not parse Open Library URL: {}", url))?;
+    let client = ctx.client();
+
+    let (title, publisher, year, author_keys) = match parts.kind {
+        openlibrary::OlKind::Books => {
+            let edition_url = openlibrary::edition_url(&parts.id);
+            let body = client.get(&edition_url).await?;
+            let ed = openlibrary::parse_edition(&body)?;
+            (ed.title, ed.publisher, ed.year, ed.author_keys)
+        }
+        openlibrary::OlKind::Works => {
+            let work_url = openlibrary::work_url(&parts.id);
+            let editions_url = openlibrary::work_editions_url(&parts.id);
+            let (work_body, editions_body) = tokio::join!(
+                client.get(&work_url),
+                client.get(&editions_url),
+            );
+            let work = openlibrary::parse_work(&work_body?)?;
+            let editions = openlibrary::parse_editions_list(&editions_body?)?;
+            let earliest = editions
+                .into_iter()
+                .find(|e| e.year != "?")
+                .unwrap_or(openlibrary::EditionResult {
+                    title: work.title.clone(),
+                    publisher: None,
+                    year: "?".to_string(),
+                    author_keys: work.author_keys.clone(),
+                });
+            let author_keys = if !earliest.author_keys.is_empty() {
+                earliest.author_keys
+            } else {
+                work.author_keys
+            };
+            (work.title, earliest.publisher, earliest.year, author_keys)
+        }
+    };
+
+    // Fetch the first author's name
+    let author_name = if let Some(key) = author_keys.first() {
+        let author_url = openlibrary::author_url(key);
+        match client.get(&author_url).await {
+            Ok(body) => {
+                let raw = openlibrary::parse_author(&body).unwrap_or_else(|_| "Unknown".to_string());
+                normalize_ol_author(&raw)
+            }
+            Err(_) => "Unknown".to_string(),
+        }
+    } else {
+        "Unknown".to_string()
+    };
+
+    let result = crate::api::PaperResult {
+        title,
+        authors: vec![author_name],
+        year,
+        venue: publisher,
+        ..Default::default()
+    };
+    Ok(generate_book_bibtex(&result))
 }
 
 /// Download a PDF from a URL and extract its title using `pdftotext`.
