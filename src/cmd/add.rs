@@ -29,7 +29,7 @@ pub struct AddResult {
 }
 
 /// Fetch BibTeX for a paper, append to a .bib file, and return structured result.
-pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path) -> Result<AddResult, Box<dyn std::error::Error>> {
+pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>) -> Result<AddResult, Box<dyn std::error::Error>> {
     let input_type = detect_type(input);
     let client = ctx.client();
 
@@ -111,6 +111,12 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path) -> Result<Add
         return Err("Failed to fetch BibTeX".into());
     }
 
+    let bib_text = if let Some(k) = key {
+        replace_bib_key(&bib_text, k)
+    } else {
+        bib_text
+    };
+
     bibtex::upsert_to_file(bib_file, &bib_text)?;
 
     // Opportunistic index
@@ -143,8 +149,8 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path) -> Result<Add
     Ok(AddResult { entry_key, bib_text })
 }
 
-pub async fn run(ctx: &Context, input: &str, bib_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let result = run_data(ctx, input, bib_file).await?;
+pub async fn run(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let result = run_data(ctx, input, bib_file, key).await?;
     println!("Added {} to {}", result.entry_key, bib_file.display());
     println!("{}", result.bib_text);
     Ok(())

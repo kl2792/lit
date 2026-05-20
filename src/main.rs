@@ -113,7 +113,13 @@ enum Commands {
         dir: Option<PathBuf>,
     },
     /// Fetch BibTeX and append to .bib file
-    Add { input: String, bib_file: PathBuf },
+    Add {
+        input: String,
+        bib_file: PathBuf,
+        /// Override the auto-generated citekey
+        #[arg(long)]
+        key: Option<String>,
+    },
     /// Verify all entries in a .bib file
     Verify {
         bib_file: PathBuf,
@@ -313,7 +319,7 @@ async fn main() {
             url_only,
             dir,
         }) => cmd::download::run(&ctx, &id, source, url_only, dir.as_deref()).await,
-        Some(Commands::Add { input, bib_file }) => cmd::add::run(&ctx, &input, &bib_file).await,
+        Some(Commands::Add { input, bib_file, key }) => cmd::add::run(&ctx, &input, &bib_file, key.as_deref()).await,
         Some(Commands::Verify { bib_file, jobs }) => cmd::verify::run(&ctx, &bib_file, jobs).await,
         Some(Commands::Clean { bib_file, apply, prune, tex_dirs }) => {
             let tex_refs: Vec<&std::path::Path> = tex_dirs.iter().map(|p| p.as_path()).collect();

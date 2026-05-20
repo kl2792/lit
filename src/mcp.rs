@@ -531,7 +531,7 @@ pub async fn handle_add(ctx: &cmd::Context, args: &Value) -> Result<String, Stri
     let input = args["input"].as_str().ok_or("missing 'input'")?;
     let bib_raw = args["bib_file"].as_str().ok_or("missing 'bib_file'")?;
     let bib_path = validate_bib_file(bib_raw)?;
-    let result = cmd::add::run_data(ctx, input, &bib_path)
+    let result = cmd::add::run_data(ctx, input, &bib_path, None)
         .await
         .map_err(|e| e.to_string())?;
     let json = json!({
