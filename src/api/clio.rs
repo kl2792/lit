@@ -38,7 +38,7 @@ pub fn default_clio_db_path() -> PathBuf {
         .join("etc/lit/clio.db")
 }
 
-/// Initialize the clio.db schema (idempotent).
+/// Initialize the clio.db schema (idempotent — safe to call on an existing DB).
 pub fn init_clio_db(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS clio_fts USING fts5(
@@ -46,6 +46,12 @@ pub fn init_clio_db(conn: &Connection) -> Result<(), Box<dyn std::error::Error>>
         );
         CREATE TABLE IF NOT EXISTS clio_meta (key TEXT PRIMARY KEY, value TEXT);",
     )?;
+    Ok(())
+}
+
+/// Clear the FTS index before a full re-sync (makes sync idempotent).
+pub fn clear_clio_db(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute_batch("DELETE FROM clio_fts;")?;
     Ok(())
 }
 

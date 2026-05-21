@@ -8,6 +8,12 @@ use std::path::Path;
 
 use crate::api::clio as clio_api;
 
+/// Number of files to download+parse concurrently.
+/// lito.cul.columbia.edu tolerates ~3 concurrent connections.
+const PARALLEL: usize = 3;
+/// Retries per file on network error.
+const RETRIES: usize = 3;
+
 /// Report EZProxy cookie status from a Netscape-format cookies file.
 ///
 /// Counts valid cookies, finds expiry range. If the file does not exist, prints
@@ -59,12 +65,18 @@ pub fn run_auth(
 ///
 /// The base URL serves an index page listing `extract-NNN.xml.gz` files.
 /// Each file is downloaded, parsed, and inserted into the local FTS5 index.
+/// Completed files are recorded in clio_meta so interrupted syncs can resume.
+///
+/// Guards against accidental double-runs: if a full sync completed within the last
+/// 30 days, prints a message and exits unless `--force` is passed.
 pub async fn run_sync(
     clio_db_path: &Path,
     check_only: bool,
+    force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     const BASE_URL: &str =
         "https://lito.cul.columbia.edu/extracts/ColumbiaLibraryCatalog/full/";
+    const SYNC_INTERVAL_DAYS: u64 = 30;
 
     if check_only {
         if !clio_db_path.exists() {
@@ -83,14 +95,18 @@ pub async fn run_sync(
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM clio_fts", [], |row| row.get(0))
             .unwrap_or(0);
-        println!(
-            "Clio index: {} records",
-            count
-        );
-        if let Some(ref date) = last_sync {
-            println!("Last sync: {}", date);
-        } else {
-            println!("Last sync: never");
+        let files_done: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM clio_meta WHERE key LIKE 'file:%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        println!("Clio index: {} records ({} files indexed)", count, files_done);
+        match last_sync {
+            Some(ref date) => println!("Last sync: {}", date),
+            None if files_done > 0 => println!("Last sync: in progress ({} files done)", files_done),
+            None => println!("Last sync: never"),
         }
         return Ok(());
     }
@@ -102,10 +118,37 @@ pub async fn run_sync(
     let conn = rusqlite::Connection::open(clio_db_path)?;
     clio_api::init_clio_db(&conn)?;
 
+    // Guard: skip if synced within the last 30 days (unless --force)
+    if !force {
+        let last_sync: Option<String> = conn
+            .query_row(
+                "SELECT value FROM clio_meta WHERE key='last_sync'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+        if let Some(ref date) = last_sync {
+            println!("Already synced on {}. Columbia updates monthly.", date);
+            println!("Run `lit clio sync --force` to re-sync.");
+            return Ok(());
+        }
+    }
+
+    // --force: clear existing data and per-file progress
+    if force {
+        conn.execute_batch(
+            "DELETE FROM clio_fts;
+             DELETE FROM clio_meta WHERE key LIKE 'file:%';
+             DELETE FROM clio_meta WHERE key='last_sync';",
+        )?;
+        println!("Cleared existing index.");
+    }
+
     // Fetch index page to discover extract filenames
     let client = reqwest::Client::builder()
         .user_agent("lit/1.0")
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(120))
         .build()?;
 
     println!("Fetching file index from {}", BASE_URL);
@@ -118,43 +161,101 @@ pub async fn run_sync(
 
     println!("Found {} extract files", filenames.len());
 
-    let mut total_records: i64 = 0;
+    // Count already-done files (for resume after interruption)
+    let already_done: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT SUBSTR(key, 6) FROM clio_meta WHERE key LIKE 'file:%'"
+        )?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect()
+    };
 
-    for (i, filename) in filenames.iter().enumerate() {
-        let url = format!("{}{}", BASE_URL, filename);
-        eprint!("[{}/{}] Downloading {}...", i + 1, filenames.len(), filename);
-
-        let bytes = match client.get(&url).send().await {
-            Ok(resp) => resp.bytes().await?,
-            Err(e) => {
-                eprintln!(" ERROR: {}", e);
-                continue;
-            }
-        };
-
-        let records = match clio_api::parse_marcxml_gz(&bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!(" parse error: {}", e);
-                continue;
-            }
-        };
-
-        let n = records.len();
-        // Insert in a transaction per file for performance
-        conn.execute("BEGIN", [])?;
-        if let Err(e) = clio_api::insert_batch(&conn, &records) {
-            eprintln!(" insert error: {}", e);
-            conn.execute("ROLLBACK", [])?;
-            continue;
-        }
-        conn.execute("COMMIT", [])?;
-
-        total_records += n as i64;
-        eprintln!(" {} records", n);
+    if !already_done.is_empty() {
+        println!("Resuming: {} files already done, skipping.", already_done.len());
     }
 
-    // Record sync metadata
+    let mut total_records: i64 = conn
+        .query_row("SELECT COUNT(*) FROM clio_fts", [], |row| row.get(0))
+        .unwrap_or(0);
+
+    let todo: Vec<(usize, String)> = filenames
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !already_done.contains(*f))
+        .map(|(i, f)| (i, f.clone()))
+        .collect();
+
+    let total = filenames.len();
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(PARALLEL));
+    let (tx, mut rx) =
+        tokio::sync::mpsc::channel::<(usize, String, Result<Vec<clio_api::ClioRecord>, String>)>(
+            PARALLEL * 2,
+        );
+
+    // Spawn all download+parse tasks, bounded by semaphore
+    for (i, filename) in todo {
+        let sem = sem.clone();
+        let tx = tx.clone();
+        let url = format!("{}{}", BASE_URL, filename);
+        let client = client.clone();
+
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let mut last_err = String::new();
+            let mut result = Err(String::new());
+            for attempt in 0..RETRIES {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt as u32))).await;
+                }
+                match client.get(&url).send().await {
+                    Err(e) => { last_err = e.to_string(); continue; }
+                    Ok(resp) => match resp.bytes().await {
+                        Err(e) => { last_err = e.to_string(); continue; }
+                        Ok(bytes) => {
+                            result = tokio::task::spawn_blocking(move || {
+                                clio_api::parse_marcxml_gz(&bytes).map_err(|e| e.to_string())
+                            })
+                            .await
+                            .map_err(|e| e.to_string())
+                            .and_then(|r| r);
+                            if result.is_ok() { break; }
+                            if let Err(ref e) = result { last_err = e.clone(); }
+                        }
+                    }
+                }
+            }
+            let result = if result.is_err() { Err(last_err) } else { result };
+            let _ = tx.send((i, filename, result)).await;
+        });
+    }
+    drop(tx); // close sender so receiver terminates when all tasks finish
+
+    // Insert results as they arrive (sequential writes to SQLite)
+    while let Some((i, filename, result)) = rx.recv().await {
+        match result {
+            Ok(records) => {
+                let n = records.len();
+                eprint!("[{}/{}] {}... ", i + 1, total, filename);
+                conn.execute("BEGIN", [])?;
+                if let Err(e) = clio_api::insert_batch(&conn, &records) {
+                    eprintln!("insert error: {}", e);
+                    conn.execute("ROLLBACK", [])?;
+                    continue;
+                }
+                conn.execute(
+                    "INSERT OR REPLACE INTO clio_meta VALUES (?1, ?2)",
+                    rusqlite::params![format!("file:{}", filename), n.to_string()],
+                )?;
+                conn.execute("COMMIT", [])?;
+                total_records += n as i64;
+                eprintln!("{} records (total: {})", n, total_records);
+            }
+            Err(e) => eprintln!("[{}/{}] {} ERROR: {}", i + 1, total, filename, e),
+        }
+    }
+
+    // Mark full sync complete
     let today = today_string();
     conn.execute(
         "INSERT OR REPLACE INTO clio_meta VALUES ('last_sync', ?1)",
@@ -163,6 +264,7 @@ pub async fn run_sync(
 
     println!("Sync complete: {} total records indexed", total_records);
     println!("Last sync: {}", today);
+    let _ = SYNC_INTERVAL_DAYS;
 
     Ok(())
 }

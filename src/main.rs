@@ -222,6 +222,9 @@ enum ClioAction {
         /// Only report index status, don't download
         #[arg(long)]
         check: bool,
+        /// Re-sync even if already synced this month (clears existing index)
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -389,8 +392,8 @@ async fn main() {
                 ClioAction::Auth => {
                     cmd::clio::run_auth(&clio_db, &cookie_path).map_err(|e| e.into())
                 }
-                ClioAction::Sync { check } => {
-                    cmd::clio::run_sync(&clio_db, check).await
+                ClioAction::Sync { check, force } => {
+                    cmd::clio::run_sync(&clio_db, check, force).await
                 }
             }
         }
