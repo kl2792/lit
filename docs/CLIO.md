@@ -1,95 +1,97 @@
 # lit — Clio / EZProxy integration
 
-This document covers the design for institutional PDF access and catalog search
-via Columbia's Clio library catalog (EZProxy + MARCXML bulk data).
+Columbia-specific integration for institutional PDF access (EZProxy) and local
+catalog search (MARCXML bulk index). Both features are optional and degrade
+gracefully when not configured.
 
 ---
 
-## Motivation
+## Overview
 
-`lit download` currently uses Unpaywall to find open-access PDFs.
-For paywalled articles, it returns nothing.
-Columbia students have institutional access to most of these articles through
-EZProxy, which rewrites publisher URLs to proxy authenticated requests.
-
-`lit search --remote` currently defaults to OpenAlex, which has poor coverage
-of older statistics and social-science journals, books, and book chapters —
-the material most commonly needed in this workspace.
-
-This integration adds two things:
-- EZProxy as a download backend (paywalled PDFs via auth cookies).
-- A local Clio catalog index for search (full Columbia holdings, offline-capable).
+| Feature | Command | Requires |
+|---|---|---|
+| Catalog search | `lit search` (automatic) | `lit clio sync` run once |
+| Download via EZProxy | `lit download <doi>` | Active EZProxy session |
+| Cookie status | `lit clio auth` | — |
+| Build/refresh catalog | `lit clio sync` | Network, ~6 GB disk |
 
 ---
 
 ## Part 1: EZProxy download
 
-### Auth model
+### What EZProxy does
 
-EZProxy issues a session cookie after a Columbia CAS login.
-This cookie is valid for a single browser session (~8 hours).
+Columbia's EZProxy rewrites publisher URLs so authenticated Columbia users can
+access paywalled content. A session cookie at `ezproxy.cul.columbia.edu` is
+issued after Columbia CAS login and is valid for ~8 hours.
 
-**Storage:** `.cache/lit/clio/cookies.txt` (Netscape cookie file format).
-**Scope:** only `ezproxy.cul.columbia.edu` cookies — not the full browser jar.
-**Populated by:** `python3 bin/clio-auth.py` (requires macOS Keychain access to
-decrypt Chrome's cookie store; must run once from a real terminal, or from Claude
-Code when Keychain access is approved).
+### Setting up
 
-The cache file is gitignored. It is never transmitted anywhere — it is only
-read by `curl` invocations on the local machine.
+1. In Chrome, navigate to any Clio "Full Text" link to establish an EZProxy
+   session (CAS login happens automatically if you're signed in).
+2. From the project root:
+   ```bash
+   python3 bin/clio-auth.py
+   ```
+   This exports the EZProxy session cookie to `.cache/lit/clio/cookies.txt`
+   in Netscape cookie file format. The file is gitignored.
 
-### URL rewriting
+3. Check status:
+   ```bash
+   lit clio auth
+   # → EZProxy session: 12 cookie(s) found
+   # → Expiry: 2026-05-21 – 2026-05-22
+   ```
 
-EZProxy authenticates by rewriting publisher domains:
+When `.cache/lit/clio/cookies.txt` is present, `lit download <doi>` prints the
+EZProxy URL alongside any open-access URL from Unpaywall:
 
-```
-https://onlinelibrary.wiley.com/doi/pdfdirect/10.1002/jae.788
-→ https://onlinelibrary-wiley-com.ezproxy.cul.columbia.edu/doi/pdfdirect/10.1002/jae.788
-```
-
-Rule: replace dots in the hostname with hyphens, append `.ezproxy.cul.columbia.edu`.
-
-For DOI-based access, routing through `doi-org.ezproxy.cul.columbia.edu/<doi>`
-lets EZProxy follow the DOI redirect and serve the landing page authenticated,
-from which `lit download` can extract the PDF link.
-
-### `lit download` priority order
-
-When `.cache/lit/clio/cookies.txt` exists:
-
-1. **EZProxy direct** — rewrite the paper's URL through EZProxy, curl with
-   the session cookie, check for `%PDF` magic bytes.
-2. **EZProxy via DOI** — if the paper has a DOI, try
-   `https://doi-org.ezproxy.cul.columbia.edu/<doi>`.
-3. **Unpaywall** — original fallback for genuinely open-access papers.
-
-When the cache file is absent, skip steps 1–2 and go straight to Unpaywall
-(existing behavior, no regression for users without institutional access).
-
-### New command: `lit clio-auth`
-
-```
-lit clio-auth            # check cache status + expiry
-lit clio-auth --refresh  # print instructions to refresh
+```bash
+lit download 10.1080/00031305.2016.1200489
+# Title: Statistics and Causal Inference
+# PDF: https://arxiv.org/pdf/...          ← open access (if found)
+# EZProxy: https://doi-org.ezproxy.cul.columbia.edu/10.1080/...
 ```
 
-Reports whether `.cache/lit/clio/cookies.txt` exists, cookie count, and
-estimated expiry. Cannot refresh headlessly — just tells you when to re-run
-`bin/clio-auth.py`.
+For bulk downloads of a paper set, use `bin/download-cev-pdfs.py` which calls
+`curl -b cookies.txt` against the EZProxy URL for each entry in `cev/refs.bib`.
+
+### URL rewriting rule
+
+Publisher domain → EZProxy subdomain:
+
+```
+https://onlinelibrary.wiley.com/...
+→ https://onlinelibrary-wiley-com.ezproxy.cul.columbia.edu/...
+```
+
+Rule: replace dots in the hostname with hyphens, append
+`.ezproxy.cul.columbia.edu`. For DOI-based access, route through
+`https://doi-org.ezproxy.cul.columbia.edu/<doi>`.
+
+### Cookie file location
+
+`lit download` and `bin/download-cev-pdfs.py` both look for cookies by walking
+up from `cwd` until they find `.cache/lit/clio/cookies.txt`. Running from
+anywhere inside the project tree works.
+
+### Expiry and refresh
+
+Sessions last ~8 hours. When expired, re-run `python3 bin/clio-auth.py` from
+the project root (requires Chrome with an active Clio session).
+
+`bin/clio-auth.py` uses the `browser-cookie3` library and the macOS Keychain
+to decrypt Chrome's cookie store. Install once:
+
+```bash
+pip install browser-cookie3
+```
 
 ---
 
-## Part 2: Clio catalog search
+## Part 2: Catalog search
 
-### Why not OpenAlex by default
-
-OpenAlex is well-suited for recent CS/ML papers with arXiv IDs.
-For older statistics and social-science journals, pre-1990 methodology papers,
-books, and book chapters, coverage is poor. Clio indexes all of these.
-Pairing Clio search with EZProxy download closes the loop: search results
-point directly to downloadable content.
-
-### Data source: MARCXML bulk export
+### Data source
 
 Columbia publishes its full catalog as MARCXML under CC0:
 
@@ -97,112 +99,106 @@ Columbia publishes its full catalog as MARCXML under CC0:
 https://lito.cul.columbia.edu/extracts/ColumbiaLibraryCatalog/full/
 ```
 
-Files: `extract-001.xml.gz` … `extract-093.xml.gz`, each ~64 MB compressed,
-updated monthly. No API key required.
+93 gzipped files (`extract-001.xml.gz` … `extract-093.xml.gz`), each ~64 MB
+compressed. Updated monthly. No API key required.
 
-There is no queryable live API — the Primo REST API requires an institutional
-key that Columbia does not expose publicly. The bulk export is the supported
+There is no queryable live API — the Ex Libris Primo REST API requires an
+institutional key not exposed publicly. The bulk export is the supported
 access path.
 
-### New command: `lit clio-sync`
-
-Downloads and indexes the MARCXML into a local SQLite FTS5 table:
+### First-time setup
 
 ```bash
-lit clio-sync          # full sync (first run, or monthly refresh)
-lit clio-sync --check  # report index age and record count, no download
+lit clio sync
 ```
 
-The sync is explicit, not automatic. It downloads ~6 GB and takes several
-minutes. Run at most monthly (Columbia updates the catalog monthly).
+Downloads all 93 files, parses MARC records, and builds a local SQLite FTS5
+index. Downloads run 3 at a time with exponential-backoff retries.
+Expect ~30–60 minutes depending on network speed.
 
-Index stored at `.cache/lit/clio/catalog.db`.
+The index is stored at `etc/lit/clio.db` (sibling to `lit.db`).
+
+### DB path
+
+`clio.db` is found by the same resolution as `lit.db`:
+
+- `LIT_CLIO_DB_PATH` env var, if set
+- Otherwise: `<exe_parent>/../etc/lit/clio.db`
+
+When the binary is installed at `/usr/local/bin/lit`, this resolves to
+`/usr/local/etc/lit/clio.db`. Symlink it to the project to keep it in the
+right place:
+
+```bash
+ln -sf /Users/kaizhan/ice/etc/lit/clio.db /usr/local/etc/lit/clio.db
+```
+
+(The project already does this for `lit.db`.)
+
+### Resuming and re-syncing
+
+Each file's completion is recorded in `clio_meta` (`key = 'file:extract-NNN.xml.gz'`).
+If the sync is interrupted, re-running resumes from where it left off.
+
+A completed sync is guarded by a 30-day check:
+
+```bash
+lit clio sync           # skips if synced within 30 days
+lit clio sync --force   # clears index and re-syncs unconditionally
+lit clio sync --check   # report: record count, files done, last sync date
+```
 
 ### MARC field mapping
 
-Key fields extracted during sync:
-
-| lit field | MARC tag | Subfield |
+| lit field | MARC tag | Subfield / note |
 |---|---|---|
-| `title` | 245 | `$a $b` |
-| `authors` | 100, 700 | `$a` |
-| `year` | 008 bytes 7–10 or 260/264 | `$c` |
-| `isbn` | 020 | `$a` |
-| `issn` | 022 | `$a` |
-| `doi` | 856 | `$u` matching `doi.org` |
-| `url` | 856 | `$u` (fulltext links) |
-| `location` | 852 | `$a` (physical vs. online) |
+| `title` | 245 | `$a $b` joined |
+| `authors` | 100, 700 | `$a`, joined with `, ` |
+| `year` | 008 bytes 7–10 | fallback: 260/264 `$c` (first 4-digit run) |
+| `isbn` | 020 | `$a` (first) |
+| `issn` | 022 | `$a` (first) |
+| `doi` | 856 | `$u` containing `doi.org` |
+| `url` | 856 ind2=0 | `$u` (first full-text link) |
+| `online` | 856 ind2=0 | true when any full-text 856 present |
 | `publisher` | 260 or 264 | `$b` |
 
-Records with `856 $u` containing an EZProxy or publisher URL are indexed as
-`online: true` — these are directly downloadable via EZProxy when cookies exist.
+### Using the catalog in search
 
-### `lit search` with Clio index
-
-After `lit clio-sync`, the local index becomes a search source:
+After `lit clio sync`, the Clio index is tried automatically before remote APIs:
 
 ```bash
-lit search "lord paradox"                    # local lit DB only (unchanged)
-lit search --remote "lord paradox"           # Clio index first, then OpenAlex
-lit search --source clio "lord paradox"      # Clio index only
-lit search --source oa "lord paradox"        # OpenAlex only (previous default)
+lit search "lord paradox"           # local lit DB → Clio → SS → OA (cascade)
+lit search --source clio "ancova"   # Clio only (instant, offline)
+lit search --source oa "attention"  # OpenAlex only (skips Clio)
 ```
 
-`--remote` without `--source` now defaults to Clio, with OpenAlex as fallback
-for records not found (preprints, papers published after the last sync).
-
-Because the Clio index is local, `--source clio` queries are instant regardless
-of network state.
-
-### Search → download integration
-
-Records with `online: true` feed directly into the EZProxy download path:
-
-```bash
-lit search --remote "lord paradox" --json
-# → result includes "online": true, "url": "https://..."
-
-lit add <doi> references.bib    # EZProxy first if Clio says it's online
-```
-
-Records without `online: true` fall through to the standard chain
-(EZProxy URL rewriting → Unpaywall).
+Clio results that have `online=true` (a full-text 856 link) are flagged as
+directly downloadable via EZProxy.
 
 ---
 
 ## What this is not
 
 - **Not a general EZProxy client.** Columbia-specific.
-  The institution is hardcoded (`ezproxy.cul.columbia.edu`).
+  `ezproxy.cul.columbia.edu` is hardcoded.
 
-- **Not a security boundary.** The cookie file is plaintext on disk.
-  It contains a short-lived session token, not a password.
-  Don't commit it, don't share it.
+- **Not a security boundary.** The cookie file is a short-lived plaintext
+  session token. Don't commit it; don't share it.
 
 - **Not a replacement for OpenAlex on recent preprints.** Clio indexes
-  published catalog entries; arXiv preprints land in OpenAlex first.
-  Use `--source all` or `--source oa` for that case.
+  the published catalog; arXiv preprints appear in OpenAlex first.
+  Use `--source oa` or `--source all` for recent CS/ML papers.
 
 ---
 
-## Implementation plan
+## Files
 
-1. `bin/clio-auth.py` — already implemented. Exports EZProxy cookies from
-   Chrome to `.cache/lit/clio/cookies.txt`.
-
-2. `bin/download-cev-pdfs.py` — already implemented. Uses cookie file +
-   EZProxy URL rewriting to curl paywalled PDFs for all `cev/refs.bib` entries.
-
-3. `lit download` integration — pending. Add EZProxy fallback to the Rust
-   download command: check for cookie file, rewrite URL, curl, fall back to
-   Unpaywall. No new flags; behavior is automatic when the cookie file is present.
-
-4. `lit clio-auth` subcommand — pending. Status check and refresh instructions.
-
-5. `lit clio-sync` — pending. Python script (or Rust command) that streams
-   MARCXML files, extracts key fields, and populates `.cache/lit/clio/catalog.db`
-   with an FTS5 table over title, authors, year, isbn, issn, doi, url, online.
-
-6. `lit search --source clio` — pending. Query the local FTS5 table, map rows
-   to lit's standard schema, make Clio the first source tried when `--remote` is
-   passed without `--source`.
+| Path | Purpose |
+|---|---|
+| `bin/clio-auth.py` | Export Chrome EZProxy cookies to `.cache/lit/clio/cookies.txt` |
+| `bin/download-cev-pdfs.py` | Bulk-download cev papers via EZProxy |
+| `.cache/lit/clio/cookies.txt` | EZProxy session cookies (gitignored, ~8h TTL) |
+| `etc/lit/clio.db` | Local FTS5 catalog index (~2 GB after full sync) |
+| `src/api/clio.rs` | MARCXML parser, FTS5 schema, search function |
+| `src/cmd/clio.rs` | `lit clio auth` and `lit clio sync` commands |
+| `docs/CLIO.md` | This document |

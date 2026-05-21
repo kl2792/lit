@@ -22,20 +22,30 @@ pub fn clio_db_path(db_path: &Path) -> PathBuf {
         .join("clio.db")
 }
 
-/// Derive clio.db path from the running executable location.
+/// Derive clio.db path, walking up from cwd to find the project root.
 ///
-/// Prefers `LIT_CLIO_DB_PATH` env var, then falls back to the exe-relative location
-/// `<exe_parent_parent>/etc/lit/clio.db`.
+/// Priority:
+/// 1. `LIT_CLIO_DB_PATH` env var
+/// 2. Walk up from `cwd` looking for an `etc/lit/` directory
+/// 3. Fallback: `etc/lit/clio.db` relative to cwd
 pub fn default_clio_db_path() -> PathBuf {
     if let Ok(p) = std::env::var("LIT_CLIO_DB_PATH") {
         return PathBuf::from(p);
     }
-    let exe = std::env::current_exe().unwrap_or_default();
-    exe.parent()
-        .unwrap_or(Path::new("."))
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("etc/lit/clio.db")
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut dir = cwd.as_path();
+        loop {
+            let candidate = dir.join("etc/lit/clio.db");
+            if dir.join("etc/lit").is_dir() {
+                return candidate;
+            }
+            match dir.parent() {
+                Some(p) => dir = p,
+                None => break,
+            }
+        }
+    }
+    PathBuf::from("etc/lit/clio.db")
 }
 
 /// Initialize the clio.db schema (idempotent — safe to call on an existing DB).
