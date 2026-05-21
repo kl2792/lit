@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use lit::{api, bibtex, cmd, db, format};
 use std::path::PathBuf;
+use lit::api::clio as clio_api;
 
 #[derive(Parser)]
 #[command(name = "lit", about = "Literature search tool for academic papers")]
@@ -50,6 +51,8 @@ enum SearchSource {
     Book,
     /// PhilPapers (philosophy)
     Philpapers,
+    /// Columbia Clio catalog (local index, requires clio-sync)
+    Clio,
     /// All sources, merge results
     All,
 }
@@ -166,6 +169,11 @@ enum Commands {
         /// Target .bib file.
         bib_file: PathBuf,
     },
+    /// Columbia Clio catalog operations
+    Clio {
+        #[command(subcommand)]
+        action: ClioAction,
+    },
     /// Append a hand-rolled `@misc` BibTeX entry to a .bib file.
     /// Use this for textbooks, working papers, blog posts, and other works
     /// without a resolvable identifier.
@@ -202,6 +210,18 @@ enum DbAction {
     Rollback {
         /// Timestamp to roll back to (ISO 8601)
         timestamp: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ClioAction {
+    /// Check EZProxy cookie status
+    Auth,
+    /// Download and index Columbia catalog (~6 GB, 93 files)
+    Sync {
+        /// Only report index status, don't download
+        #[arg(long)]
+        check: bool,
     },
 }
 
@@ -291,6 +311,7 @@ async fn main() {
                     SearchSource::Dblp => cmd::search::Source::Dblp,
                     SearchSource::Book => cmd::search::Source::Book,
                     SearchSource::Philpapers => cmd::search::Source::PhilPapers,
+                    SearchSource::Clio => cmd::search::Source::Clio,
                     SearchSource::All => cmd::search::Source::All,
                 });
                 cmd::search::run(&ctx, &q, limit, src).await
@@ -359,6 +380,20 @@ async fn main() {
                 Ok(())
             }
         },
+        Some(Commands::Clio { action }) => {
+            // Use default_clio_db_path() so this agrees with fetch_clio() in search.rs
+            // (both check LIT_CLIO_DB_PATH first, then fall back to exe-relative location).
+            let clio_db = clio_api::default_clio_db_path();
+            let cookie_path = find_clio_cookie_path();
+            match action {
+                ClioAction::Auth => {
+                    cmd::clio::run_auth(&clio_db, &cookie_path).map_err(|e| e.into())
+                }
+                ClioAction::Sync { check } => {
+                    cmd::clio::run_sync(&clio_db, check).await
+                }
+            }
+        }
         None => {
             let input = cli.input.join(" ");
             if input.is_empty() {
@@ -493,6 +528,29 @@ fn run_remove(
         std::process::exit(2);
     }
     Ok(())
+}
+
+/// Derive the EZProxy cookies file path from cwd (walk up looking for the file).
+///
+/// Returns the found path if it exists, otherwise returns the expected path
+/// under cwd so `run_auth` can print a meaningful "not found" message.
+fn find_clio_cookie_path() -> PathBuf {
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut dir = cwd.as_path();
+        loop {
+            let candidate = dir.join(".cache/lit/clio/cookies.txt");
+            if candidate.exists() {
+                return candidate;
+            }
+            match dir.parent() {
+                Some(p) => dir = p,
+                None => break,
+            }
+        }
+        cwd.join(".cache/lit/clio/cookies.txt")
+    } else {
+        PathBuf::from(".cache/lit/clio/cookies.txt")
+    }
 }
 
 /// Run `lit misc`: append a hand-rolled `@misc` BibTeX entry.

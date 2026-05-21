@@ -1,4 +1,7 @@
+use std::path::PathBuf;
+
 use super::Context;
+use crate::api::clio as clio_api;
 use crate::api::PaperResult;
 use crate::db;
 use crate::format;
@@ -13,6 +16,8 @@ pub enum Source {
     Dblp,
     Book,
     PhilPapers,
+    /// Columbia Clio catalog (local index; requires `lit clio sync`)
+    Clio,
     All,
 }
 
@@ -71,13 +76,15 @@ fn backend_for(source: Source) -> &'static Backend {
         Source::Dblp => &BACKENDS[3],
         Source::Book => &BACKENDS[4],
         Source::PhilPapers => &BACKENDS[5],
-        Source::All => unreachable!(),
+        // Clio is local; never goes through the Backend/HTTP path
+        Source::Clio | Source::All => unreachable!(),
     }
 }
 
-/// Default cascade order: SS -> OA -> CR -> books.
-/// SS first because it has much better relevance ranking for specific paper queries.
-const CASCADE: &[Source] = &[Source::Ss, Source::Oa, Source::Cr, Source::Book];
+/// Default cascade order: Clio (local, skipped if no DB) -> SS -> OA -> CR -> books.
+/// Clio first because it's a local query with no network cost.
+/// SS second because it has much better relevance ranking for specific paper queries.
+const CASCADE: &[Source] = &[Source::Clio, Source::Ss, Source::Oa, Source::Cr, Source::Book];
 
 /// Minimum relevance score (0.0-1.0) for the top result to be considered "good enough"
 /// to stop the cascade. Below this threshold, we try the next source.
@@ -96,6 +103,7 @@ pub async fn run_data(
 
     let client = ctx.client();
     let results = match source {
+        Some(Source::Clio) => fetch_clio(query, limit).await,
         Some(Source::All) => fetch_all(&client, ctx, query, limit).await,
         Some(src) => fetch_single(&client, ctx, query, limit, src).await,
         None => fetch_cascade(&client, ctx, query, limit).await,
@@ -155,12 +163,21 @@ async fn fetch_cascade(
     let mut all_results: Vec<PaperResult> = Vec::new();
 
     for &src in CASCADE {
-        let b = backend_for(src);
-        if ctx.verbose {
-            format::info(&format!("Trying {}...", b.name));
+        let (source_name, results) = if src == Source::Clio {
+            // Clio is local — no network, skip silently if absent
+            let r = fetch_clio(query, limit).await;
+            ("Clio", r)
+        } else {
+            let b = backend_for(src);
+            (b.name, fetch_backend(client, ctx, b, query, limit).await)
+        };
+
+        if ctx.verbose && src == Source::Clio {
+            format::info("Trying Clio (local)...");
+        } else if ctx.verbose {
+            format::info(&format!("Trying {}...", source_name));
         }
 
-        let results = fetch_backend(client, ctx, b, query, limit).await;
         if results.is_empty() {
             continue;
         }
@@ -175,7 +192,7 @@ async fn fetch_cascade(
             if ctx.verbose {
                 format::info(&format!(
                     "{}: top result relevance {:.0}%",
-                    b.name,
+                    source_name,
                     top_score * 100.0
                 ));
             }
@@ -186,14 +203,16 @@ async fn fetch_cascade(
         if ctx.verbose {
             format::warn(&format!(
                 "{}: top result relevance {:.0}% (below threshold), trying next source...",
-                b.name,
+                source_name,
                 top_score * 100.0
             ));
         }
-        eprintln!(
-            "note: {} results may be imprecise, trying other sources",
-            b.name
-        );
+        if src != Source::Clio {
+            eprintln!(
+                "note: {} results may be imprecise, trying other sources",
+                source_name
+            );
+        }
         all_results.extend(results);
     }
 
@@ -202,6 +221,9 @@ async fn fetch_cascade(
 }
 
 /// Fetch from all backends concurrently and merge.
+///
+/// Clio is local-only and is not included here. Use `--source clio` to query it directly,
+/// or let the default cascade try it first.
 async fn fetch_all(
     client: &http::Client,
     ctx: &Context,
@@ -247,6 +269,27 @@ async fn fetch_backend(
             Vec::new()
         }
     }
+}
+
+/// Derive the clio.db path from the running executable location or env var.
+fn clio_db_path() -> PathBuf {
+    clio_api::default_clio_db_path()
+}
+
+/// Search the local Clio FTS5 index.
+///
+/// Returns an empty Vec (no error) when clio.db doesn't exist or is empty —
+/// this lets it participate in the cascade silently.
+async fn fetch_clio(query: &str, limit: usize) -> Vec<PaperResult> {
+    let path = clio_db_path();
+    if !path.exists() {
+        return Vec::new();
+    }
+    let conn = match rusqlite::Connection::open(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    clio_api::search_clio(&conn, query, limit).unwrap_or_default()
 }
 
 // --- Relevance scoring ---

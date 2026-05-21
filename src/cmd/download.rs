@@ -81,9 +81,19 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool) -> Result<(), Box<d
 
     let pdf_url = uw_pdf.or(s2_pdf).or(oa_pdf);
 
+    // EZProxy: include Columbia access URL when a cookies file is present.
+    let cookie_path = find_cookie_file();
+    let ez_url = if cookie_path.is_some() && !doi.is_empty() {
+        Some(format!("https://doi-org.ezproxy.cul.columbia.edu/{}", doi))
+    } else {
+        None
+    };
+
     if url_only {
         if let Some(ref pdf) = pdf_url {
             println!("{}", pdf);
+        } else if let Some(ref ez) = ez_url {
+            println!("{}", ez);
         } else {
             return Err("No open-access PDF found".into());
         }
@@ -93,6 +103,9 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool) -> Result<(), Box<d
             println!("PDF: {}", pdf);
         } else {
             println!("No open-access PDF found");
+        }
+        if let Some(ref ez) = ez_url {
+            println!("EZProxy: {} [session active]", ez);
         }
     }
 
@@ -257,6 +270,21 @@ fn build_source_yaml(paper: &PaperResult, arxiv_id: &str, retrieved: &str) -> St
     yaml.push_str(&format!("arxiv: \"{}\"\n", arxiv_id));
     yaml.push_str(&format!("retrieved: \"{}\"\n", retrieved));
     yaml
+}
+
+/// Walk up from cwd looking for `.cache/lit/clio/cookies.txt`.
+///
+/// Returns the path when found, or `None` when the filesystem root is reached.
+fn find_cookie_file() -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let mut dir = cwd.as_path();
+    loop {
+        let candidate = dir.join(".cache/lit/clio/cookies.txt");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        dir = dir.parent()?;
+    }
 }
 
 fn today_string() -> String {
