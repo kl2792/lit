@@ -1,8 +1,8 @@
 /// Columbia Clio catalog integration.
 ///
-/// Provides a local FTS5 index of the Columbia University Library catalog (MARC21 records).
-/// The index is populated by downloading and parsing MARCXML export files.
-/// Search is purely local — no network calls.
+/// Provides live search against the Columbia University Library catalog via
+/// the Clio JSON API (catalog.json). No local index or sync required.
+/// Also provides optional local FTS5 index for offline use via `lit clio sync`.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -46,6 +46,100 @@ pub fn default_clio_db_path() -> PathBuf {
         }
     }
     PathBuf::from("etc/lit/clio.db")
+}
+
+// --- Live Clio API search ---
+
+/// Build the Clio catalog.json search URL.
+pub fn search_url(query: &str, limit: usize) -> String {
+    format!(
+        "https://clio.columbia.edu/catalog.json?q={}&per_page={}",
+        super::urlencode(query),
+        limit
+    )
+}
+
+/// Parse the Clio catalog.json response into PaperResults.
+pub fn parse_search(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
+    let data: serde_json::Value = serde_json::from_str(body)?;
+    let docs = data["response"]["docs"]
+        .as_array()
+        .ok_or("missing response.docs")?;
+
+    let mut results = Vec::new();
+    for doc in docs {
+        let title = doc["title_display"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if title.is_empty() {
+            continue;
+        }
+
+        let authors: Vec<String> = doc["author_facet"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let year = doc["pub_year_display"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // url_munged_display entries are pipe-delimited; the URL is the first
+        // pipe-separated field that starts with "http".
+        let mut doi: Option<String> = None;
+        let mut pdf_url: Option<String> = None;
+        if let Some(entries) = doc["url_munged_display"].as_array() {
+            for entry in entries {
+                if let Some(s) = entry.as_str() {
+                    if let Some(url) = s.split('|').find(|p| p.starts_with("http")) {
+                        if url.contains("doi.org/") {
+                            if doi.is_none() {
+                                doi = extract_doi_from_url(url);
+                            }
+                        } else if pdf_url.is_none() {
+                            pdf_url = Some(url.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let venue = doc["pub_name_display"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let isbn = doc["isbn_display"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .map(|s| s.split_whitespace().next().unwrap_or(s).to_string());
+
+        results.push(PaperResult {
+            title,
+            authors,
+            year,
+            doi,
+            pdf_url,
+            venue,
+            isbn,
+            ..Default::default()
+        });
+    }
+
+    Ok(results)
 }
 
 /// Initialize the clio.db schema (idempotent — safe to call on an existing DB).
