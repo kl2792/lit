@@ -114,6 +114,9 @@ enum Commands {
         /// Override output directory for --source
         #[arg(long)]
         dir: Option<PathBuf>,
+        /// Override citekey used to name the output directory (e.g. smith2021foo)
+        #[arg(long)]
+        citekey: Option<String>,
     },
     /// Fetch BibTeX and append to .bib file
     Add {
@@ -342,7 +345,8 @@ async fn main() {
             source,
             url_only,
             dir,
-        }) => cmd::download::run(&ctx, &id, source, url_only, dir.as_deref()).await,
+            citekey,
+        }) => cmd::download::run(&ctx, &id, source, url_only, dir.as_deref(), citekey.as_deref()).await,
         Some(Commands::Add { input, bib_file, key }) => cmd::add::run(&ctx, &input, &bib_file, key.as_deref()).await,
         Some(Commands::Verify { bib_file, jobs }) => cmd::verify::run(&ctx, &bib_file, jobs).await,
         Some(Commands::Clean { bib_file, apply, prune, tex_dirs }) => {
@@ -492,7 +496,7 @@ async fn run_read(ctx: &cmd::Context, id: &str) -> Result<(), Box<dyn std::error
                 )
                 .into());
             }
-            cmd::download::run(ctx, normalized, true, false, None).await?;
+            cmd::download::run(ctx, normalized, true, false, None, None).await?;
             cmd::read::run_data(ctx, id)?
         }
     };

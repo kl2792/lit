@@ -364,7 +364,7 @@ pub async fn handle_read(ctx: &cmd::Context, args: &Value) -> Result<String, Str
                 || normalized.starts_with("arxiv:");
 
             if looks_like_arxiv {
-                cmd::download::run(ctx, normalized, true, false, None)
+                cmd::download::run(ctx, normalized, true, false, None, None)
                     .await
                     .map_err(|e| format!("auto-download failed: {}", e))?;
 

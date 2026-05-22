@@ -25,16 +25,17 @@ pub async fn run(
     source: bool,
     url_only: bool,
     dir_override: Option<&Path>,
+    citekey: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if source {
         return run_source(ctx, input, dir_override).await;
     }
-    run_pdf(ctx, input, url_only).await
+    run_pdf(ctx, input, url_only, citekey).await
 }
 
 /// Find open-access PDF via Unpaywall, with S2 and OpenAlex fallbacks.
 /// When a PDF is found (open-access or via EZProxy), downloads it to etc/pdf/<citekey>/.
-async fn run_pdf(ctx: &Context, input: &str, url_only: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     use crate::api::{openalex as oa_api, semantic_scholar as s2_api};
 
     let doi = normalize_doi(input);
@@ -63,7 +64,10 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool) -> Result<(), Box<d
     let oa_result = oa_body.ok().and_then(|b| oa_api::parse_work(&b).ok());
     let oa_pdf = oa_result.as_ref().and_then(|r| r.oa_url.clone());
 
-    let pdf_url = uw_pdf.or(s2_pdf).or(oa_pdf);
+    let pdf_url = [uw_pdf, s2_pdf, oa_pdf]
+        .into_iter()
+        .flatten()
+        .find(|u| !u.is_empty());
 
     let cookie_path = find_cookie_file();
     let ez_url = if cookie_path.is_some() && !doi.is_empty() {
@@ -95,7 +99,7 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool) -> Result<(), Box<d
     // Try to download the PDF.
     let bytes = if let Some(ref url) = pdf_url {
         format::info(&format!("Fetching open-access PDF: {}", url));
-        fetch_pdf_bytes(url, None).await
+        fetch_pdf_via_curl(url, None).await
     } else {
         None
     };
@@ -104,7 +108,7 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool) -> Result<(), Box<d
         match (&ez_url, &cookie_path) {
             (Some(ez), Some(cp)) => {
                 format::info("Trying EZProxy...");
-                fetch_pdf_bytes(ez, Some(cp)).await
+                fetch_pdf_via_curl(ez, Some(cp)).await
             }
             _ => None,
         }
@@ -115,7 +119,7 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool) -> Result<(), Box<d
     match bytes {
         Some(data) => {
             let dir_name = {
-                let slug = generate_dir_name(&meta);
+                let slug = citekey.map(|k| k.to_string()).unwrap_or_else(|| generate_dir_name(&meta));
                 default_output_dir().join(slug)
             };
             std::fs::create_dir_all(&dir_name)?;
@@ -146,36 +150,28 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool) -> Result<(), Box<d
     Ok(())
 }
 
-/// Fetch URL as bytes, returning Some only if the response is a valid PDF.
-/// When cookie_path is given, delegates to curl for cookie-authenticated requests.
-async fn fetch_pdf_bytes(url: &str, cookie_path: Option<&std::path::Path>) -> Option<Vec<u8>> {
+/// Fetch URL as bytes via curl, returning Some only if the response is a valid PDF.
+async fn fetch_pdf_via_curl(url: &str, cookie_path: Option<&std::path::Path>) -> Option<Vec<u8>> {
+    let tmp = format!("/tmp/lit_dl_{}.pdf", std::process::id());
+    let mut args = vec![
+        "-sL", "--max-time", "60",
+        "-A", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "-H", "Accept: application/pdf,*/*",
+    ];
+    let cp_str;
     if let Some(cp) = cookie_path {
-        let tmp = format!("/tmp/lit_dl_{}.pdf", std::process::id());
-        let status = Command::new("curl")
-            .args(["-sL", "--max-time", "60", "-b", cp.to_str()?, "-A",
-                   "Mozilla/5.0", "-H", "Accept: application/pdf,*/*",
-                   url, "-o", &tmp])
-            .status()
-            .ok()?;
-        if !status.success() {
-            return None;
-        }
-        let data = std::fs::read(&tmp).ok()?;
-        let _ = std::fs::remove_file(&tmp);
-        return if data.starts_with(b"%PDF") { Some(data) } else { None };
+        cp_str = cp.to_str()?.to_string();
+        args.extend_from_slice(&["-b", &cp_str]);
     }
+    args.extend_from_slice(&[url, "-o", &tmp]);
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
-        .user_agent("Mozilla/5.0")
-        .build()
-        .ok()?;
-    let resp = client.get(url).send().await.ok()?;
-    if !resp.status().is_success() {
+    let status = Command::new("curl").args(&args).status().ok()?;
+    if !status.success() {
         return None;
     }
-    let bytes = resp.bytes().await.ok()?;
-    if bytes.starts_with(b"%PDF") { Some(bytes.to_vec()) } else { None }
+    let data = std::fs::read(&tmp).ok()?;
+    let _ = std::fs::remove_file(&tmp);
+    if data.starts_with(b"%PDF") { Some(data) } else { None }
 }
 
 fn build_doi_source_yaml(paper: &PaperResult, doi: &str, retrieved: &str) -> String {
