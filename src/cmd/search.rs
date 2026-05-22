@@ -84,9 +84,9 @@ fn backend_for(source: Source) -> &'static Backend {
     }
 }
 
-/// Default cascade: SS -> OA -> CR -> books.
-/// Clio is a live network call to Columbia's catalog; use --source clio explicitly.
-const CASCADE: &[Source] = &[Source::Ss, Source::Oa, Source::Cr, Source::Book];
+/// Default cascade: SS -> OA -> CR -> books -> Clio.
+/// Clio is last — it covers books/physical items the others miss, but has lower relevance ranking.
+const CASCADE: &[Source] = &[Source::Ss, Source::Oa, Source::Cr, Source::Book, Source::Clio];
 
 /// Minimum relevance score (0.0-1.0) for the top result to be considered "good enough"
 /// to stop the cascade. Below this threshold, we try the next source.
