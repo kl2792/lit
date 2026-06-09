@@ -11,7 +11,7 @@ For *why* the API is shaped this way, see [`DESIGN.md`](DESIGN.md).
 You just read a paper and want to `\cite{}` it in a LaTeX section.
 
 ```bash
-lit "denoising diffusion probabilistic models"     # search local DB
+lit "denoising diffusion probabilistic models"     # search (remote APIs by default)
 lit 2006.11239                                     # confirm metadata + abstract
 lit add 2006.11239 ext/Improving-Causal-Explanations/references.bib --json
 # → {"entry_key": "ho2020denoising", "bib_file": ".../references.bib"}
@@ -20,10 +20,11 @@ lit add 2006.11239 ext/Improving-Causal-Explanations/references.bib --json
 Use `ho2020denoising` in `\cite{}`. Never invent the key — the canonical form
 may disambiguate with a different word than you'd guess.
 
-If the local search miss is a true miss (not just an index gap), try `--remote`:
+To restrict the search to papers you have already downloaded (instant, no API
+calls), use `--local`:
 
 ```bash
-lit search --remote "denoising diffusion probabilistic models" --limit 5
+lit search --local "denoising diffusion probabilistic models" --limit 5
 ```
 
 ---
@@ -44,6 +45,25 @@ lit misc halpern2016actual \
 
 Repeat `-a` per author. `--howpublished` is the free-text venue; `--note` adds
 an arbitrary annotation field.
+
+For tech reports and working papers where you also have the PDF (a local file
+or a URL), add `--pdf`: it creates `etc/pdf/<citekey>/` with `paper.pdf`,
+`source.yaml`, and extracted `paper.txt`, then writes the bib entry. This is
+the documented ingestion path for identifier-less artifacts.
+
+```bash
+lit misc maiti2026tier refs.bib \
+  -t "Counterfactual Tiers Tech Report" \
+  -y 2026 \
+  -a "Aurghya Maiti" \
+  --howpublished "Tech report R-125" \
+  --pdf ~/Downloads/r125.pdf        # or --pdf https://causalai.net/r125.pdf
+```
+
+On download or validation failure nothing is written (no directory, no bib
+entry) and the command exits nonzero with a hint — for sandbox-blocked hosts,
+download in a browser and rerun with the local path. An existing
+`etc/pdf/<citekey>/` directory is an error unless you pass `--force`.
 
 ---
 
@@ -83,6 +103,21 @@ entry first:
 ```bash
 lit remove ho2020denoising references.bib
 lit add 2006.11239 references.bib --json   # canonical key returned in entry_key
+```
+
+---
+
+## 3c. Citekey collisions
+
+Two different papers can canonicalize to the same citekey (same first-author
+surname, year, and leading title word). `lit add` and `lit misc` abort instead
+of silently overwriting when an upsert would replace an entry whose title
+differs materially, showing both titles. Disambiguate with `--key` on `add`
+(pick a different citekey for `misc`), or pass `--force` to overwrite
+deliberately:
+
+```bash
+lit add 10.1609/aaai.v39i25.34888 refs.bib --key maiti2025aaai --json
 ```
 
 ---
@@ -173,17 +208,18 @@ lit read 2006.11239 --json
 
 ## 8. Survey a topic: local vs. remote search
 
-Local DB search is instant (full-text search over previously-fetched metadata):
+Remote search is the default and hits APIs (slow, but fresh + comprehensive):
 
 ```bash
-lit search "shapley xai"
+lit search "shapley xai" --source ss --limit 20
+lit search "shapley xai" --source all --limit 50   # merge all sources
 ```
 
-Remote search hits APIs (slow, but fresh + comprehensive):
+Local DB search is instant (full-text search over previously-fetched
+metadata) but only covers papers you have already downloaded:
 
 ```bash
-lit search --remote "shapley xai" --source ss --limit 20
-lit search --remote "shapley xai" --source all --limit 50   # merge all sources
+lit search --local "shapley xai"
 ```
 
 `--source` is the lever for recall vs. precision vs. latency:
@@ -192,6 +228,7 @@ lit search --remote "shapley xai" --source all --limit 50   # merge all sources
 - `cr` — DOI-authoritative; canonical for journals.
 - `dblp` — CS conferences OA tends to miss.
 - `philpapers` — philosophy coverage.
+- `clio` — Columbia catalog (local index, requires `lit clio sync`).
 - `all` — merge across sources.
 
 For **more than three** remote searches in one task, delegate to a background
@@ -210,6 +247,16 @@ and the same paper can end up under different citekeys in each
 (canonicalisation is deterministic but depends on local collisions).
 
 Patterns that work:
+
+```bash
+# Blessed multi-add idiom: loop the adds, verify once at the end.
+# add is upsert-idempotent, so retries are safe; the collision guard makes
+# the loop fail loudly if two papers canonicalize to the same citekey.
+for id in 2006.11239 1810.04805 10.1145/3442188.3445899; do
+  lit add "$id" refs.bib --json
+done
+lit verify refs.bib -j 8
+```
 
 ```bash
 # Add a paper to multiple bibs in one go
