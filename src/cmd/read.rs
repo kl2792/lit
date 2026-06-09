@@ -74,7 +74,8 @@ fn find_paper_dir(query: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     }
 }
 
-fn find_pdf_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
+/// Walk up from cwd to find the `etc/pdf` artifact root.
+pub fn find_pdf_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
     if let Ok(cwd) = std::env::current_dir() {
         let mut dir = cwd.as_path();
         loop {
@@ -94,7 +95,7 @@ fn find_pdf_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
 /// Ensure readable text exists and return the path.
 ///
 /// Priority: .tex main file > paper.txt > pdftotext paper.pdf (cached as paper.txt)
-fn ensure_text(dir: &Path) -> Result<ReadResult, Box<dyn std::error::Error>> {
+pub(crate) fn ensure_text(dir: &Path) -> Result<ReadResult, Box<dyn std::error::Error>> {
     // 1. Check for .tex source
     if let Some(main_tex) = find_main_tex(dir) {
         let tex_files = list_tex_files(dir);
