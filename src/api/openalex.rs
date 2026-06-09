@@ -1,6 +1,7 @@
 use super::{extract_last_name, urlencode, PaperResult};
 use regex::Regex;
 use serde_json::Value;
+use crate::sanitize::decode_html_entities;
 
 /// Build URL for looking up a single work by DOI.
 pub fn work_by_doi_url(doi: &str) -> String {
@@ -113,17 +114,6 @@ fn parse_works_response(
     }
 
     Ok(results)
-}
-
-/// Decode common HTML entities to their plain-text equivalents.
-fn decode_html_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&#x27;", "'")
-        .replace("&apos;", "'")
 }
 
 #[cfg(test)]

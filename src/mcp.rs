@@ -493,10 +493,24 @@ pub fn handle_clean(args: &Value) -> Result<String, String> {
         "orphans".into(),
         Value::Array(report.orphans.iter().map(|k| Value::String(k.clone())).collect()),
     );
+    result.insert(
+        "lint".into(),
+        Value::Array(
+            report
+                .lint
+                .iter()
+                .map(|(key, finding)| json!({"key": key, "finding": finding}))
+                .collect(),
+        ),
+    );
     if apply {
         result.insert(
             "removed".into(),
             Value::Array(report.removed.iter().map(|k| Value::String(k.clone())).collect()),
+        );
+        result.insert(
+            "lint_fixed".into(),
+            Value::Array(report.lint_fixed.iter().map(|k| Value::String(k.clone())).collect()),
         );
     }
 

@@ -38,7 +38,7 @@ pub fn run_data(params: &MiscParams, bib_file: &Path) -> Result<AddResult, Box<d
 
     let bib_text = format!("@misc{{{},\n{},\n}}", params.citekey, fields.join(",\n"));
 
-    crate::bibtex::upsert_to_file(bib_file, &bib_text)?;
+    crate::bibtex::upsert_to_file(bib_file, &bib_text, false)?;
 
     Ok(AddResult {
         entry_key: params.citekey.clone(),

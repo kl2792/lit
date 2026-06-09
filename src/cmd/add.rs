@@ -117,7 +117,7 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
         bib_text
     };
 
-    bibtex::upsert_to_file(bib_file, &bib_text)?;
+    bibtex::upsert_to_file(bib_file, &bib_text, false)?;
 
     // Opportunistic index
     match input_type {

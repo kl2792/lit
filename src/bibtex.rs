@@ -261,19 +261,30 @@ pub fn parse_bib_file(content: &str) -> Vec<BibEntry> {
 ///
 /// If an entry with the matching citekey already exists, it is replaced in-place
 /// (preserving surrounding content). Otherwise the entry is appended.
-pub fn upsert_to_file(path: &Path, entry: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let new_key = extract_entry_key(entry).ok_or("could not parse citekey from BibTeX entry")?;
+pub fn upsert_to_file(path: &Path, entry: &str, force: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let _ = force; // collision guard (ADR-001 change 3) lands in the next commit
+    let entry = sanitize_for_write(entry);
+    let new_key = extract_entry_key(&entry).ok_or("could not parse citekey from BibTeX entry")?;
 
     let content = match fs::read_to_string(path) {
         Ok(s) if !s.is_empty() => s,
-        _ => return append_to_file(path, entry),
+        _ => return append_raw(path, &entry),
     };
-    if let Some(new_content) = replace_entry_block(&content, &new_key, entry) {
+    if let Some(new_content) = replace_entry_block(&content, &new_key, &entry) {
         fs::write(path, new_content)?;
         Ok(())
     } else {
-        append_to_file(path, entry)
+        append_raw(path, &entry)
     }
+}
+
+/// Sanitize an entry for writing (ADR-001), printing warnings to stderr.
+fn sanitize_for_write(entry: &str) -> String {
+    let outcome = crate::sanitize::sanitize_bibtex(entry);
+    for warning in &outcome.warnings {
+        crate::format::warn(warning);
+    }
+    outcome.text
 }
 
 /// Extract the citekey from a BibTeX entry string (e.g. `@article{key,` → `"key"`).
@@ -286,7 +297,7 @@ pub fn extract_entry_key(entry: &str) -> Option<String> {
 /// Replace the block for `key` in `content` with `new_entry`.
 ///
 /// Returns `Some(new_content)` if the key was found and replaced, `None` otherwise.
-fn replace_entry_block(content: &str, key: &str, new_entry: &str) -> Option<String> {
+pub(crate) fn replace_entry_block(content: &str, key: &str, new_entry: &str) -> Option<String> {
     let bytes = content.as_bytes();
     let mut pos = 0;
 
@@ -429,6 +440,11 @@ fn remove_entry_block(content: &str, key: &str) -> Option<String> {
 }
 
 pub fn append_to_file(path: &Path, entry: &str) -> Result<(), Box<dyn std::error::Error>> {
+    append_raw(path, &sanitize_for_write(entry))
+}
+
+/// Append a (pre-sanitized) entry without re-sanitizing.
+fn append_raw(path: &Path, entry: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 
     let mut file = fs::OpenOptions::new()
