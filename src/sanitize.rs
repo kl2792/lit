@@ -12,9 +12,10 @@
 ///   unmappable values pass through unchanged with a warning.
 ///
 /// Exemptions: `url` and `doi` fields are untouched; `\url{...}` spans inside
-/// other fields are untouched. The pass is idempotent: entity decoding strips
-/// exactly one encoding level per pass, and an ampersand preceded by a
-/// backslash (the LaTeX-escaped output of a previous pass) never starts an
+/// other fields are untouched. The pass is idempotent: each decoder strips
+/// one encoding level per pass (mixed named+numeric encodings may strip one
+/// level in each decoder within a single pass), and an ampersand preceded by
+/// a backslash (the LaTeX-escaped output of a previous pass) never starts an
 /// entity, so sanitized text is a fixed point.
 
 use crate::bibtex::{parse_bib_file, BibEntry};

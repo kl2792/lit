@@ -750,7 +750,11 @@ async fn lookup_philpapers_url(ctx: &Context, url: &str) -> Result<(), Box<dyn s
 async fn lookup_dblp_url(ctx: &Context, url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let lr = lookup_dblp_url_data(ctx, url).await?;
     if let Some(ref bib) = lr.bibtex {
-        println!("{}", bib);
+        // Display the sanitized text (handle_bib prints it itself under bare -b),
+        // so stdout and any -b file destination never diverge.
+        if !ctx.bib_stdout {
+            println!("{}", crate::bibtex::sanitize_for_write(bib));
+        }
         ctx.handle_bib(bib);
     }
     Ok(())
