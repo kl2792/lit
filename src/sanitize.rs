@@ -139,6 +139,13 @@ fn map_month(value: &str) -> Option<&'static str> {
     }
 }
 
+/// Sanitize a single field value (entities, dashes, escaping); used by the
+/// collision guard to compare titles on equal footing when the existing
+/// entry predates the sanitize pass.
+pub(crate) fn sanitize_field_value(value: &str) -> String {
+    transform_value(value)
+}
+
 /// Transform a field value, leaving `\url{...}` spans verbatim.
 fn transform_value(value: &str) -> String {
     let mut out = String::with_capacity(value.len());

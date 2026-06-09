@@ -80,3 +80,20 @@ fn misc_collision_aborts_and_force_overrides() {
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains("A Totally Different Working Paper"));
 }
+
+#[test]
+fn upsert_over_legacy_unsanitized_title_passes() {
+    // A legacy entry written before the sanitize pass may still contain
+    // `&amp;`; a same-paper refresh arrives sanitized (`\&`). The guard
+    // must treat these as the same title.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("refs.bib");
+    std::fs::write(
+        &path,
+        "@article{k2020x,\n  title = {A &amp; B},\n  author = {X},\n  year = {2020}\n}\n",
+    )
+    .unwrap();
+    let incoming = "@article{k2020x,\n  title = {A \\& B},\n  author = {X},\n  year = {2020},\n  journal = {J}\n}";
+    upsert_to_file(&path, incoming, false).unwrap();
+    assert!(std::fs::read_to_string(&path).unwrap().contains("journal = {J}"));
+}

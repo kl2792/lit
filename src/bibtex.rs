@@ -306,9 +306,14 @@ fn check_collision(content: &str, key: &str, new_entry: &str) -> Result<(), Box<
     Ok(())
 }
 
-/// Case- and whitespace-insensitive title form for collision comparison.
+/// Title form for collision comparison: sanitized (so legacy unsanitized
+/// entries match their sanitized refresh), case- and whitespace-insensitive.
 fn normalize_title(title: &str) -> String {
-    title.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+    crate::sanitize::sanitize_field_value(title)
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Sanitize an entry for writing (ADR-001), printing warnings to stderr.
