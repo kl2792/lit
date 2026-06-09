@@ -21,6 +21,7 @@ use crate::db;
 use crate::detect::{detect_type, normalize_arxiv, normalize_doi, normalize_isbn, InputType};
 
 /// Result of a successful add operation.
+#[derive(Debug)]
 pub struct AddResult {
     /// The BibTeX citation key (e.g. "schulman2017ppo").
     pub entry_key: String,
@@ -29,7 +30,7 @@ pub struct AddResult {
 }
 
 /// Fetch BibTeX for a paper, append to a .bib file, and return structured result.
-pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>) -> Result<AddResult, Box<dyn std::error::Error>> {
+pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>, force: bool) -> Result<AddResult, Box<dyn std::error::Error>> {
     let input_type = detect_type(input);
     let client = ctx.client();
 
@@ -117,7 +118,7 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
         bib_text
     };
 
-    bibtex::upsert_to_file(bib_file, &bib_text, false)?;
+    bibtex::upsert_to_file(bib_file, &bib_text, force)?;
 
     // Opportunistic index
     match input_type {
@@ -149,8 +150,8 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
     Ok(AddResult { entry_key, bib_text })
 }
 
-pub async fn run(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    let result = run_data(ctx, input, bib_file, key).await?;
+pub async fn run(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>, force: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let result = run_data(ctx, input, bib_file, key, force).await?;
     println!("Added {} to {}", result.entry_key, bib_file.display());
     println!("{}", result.bib_text);
     Ok(())

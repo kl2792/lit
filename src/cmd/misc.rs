@@ -22,7 +22,7 @@ pub struct MiscParams {
 }
 
 /// Generate a `@misc` BibTeX entry, upsert it to a .bib file, and return the result.
-pub fn run_data(params: &MiscParams, bib_file: &Path) -> Result<AddResult, Box<dyn std::error::Error>> {
+pub fn run_data(params: &MiscParams, bib_file: &Path, force: bool) -> Result<AddResult, Box<dyn std::error::Error>> {
     let author_str = params.authors.join(" and ");
     let mut fields = vec![
         format!("  title = {{{}}}", params.title),
@@ -38,7 +38,7 @@ pub fn run_data(params: &MiscParams, bib_file: &Path) -> Result<AddResult, Box<d
 
     let bib_text = format!("@misc{{{},\n{},\n}}", params.citekey, fields.join(",\n"));
 
-    crate::bibtex::upsert_to_file(bib_file, &bib_text, false)?;
+    crate::bibtex::upsert_to_file(bib_file, &bib_text, force)?;
 
     Ok(AddResult {
         entry_key: params.citekey.clone(),
@@ -64,7 +64,7 @@ mod tests {
             howpublished: Some(r"\url{https://example.com}".into()),
             note: None,
         };
-        let result = run_data(&params, tmp.path()).unwrap();
+        let result = run_data(&params, tmp.path(), false).unwrap();
         assert_eq!(result.entry_key, "chan2022causal");
         assert!(result.bib_text.starts_with("@misc{chan2022causal,"));
         assert!(result.bib_text.contains("title = {Causal Scrubbing}"));
@@ -86,7 +86,7 @@ mod tests {
             howpublished: None,
             note: None,
         };
-        let result = run_data(&params, tmp.path()).unwrap();
+        let result = run_data(&params, tmp.path(), false).unwrap();
         assert!(!result.bib_text.contains("howpublished"));
         assert!(!result.bib_text.contains("note"));
     }
@@ -103,7 +103,7 @@ mod tests {
             howpublished: None,
             note: None,
         };
-        run_data(&params, tmp.path()).unwrap();
+        run_data(&params, tmp.path(), false).unwrap();
         let contents = fs::read_to_string(tmp.path()).unwrap();
         assert!(contents.contains("@misc{test2024post,"));
     }
@@ -120,7 +120,7 @@ mod tests {
             howpublished: None,
             note: Some("Accessed: 2024-01-01".into()),
         };
-        let result = run_data(&params, tmp.path()).unwrap();
+        let result = run_data(&params, tmp.path(), false).unwrap();
         assert!(result.bib_text.contains("note = {Accessed: 2024-01-01}"));
     }
 }

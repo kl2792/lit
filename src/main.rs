@@ -125,6 +125,9 @@ enum Commands {
         /// Override the auto-generated citekey
         #[arg(long)]
         key: Option<String>,
+        /// Overwrite on citekey collision with a materially different entry
+        #[arg(long)]
+        force: bool,
     },
     /// Verify all entries in a .bib file
     Verify {
@@ -200,6 +203,9 @@ enum Commands {
         /// Optional note field.
         #[arg(long)]
         note: Option<String>,
+        /// Overwrite on citekey collision with a materially different entry
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -347,7 +353,7 @@ async fn main() {
             dir,
             citekey,
         }) => cmd::download::run(&ctx, &id, source, url_only, dir.as_deref(), citekey.as_deref()).await,
-        Some(Commands::Add { input, bib_file, key }) => cmd::add::run(&ctx, &input, &bib_file, key.as_deref()).await,
+        Some(Commands::Add { input, bib_file, key, force }) => cmd::add::run(&ctx, &input, &bib_file, key.as_deref(), force).await,
         Some(Commands::Verify { bib_file, jobs }) => cmd::verify::run(&ctx, &bib_file, jobs).await,
         Some(Commands::Clean { bib_file, apply, prune, tex_dirs }) => {
             let tex_refs: Vec<&std::path::Path> = tex_dirs.iter().map(|p| p.as_path()).collect();
@@ -376,7 +382,8 @@ async fn main() {
             authors,
             howpublished,
             note,
-        }) => run_misc(&ctx, citekey, &bib_file, title, year, authors, howpublished, note),
+            force,
+        }) => run_misc(&ctx, citekey, &bib_file, title, year, authors, howpublished, note, force),
         Some(Commands::Db { action }) => match action {
             DbAction::Stats => run_db_stats(&ctx),
             DbAction::Rebuild => {
@@ -571,6 +578,7 @@ fn run_misc(
     authors: Vec<String>,
     howpublished: Option<String>,
     note: Option<String>,
+    force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let params = cmd::misc::MiscParams {
         citekey,
@@ -580,7 +588,7 @@ fn run_misc(
         howpublished,
         note,
     };
-    let result = cmd::misc::run_data(&params, bib_file)?;
+    let result = cmd::misc::run_data(&params, bib_file, force)?;
     if ctx.json {
         let json = serde_json::json!({
             "entry_key": result.entry_key,

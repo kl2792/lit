@@ -262,7 +262,6 @@ pub fn parse_bib_file(content: &str) -> Vec<BibEntry> {
 /// If an entry with the matching citekey already exists, it is replaced in-place
 /// (preserving surrounding content). Otherwise the entry is appended.
 pub fn upsert_to_file(path: &Path, entry: &str, force: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let _ = force; // collision guard (ADR-001 change 3) lands in the next commit
     let entry = sanitize_for_write(entry);
     let new_key = extract_entry_key(&entry).ok_or("could not parse citekey from BibTeX entry")?;
 
@@ -270,12 +269,46 @@ pub fn upsert_to_file(path: &Path, entry: &str, force: bool) -> Result<(), Box<d
         Ok(s) if !s.is_empty() => s,
         _ => return append_raw(path, &entry),
     };
+    if !force {
+        check_collision(&content, &new_key, &entry)?;
+    }
     if let Some(new_content) = replace_entry_block(&content, &new_key, &entry) {
         fs::write(path, new_content)?;
         Ok(())
     } else {
         append_raw(path, &entry)
     }
+}
+
+/// Abort an upsert that would replace an existing same-key entry whose title
+/// differs materially from the incoming one (ADR-001 change 3).
+///
+/// Comparison is case- and whitespace-insensitive, so same-paper refreshes
+/// (preprint -> conference, metadata fixes) pass; only cross-paper clobbers abort.
+/// Entries without a title on either side are not guarded (nothing to compare).
+fn check_collision(content: &str, key: &str, new_entry: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let existing_title = parse_bib_file(content)
+        .into_iter()
+        .find(|e| e.key == key)
+        .and_then(|e| e.get_field("title").map(str::to_string));
+    let incoming_title = parse_bib_file(new_entry)
+        .first()
+        .and_then(|e| e.get_field("title").map(str::to_string));
+    if let (Some(existing), Some(incoming)) = (existing_title, incoming_title) {
+        if normalize_title(&existing) != normalize_title(&incoming) {
+            return Err(format!(
+                "citekey collision on '{}':\n  existing: {}\n  incoming: {}\nUse --key (add) or a different citekey (misc) to disambiguate, or --force to overwrite.",
+                key, existing, incoming
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Case- and whitespace-insensitive title form for collision comparison.
+fn normalize_title(title: &str) -> String {
+    title.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Sanitize an entry for writing (ADR-001), printing warnings to stderr.
