@@ -157,7 +157,7 @@ fn fetch_pdf_bytes_via_curl(url: &str) -> Result<Vec<u8>, String> {
     let result = if status.success() {
         std::fs::read(&tmp).map_err(|e| format!("download failed: {}", e))
     } else {
-        Err(format!("download failed for {} (curl exit {})", url, status))
+        Err(format!("download failed for {} (curl {})", url, status))
     };
     let _ = std::fs::remove_file(&tmp);
     result
