@@ -118,7 +118,9 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
         bib_text
     };
 
-    bibtex::upsert_to_file(bib_file, &bib_text, force)?;
+    // upsert_to_file returns the sanitized text as written, so the printed
+    // and JSON-emitted entry always matches the file.
+    let bib_text = bibtex::upsert_to_file(bib_file, &bib_text, force)?;
 
     // Opportunistic index
     match input_type {

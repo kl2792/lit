@@ -261,23 +261,29 @@ pub fn parse_bib_file(content: &str) -> Vec<BibEntry> {
 ///
 /// If an entry with the matching citekey already exists, it is replaced in-place
 /// (preserving surrounding content). Otherwise the entry is appended.
-pub fn upsert_to_file(path: &Path, entry: &str, force: bool) -> Result<(), Box<dyn std::error::Error>> {
+///
+/// Returns the sanitized entry text exactly as written, so callers display
+/// and emit the same string that landed in the file.
+pub fn upsert_to_file(path: &Path, entry: &str, force: bool) -> Result<String, Box<dyn std::error::Error>> {
     let entry = sanitize_for_write(entry);
     let new_key = extract_entry_key(&entry).ok_or("could not parse citekey from BibTeX entry")?;
 
     let content = match fs::read_to_string(path) {
         Ok(s) if !s.is_empty() => s,
-        _ => return append_raw(path, &entry),
+        _ => {
+            append_raw(path, &entry)?;
+            return Ok(entry);
+        }
     };
     if !force {
         check_collision(&content, &new_key, &entry)?;
     }
     if let Some(new_content) = replace_entry_block(&content, &new_key, &entry) {
         fs::write(path, new_content)?;
-        Ok(())
     } else {
-        append_raw(path, &entry)
+        append_raw(path, &entry)?;
     }
+    Ok(entry)
 }
 
 /// Abort an upsert that would replace an existing same-key entry whose title
@@ -307,9 +313,11 @@ fn check_collision(content: &str, key: &str, new_entry: &str) -> Result<(), Box<
 }
 
 /// Title form for collision comparison: sanitized (so legacy unsanitized
-/// entries match their sanitized refresh), case- and whitespace-insensitive.
+/// entries match their sanitized refresh), brace-stripped (so `{Bayesian}
+/// Networks` matches `Bayesian Networks`), case- and whitespace-insensitive.
 fn normalize_title(title: &str) -> String {
     crate::sanitize::sanitize_field_value(title)
+        .replace(['{', '}'], "")
         .to_lowercase()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -317,7 +325,7 @@ fn normalize_title(title: &str) -> String {
 }
 
 /// Sanitize an entry for writing (ADR-001), printing warnings to stderr.
-fn sanitize_for_write(entry: &str) -> String {
+pub(crate) fn sanitize_for_write(entry: &str) -> String {
     let outcome = crate::sanitize::sanitize_bibtex(entry);
     for warning in &outcome.warnings {
         crate::format::warn(warning);
@@ -477,8 +485,18 @@ fn remove_entry_block(content: &str, key: &str) -> Option<String> {
     None
 }
 
-pub fn append_to_file(path: &Path, entry: &str) -> Result<(), Box<dyn std::error::Error>> {
-    append_raw(path, &sanitize_for_write(entry))
+/// Sanitize an entry and append it to a .bib file.
+///
+/// Returns the sanitized entry text exactly as written, so callers display
+/// and emit the same string that landed in the file.
+///
+/// Note: sanitization re-serializes the parsed entries, so `@comment`,
+/// `@preamble`, and `@string` blocks in the input are dropped
+/// (`parse_bib_file` skips them).
+pub fn append_to_file(path: &Path, entry: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let entry = sanitize_for_write(entry);
+    append_raw(path, &entry)?;
+    Ok(entry)
 }
 
 /// Append a (pre-sanitized) entry without re-sanitizing.
@@ -631,6 +649,60 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("@article{test2021"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upsert_returns_sanitized_text_matching_file() {
+        let dir = std::env::temp_dir().join("lit_bibtex_upsert_sanitized_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.bib");
+
+        let entry = "@article{amp2020,\n  title = {Tom &amp; Jerry},\n  year = {2020}\n}";
+        let written = upsert_to_file(&path, entry, false).unwrap();
+        assert!(written.contains(r"Tom \& Jerry"), "got: {}", written);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.trim(), written);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_returns_sanitized_text_matching_file() {
+        let dir = std::env::temp_dir().join("lit_bibtex_append_sanitized_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.bib");
+
+        let entry = "@article{amp2020,\n  title = {Tom &amp; Jerry},\n  year = {2020}\n}";
+        let written = append_to_file(&path, entry).unwrap();
+        assert!(written.contains(r"Tom \& Jerry"), "got: {}", written);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.trim(), written);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collision_guard_ignores_brace_protection_in_titles() {
+        // `{Bayesian} Networks` and `Bayesian Networks` are the same title;
+        // a same-paper refresh must pass the guard without --force.
+        let dir = std::env::temp_dir().join("lit_bibtex_brace_title_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.bib");
+
+        std::fs::write(
+            &path,
+            "@book{koller2009pgm,\n  title = {{Bayesian} Networks},\n  year = {2009}\n}\n",
+        )
+        .unwrap();
+        let incoming = "@book{koller2009pgm,\n  title = {Bayesian Networks},\n  year = {2009}\n}";
+        upsert_to_file(&path, incoming, false).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("title = {Bayesian Networks}"), "got: {}", content);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

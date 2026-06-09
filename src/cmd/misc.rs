@@ -42,7 +42,9 @@ pub fn run_data(params: &MiscParams, bib_file: &Path, force: bool) -> Result<Add
 
     let bib_text = format!("@misc{{{},\n{},\n}}", params.citekey, fields.join(",\n"));
 
-    crate::bibtex::upsert_to_file(bib_file, &bib_text, force)?;
+    // upsert_to_file returns the sanitized text as written, so the printed
+    // and JSON-emitted entry always matches the file.
+    let bib_text = crate::bibtex::upsert_to_file(bib_file, &bib_text, force)?;
 
     Ok(AddResult {
         entry_key: params.citekey.clone(),
@@ -92,7 +94,16 @@ pub fn run_pdf_data(
     let result = write_artifact_then_bib(params, bib_file, &dir, &bytes, force);
     if result.is_err() && !dir_existed {
         // Restore nothing-written semantics for directories created this run.
-        let _ = std::fs::remove_dir_all(&dir);
+        // NotFound is fine: the failure may predate the create_dir_all.
+        if let Err(e) = std::fs::remove_dir_all(&dir)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            crate::format::warn(&format!(
+                "rollback failed: {} left behind: {}",
+                dir.display(),
+                e
+            ));
+        }
     }
     result
 }
@@ -239,5 +250,24 @@ mod tests {
         };
         let result = run_data(&params, tmp.path(), false).unwrap();
         assert!(result.bib_text.contains("note = {Accessed: 2024-01-01}"));
+    }
+
+    #[test]
+    fn test_bib_text_matches_file_after_sanitize() {
+        // The returned (printed / JSON-emitted) bib_text must be the
+        // sanitized text as written to the file, not the raw input.
+        let tmp = NamedTempFile::new().unwrap();
+        let params = MiscParams {
+            citekey: "tom2020jerry".into(),
+            title: "Tom &amp; Jerry".into(),
+            authors: vec!["Hanna Barbera".into()],
+            year: "2020".into(),
+            howpublished: None,
+            note: None,
+        };
+        let result = run_data(&params, tmp.path(), false).unwrap();
+        assert!(result.bib_text.contains(r"Tom \& Jerry"), "got: {}", result.bib_text);
+        let contents = fs::read_to_string(tmp.path()).unwrap();
+        assert_eq!(contents.trim(), result.bib_text);
     }
 }

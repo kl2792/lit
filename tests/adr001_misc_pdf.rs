@@ -103,6 +103,29 @@ fn url_failure_nothing_written_and_hint_present() {
 }
 
 #[test]
+fn bib_failure_rolls_back_created_directory() {
+    // Failure in the final bib step (citekey collision without --force) must
+    // remove the directory created this run and leave the bib untouched.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("etc-pdf");
+    std::fs::create_dir_all(&root).unwrap();
+    let bib = tmp.path().join("refs.bib");
+    std::fs::write(
+        &bib,
+        "@misc{maiti2026tier,\n  title = {A Completely Different Paper},\n  year = {2026}\n}\n",
+    )
+    .unwrap();
+    let original = std::fs::read_to_string(&bib).unwrap();
+    let pdf_path = tmp.path().join("input.pdf");
+    std::fs::write(&pdf_path, MINI_PDF).unwrap();
+
+    let result = run_pdf_data(&params("maiti2026tier"), &bib, pdf_path.to_str().unwrap(), false, &root);
+    assert!(result.is_err(), "collision must abort");
+    assert!(!root.join("maiti2026tier").exists(), "created dir must be rolled back");
+    assert_eq!(std::fs::read_to_string(&bib).unwrap(), original, "bib must be unchanged");
+}
+
+#[test]
 fn existing_directory_errors_unless_force() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("etc-pdf");

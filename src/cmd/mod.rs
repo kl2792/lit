@@ -34,17 +34,25 @@ impl Context {
     }
 
     /// Handle -b/--bib: append to file, or print to stdout.
+    ///
+    /// The entry is sanitized once; the same text goes to the file and to
+    /// stdout, so the two destinations never diverge.
     pub fn handle_bib(&self, bibtex: &str) {
-        if !bibtex.contains('@') {
+        if !bibtex.contains('@') || (self.bib_file.is_none() && !self.bib_stdout) {
             return;
         }
-        if let Some(ref path) = self.bib_file {
-            if let Err(e) = crate::bibtex::append_to_file(path, bibtex) {
-                crate::format::warn(&format!("Failed to append to bib file: {}", e));
-            }
-        }
+        let sanitized = match self.bib_file {
+            Some(ref path) => match crate::bibtex::append_to_file(path, bibtex) {
+                Ok(text) => text,
+                Err(e) => {
+                    crate::format::warn(&format!("Failed to append to bib file: {}", e));
+                    crate::bibtex::sanitize_for_write(bibtex)
+                }
+            },
+            None => crate::bibtex::sanitize_for_write(bibtex),
+        };
         if self.bib_stdout {
-            println!("{}", bibtex);
+            println!("{}", sanitized);
         }
     }
 }
@@ -124,20 +132,12 @@ fn display_paper(ctx: &Context, paper: &PaperResult, bibtex: Option<&str>) {
         return;
     }
 
-    // If -b with no file path (bib_stdout), print only BibTeX.
+    // If -b with no file path (bib_stdout), print only BibTeX. handle_bib
+    // also appends to bib_file if given (both can be true) and guarantees
+    // stdout matches the file text.
     if ctx.bib_stdout {
         if let Some(bib) = bibtex {
-            println!("{}", bib);
-        }
-        // Also append to bib_file if given (both can be true).
-        if let Some(ref path) = ctx.bib_file {
-            if let Some(bib) = bibtex {
-                if bib.contains('@') {
-                    if let Err(e) = crate::bibtex::append_to_file(path, bib) {
-                        crate::format::warn(&format!("Failed to append to bib file: {}", e));
-                    }
-                }
-            }
+            ctx.handle_bib(bib);
         }
         return;
     }
@@ -182,19 +182,22 @@ fn display_paper(ctx: &Context, paper: &PaperResult, bibtex: Option<&str>) {
     }
 
     if let Some(bib) = bibtex {
-        println!();
-        println!("{}", bib);
-    }
-
-    // Append to bib file if --bib <file> was given
-    if let Some(ref path) = ctx.bib_file {
-        if let Some(bib) = bibtex {
-            if bib.contains('@') {
-                if let Err(e) = crate::bibtex::append_to_file(path, bib) {
-                    crate::format::warn(&format!("Failed to append to bib file: {}", e));
+        // Append to bib file if --bib <file> was given; display the same
+        // sanitized text that lands in the file.
+        let display_text = match ctx.bib_file {
+            Some(ref path) if bib.contains('@') => {
+                match crate::bibtex::append_to_file(path, bib) {
+                    Ok(text) => text,
+                    Err(e) => {
+                        crate::format::warn(&format!("Failed to append to bib file: {}", e));
+                        bib.to_string()
+                    }
                 }
             }
-        }
+            _ => bib.to_string(),
+        };
+        println!();
+        println!("{}", display_text);
     }
 }
 

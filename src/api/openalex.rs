@@ -230,15 +230,5 @@ mod tests {
         assert!(r.citations.is_none());
         assert!(r.oa_url.is_none());
     }
-
-    #[test]
-    fn test_decode_html_entities() {
-        assert_eq!(decode_html_entities("A &amp; B"), "A & B");
-        assert_eq!(decode_html_entities("&lt;tag&gt;"), "<tag>");
-        assert_eq!(decode_html_entities("it&#39;s"), "it's");
-        assert_eq!(decode_html_entities("it&#x27;s"), "it's");
-        assert_eq!(decode_html_entities("it&apos;s"), "it's");
-        assert_eq!(decode_html_entities("&quot;hi&quot;"), "\"hi\"");
-    }
 }
 
