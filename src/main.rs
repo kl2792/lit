@@ -125,6 +125,9 @@ enum Commands {
         /// Override the auto-generated citekey
         #[arg(long)]
         key: Option<String>,
+        /// Overwrite on citekey collision with a materially different entry
+        #[arg(long)]
+        force: bool,
     },
     /// Verify all entries in a .bib file
     Verify {
@@ -200,6 +203,14 @@ enum Commands {
         /// Optional note field.
         #[arg(long)]
         note: Option<String>,
+        /// PDF artifact (local path or URL): create etc/pdf/<citekey>/ with
+        /// paper.pdf, source.yaml, and paper.txt before writing the bib entry.
+        #[arg(long)]
+        pdf: Option<String>,
+        /// Overwrite on citekey collision with a materially different entry,
+        /// and on an existing etc/pdf/<citekey>/ directory with --pdf
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -347,7 +358,7 @@ async fn main() {
             dir,
             citekey,
         }) => cmd::download::run(&ctx, &id, source, url_only, dir.as_deref(), citekey.as_deref()).await,
-        Some(Commands::Add { input, bib_file, key }) => cmd::add::run(&ctx, &input, &bib_file, key.as_deref()).await,
+        Some(Commands::Add { input, bib_file, key, force }) => cmd::add::run(&ctx, &input, &bib_file, key.as_deref(), force).await,
         Some(Commands::Verify { bib_file, jobs }) => cmd::verify::run(&ctx, &bib_file, jobs).await,
         Some(Commands::Clean { bib_file, apply, prune, tex_dirs }) => {
             let tex_refs: Vec<&std::path::Path> = tex_dirs.iter().map(|p| p.as_path()).collect();
@@ -376,7 +387,9 @@ async fn main() {
             authors,
             howpublished,
             note,
-        }) => run_misc(&ctx, citekey, &bib_file, title, year, authors, howpublished, note),
+            pdf,
+            force,
+        }) => run_misc(&ctx, citekey, &bib_file, title, year, authors, howpublished, note, pdf, force),
         Some(Commands::Db { action }) => match action {
             DbAction::Stats => run_db_stats(&ctx),
             DbAction::Rebuild => {
@@ -571,6 +584,8 @@ fn run_misc(
     authors: Vec<String>,
     howpublished: Option<String>,
     note: Option<String>,
+    pdf: Option<String>,
+    force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let params = cmd::misc::MiscParams {
         citekey,
@@ -580,14 +595,28 @@ fn run_misc(
         howpublished,
         note,
     };
-    let result = cmd::misc::run_data(&params, bib_file)?;
+    let pdf_root = match pdf {
+        Some(_) => Some(cmd::read::find_pdf_base()?),
+        None => None,
+    };
+    let result = match (&pdf, &pdf_root) {
+        (Some(p), Some(root)) => cmd::misc::run_pdf_data(&params, bib_file, p, force, root)?,
+        _ => cmd::misc::run_data(&params, bib_file, force)?,
+    };
+    let artifact_dir = pdf_root.map(|root| root.join(&result.entry_key));
     if ctx.json {
-        let json = serde_json::json!({
+        let mut json = serde_json::json!({
             "entry_key": result.entry_key,
             "bib_file": bib_file.display().to_string(),
         });
+        if let Some(ref dir) = artifact_dir {
+            json["dir"] = serde_json::Value::String(dir.display().to_string());
+        }
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else {
+        if let Some(ref dir) = artifact_dir {
+            println!("Saved: {}", dir.display());
+        }
         println!("Added @misc{{{}}} to {}", result.entry_key, bib_file.display());
     }
     Ok(())

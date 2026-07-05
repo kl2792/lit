@@ -493,10 +493,24 @@ pub fn handle_clean(args: &Value) -> Result<String, String> {
         "orphans".into(),
         Value::Array(report.orphans.iter().map(|k| Value::String(k.clone())).collect()),
     );
+    result.insert(
+        "lint".into(),
+        Value::Array(
+            report
+                .lint
+                .iter()
+                .map(|(key, finding)| json!({"key": key, "finding": finding}))
+                .collect(),
+        ),
+    );
     if apply {
         result.insert(
             "removed".into(),
             Value::Array(report.removed.iter().map(|k| Value::String(k.clone())).collect()),
+        );
+        result.insert(
+            "lint_fixed".into(),
+            Value::Array(report.lint_fixed.iter().map(|k| Value::String(k.clone())).collect()),
         );
     }
 
@@ -519,7 +533,7 @@ pub fn handle_misc(args: &Value) -> Result<String, String> {
     let bib_path = validate_bib_file(bib_raw)?;
 
     let params = cmd::misc::MiscParams { citekey, title, authors, year, howpublished, note };
-    let result = cmd::misc::run_data(&params, &bib_path).map_err(|e| e.to_string())?;
+    let result = cmd::misc::run_data(&params, &bib_path, false).map_err(|e| e.to_string())?;
     let json = json!({
         "entry_key": result.entry_key,
         "bib_file": bib_path.display().to_string(),
@@ -531,7 +545,7 @@ pub async fn handle_add(ctx: &cmd::Context, args: &Value) -> Result<String, Stri
     let input = args["input"].as_str().ok_or("missing 'input'")?;
     let bib_raw = args["bib_file"].as_str().ok_or("missing 'bib_file'")?;
     let bib_path = validate_bib_file(bib_raw)?;
-    let result = cmd::add::run_data(ctx, input, &bib_path, None)
+    let result = cmd::add::run_data(ctx, input, &bib_path, None, false)
         .await
         .map_err(|e| e.to_string())?;
     let json = json!({

@@ -34,19 +34,56 @@ impl Context {
     }
 
     /// Handle -b/--bib: append to file, or print to stdout.
+    ///
+    /// The entry is sanitized once; the same text goes to the file and to
+    /// stdout, so the two destinations never diverge.
     pub fn handle_bib(&self, bibtex: &str) {
-        if !bibtex.contains('@') {
+        if !bibtex.contains('@') || (self.bib_file.is_none() && !self.bib_stdout) {
             return;
         }
-        if let Some(ref path) = self.bib_file {
-            if let Err(e) = crate::bibtex::append_to_file(path, bibtex) {
-                crate::format::warn(&format!("Failed to append to bib file: {}", e));
-            }
-        }
+        let sanitized = match self.bib_file {
+            Some(ref path) => match crate::bibtex::append_to_file(path, bibtex) {
+                Ok(text) => text,
+                Err(e) => {
+                    crate::format::warn(&format!("Failed to append to bib file: {}", e));
+                    crate::bibtex::sanitize_for_write(bibtex)
+                }
+            },
+            None => crate::bibtex::sanitize_for_write(bibtex),
+        };
         if self.bib_stdout {
-            println!("{}", bibtex);
+            println!("{}", sanitized);
         }
     }
+}
+
+/// Today's date as `YYYY-MM-DD` (UTC, no external crate).
+///
+/// Note: download.rs carries a private copy of this helper; consolidate there
+/// once its pending local changes land.
+pub(crate) fn today_string() -> String {
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = since_epoch / 86400;
+    let (year, month, day) = days_to_ymd(days);
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
+/// Civil-date conversion (Howard Hinnant's algorithm), days since 1970-01-01.
+fn days_to_ymd(days: u64) -> (u64, u64, u64) {
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 /// Opportunistic upsert: index a paper into the local DB, warn on failure.
@@ -74,6 +111,11 @@ pub async fn auto_dispatch(ctx: &Context, input: &str, open: bool) -> Result<(),
             // OL URL: open it in the browser (lookup not supported)
             open::run(ctx, input)
         }
+        InputType::Causalai => {
+            let lr = lookup_causalai_data(ctx, input).await?;
+            display_paper(ctx, &lr.paper, lr.bibtex.as_deref());
+            Ok(())
+        }
         InputType::Url => {
             let lr = lookup_url_data(ctx, input).await?;
             display_paper(ctx, &lr.paper, lr.bibtex.as_deref());
@@ -95,20 +137,12 @@ fn display_paper(ctx: &Context, paper: &PaperResult, bibtex: Option<&str>) {
         return;
     }
 
-    // If -b with no file path (bib_stdout), print only BibTeX.
+    // If -b with no file path (bib_stdout), print only BibTeX. handle_bib
+    // also appends to bib_file if given (both can be true) and guarantees
+    // stdout matches the file text.
     if ctx.bib_stdout {
         if let Some(bib) = bibtex {
-            println!("{}", bib);
-        }
-        // Also append to bib_file if given (both can be true).
-        if let Some(ref path) = ctx.bib_file {
-            if let Some(bib) = bibtex {
-                if bib.contains('@') {
-                    if let Err(e) = crate::bibtex::append_to_file(path, bib) {
-                        crate::format::warn(&format!("Failed to append to bib file: {}", e));
-                    }
-                }
-            }
+            ctx.handle_bib(bib);
         }
         return;
     }
@@ -153,19 +187,22 @@ fn display_paper(ctx: &Context, paper: &PaperResult, bibtex: Option<&str>) {
     }
 
     if let Some(bib) = bibtex {
-        println!();
-        println!("{}", bib);
-    }
-
-    // Append to bib file if --bib <file> was given
-    if let Some(ref path) = ctx.bib_file {
-        if let Some(bib) = bibtex {
-            if bib.contains('@') {
-                if let Err(e) = crate::bibtex::append_to_file(path, bib) {
-                    crate::format::warn(&format!("Failed to append to bib file: {}", e));
+        // Append to bib file if --bib <file> was given; display the same
+        // sanitized text that lands in the file.
+        let display_text = match ctx.bib_file {
+            Some(ref path) if bib.contains('@') => {
+                match crate::bibtex::append_to_file(path, bib) {
+                    Ok(text) => text,
+                    Err(e) => {
+                        crate::format::warn(&format!("Failed to append to bib file: {}", e));
+                        bib.to_string()
+                    }
                 }
             }
-        }
+            _ => bib.to_string(),
+        };
+        println!();
+        println!("{}", display_text);
     }
 }
 
@@ -484,11 +521,21 @@ pub async fn lookup_data(ctx: &Context, input: &str) -> Result<LookupResult, Box
         InputType::OpenLibraryUrl => {
             Err("Open Library URLs are not supported for lookup_data; use lit add instead".into())
         }
+        InputType::Causalai => lookup_causalai_data(ctx, input).await,
         InputType::Url => lookup_url_data(ctx, input).await,
         InputType::Search => {
             Err("Search queries are not supported for lookup_data; use search instead".into())
         }
     }
+}
+
+/// Look up a CausalAI tech report by downloading its PDF and parsing the title page.
+async fn lookup_causalai_data(_ctx: &Context, input: &str) -> Result<LookupResult, Box<dyn std::error::Error>> {
+    let id = crate::detect::normalize_causalai(input)
+        .ok_or_else(|| format!("could not parse a report number from: {}", input))?;
+    let (meta, _bytes) = crate::api::causalai::fetch(&id)?;
+    let paper = crate::api::causalai::to_paper_result(&meta, &id);
+    Ok(LookupResult { paper, bibtex: None })
 }
 
 /// Look up a paper from an arbitrary HTTPS URL by extracting the title and searching.
@@ -718,7 +765,11 @@ async fn lookup_philpapers_url(ctx: &Context, url: &str) -> Result<(), Box<dyn s
 async fn lookup_dblp_url(ctx: &Context, url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let lr = lookup_dblp_url_data(ctx, url).await?;
     if let Some(ref bib) = lr.bibtex {
-        println!("{}", bib);
+        // Display the sanitized text (handle_bib prints it itself under bare -b),
+        // so stdout and any -b file destination never diverge.
+        if !ctx.bib_stdout {
+            println!("{}", crate::bibtex::sanitize_for_write(bib));
+        }
         ctx.handle_bib(bib);
     }
     Ok(())

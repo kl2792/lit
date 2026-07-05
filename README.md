@@ -33,21 +33,25 @@ lit "attention is all you need"       # search
 ### Commands
 
 ```
-lit search <query> [-l N] [-s oa|ss|cr|dblp|book|philpapers|all] [--remote]
-                                 Search papers; local DB by default
+lit search <query> [-l N] [-s oa|ss|cr|dblp|book|philpapers|clio|all] [--local]
+                                 Search papers (remote APIs; --local = downloaded only)
 lit refs <id> [--hops N]         Get references of a paper
 lit cites <id> [--hops N]        Get papers that cite this paper
 lit path <a> <b> [--max-hops N]  Shortest citation path between two papers
 lit download <id> [--source] [--url-only] [--dir DIR]
                                  Download PDF; --source for arXiv LaTeX source
 lit read <id>                    Locate paper text; auto-downloads arXiv PDFs
-lit add <id> <bib_file>          Fetch BibTeX and append to file
-lit misc <key> <bib_file> -t TITLE -y YEAR -a AUTHOR ...
-                                 Append hand-rolled @misc entry
+lit add <id> <bib_file> [--key KEY] [--force]
+                                 Fetch BibTeX and upsert into file
+lit misc <key> <bib_file> -t TITLE -y YEAR -a AUTHOR ... [--pdf PATH|URL] [--force]
+                                 Append hand-rolled @misc entry; --pdf also
+                                 ingests the artifact into etc/pdf/<key>/
 lit remove <key> <bib_file>      Remove an entry by citekey
 lit verify <bib_file> [-j N]     Verify .bib entries against APIs
 lit clean <bib_file> [--apply] [--prune] [--tex DIR ...]
-                                 Scan for malformed entries, dupes, orphans
+                                 Scan for malformed entries, dupes, orphans,
+                                 and LaTeX-breaking artifacts (&amp;, Unicode
+                                 dashes, non-macro months)
 lit check [--fix] [--conflicts]  Check DB<->filesystem consistency
 lit db stats|rebuild|rollback    Database operations
 ```
@@ -72,6 +76,8 @@ lit db stats|rebuild|rollback    Database operations
 | `cr` | CrossRef | |
 | `dblp` | DBLP | CS venue papers |
 | `book` | OpenLibrary | Books |
+| `philpapers` | PhilPapers | Philosophy |
+| `clio` | Columbia Clio catalog | Local index; requires `lit clio sync` |
 | `all` | All sources | Merge results |
 | *(none)* | Cascade | OA -> SS -> CR -> books |
 
