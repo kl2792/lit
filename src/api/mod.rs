@@ -1,4 +1,5 @@
 pub mod arxiv;
+pub mod causalai;
 pub mod clio;
 pub mod crossref;
 pub mod dblp;

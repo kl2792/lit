@@ -148,7 +148,7 @@ fn build_misc_source_yaml(params: &MiscParams, retrieved: &str) -> String {
 }
 
 /// Fetch a URL as bytes via curl (the convention for all PDF fetches).
-fn fetch_pdf_bytes_via_curl(url: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn fetch_pdf_bytes_via_curl(url: &str) -> Result<Vec<u8>, String> {
     let tmp = std::env::temp_dir().join(format!("lit_misc_dl_{}.pdf", std::process::id()));
     let status = std::process::Command::new("curl")
         .args([

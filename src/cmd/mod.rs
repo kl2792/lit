@@ -111,6 +111,11 @@ pub async fn auto_dispatch(ctx: &Context, input: &str, open: bool) -> Result<(),
             // OL URL: open it in the browser (lookup not supported)
             open::run(ctx, input)
         }
+        InputType::Causalai => {
+            let lr = lookup_causalai_data(ctx, input).await?;
+            display_paper(ctx, &lr.paper, lr.bibtex.as_deref());
+            Ok(())
+        }
         InputType::Url => {
             let lr = lookup_url_data(ctx, input).await?;
             display_paper(ctx, &lr.paper, lr.bibtex.as_deref());
@@ -516,11 +521,21 @@ pub async fn lookup_data(ctx: &Context, input: &str) -> Result<LookupResult, Box
         InputType::OpenLibraryUrl => {
             Err("Open Library URLs are not supported for lookup_data; use lit add instead".into())
         }
+        InputType::Causalai => lookup_causalai_data(ctx, input).await,
         InputType::Url => lookup_url_data(ctx, input).await,
         InputType::Search => {
             Err("Search queries are not supported for lookup_data; use search instead".into())
         }
     }
+}
+
+/// Look up a CausalAI tech report by downloading its PDF and parsing the title page.
+async fn lookup_causalai_data(_ctx: &Context, input: &str) -> Result<LookupResult, Box<dyn std::error::Error>> {
+    let id = crate::detect::normalize_causalai(input)
+        .ok_or_else(|| format!("could not parse a report number from: {}", input))?;
+    let (meta, _bytes) = crate::api::causalai::fetch(&id)?;
+    let paper = crate::api::causalai::to_paper_result(&meta, &id);
+    Ok(LookupResult { paper, bibtex: None })
 }
 
 /// Look up a paper from an arbitrary HTTPS URL by extracting the title and searching.

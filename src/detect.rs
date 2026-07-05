@@ -20,6 +20,11 @@ static PHILPAPERS_URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://philpapers\.org/rec/").unwrap());
 static OL_URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://openlibrary\.org/(works|books)/").unwrap());
+static CAUSALAI_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^https?://(www\.)?causalai\.net/r[0-9]+(\.pdf)?/?$").unwrap()
+});
+static CAUSALAI_SCHEME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^causalai:r?[0-9]+$").unwrap());
 static ARXIV_NEW_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(arXiv:|arxiv:)?[0-9]{4}\.[0-9]{4,5}(v[0-9]+)?$").unwrap());
 static ARXIV_OLD_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -41,6 +46,8 @@ pub enum InputType {
     SemanticScholarUrl,
     PhilPapersUrl,
     OpenLibraryUrl,
+    /// CausalAI Lab technical report (causalai.net/rNNN or `causalai:rNNN`).
+    Causalai,
     Url,
     Search,
 }
@@ -79,6 +86,13 @@ pub fn detect_type(input: &str) -> InputType {
 
     if OL_URL_RE.is_match(input) {
         return InputType::OpenLibraryUrl;
+    }
+
+    // CausalAI tech report: causalai.net URL or `causalai:rNNN` scheme.
+    // Checked before the generic URL fallback so the report PDF is ingested
+    // rather than scraped as an HTML title.
+    if CAUSALAI_URL_RE.is_match(input) || CAUSALAI_SCHEME_RE.is_match(input) {
+        return InputType::Causalai;
     }
 
     // Any remaining https/http URL not matched above
@@ -164,6 +178,25 @@ pub fn normalize_doi(input: &str) -> String {
 /// Strip hyphens and spaces from an ISBN string.
 pub fn normalize_isbn(input: &str) -> String {
     input.chars().filter(|c| *c != '-' && *c != ' ').collect()
+}
+
+/// Extract the canonical report id (e.g. `r145`) from any accepted CausalAI
+/// input: a `causalai.net/rNNN[.pdf]` URL or a `causalai:rNNN` / `causalai:NNN`
+/// scheme. Returns `None` if no report number is present.
+pub fn normalize_causalai(input: &str) -> Option<String> {
+    // Take the final path/scheme segment ("r145.pdf", "r145", or "145"),
+    // then keep only its digits.
+    let segment = input
+        .trim_end_matches('/')
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or("");
+    let digits: String = segment.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        Some(format!("r{}", digits))
+    }
 }
 
 #[cfg(test)]
@@ -370,6 +403,42 @@ mod tests {
             detect_type("http://openlibrary.org/books/OL13955598M"),
             InputType::OpenLibraryUrl
         );
+    }
+
+    #[test]
+    fn detect_causalai_pdf_url() {
+        assert_eq!(detect_type("https://causalai.net/r145.pdf"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_url_no_pdf() {
+        assert_eq!(detect_type("https://causalai.net/r125"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_www_http() {
+        assert_eq!(detect_type("http://www.causalai.net/r152.pdf"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_scheme() {
+        assert_eq!(detect_type("causalai:r145"), InputType::Causalai);
+        assert_eq!(detect_type("causalai:152"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_other_path_is_plain_url() {
+        // Non-report causalai.net pages fall through to the generic URL handler.
+        assert_eq!(detect_type("https://causalai.net/publications"), InputType::Url);
+    }
+
+    #[test]
+    fn normalize_causalai_variants() {
+        assert_eq!(normalize_causalai("https://causalai.net/r145.pdf").as_deref(), Some("r145"));
+        assert_eq!(normalize_causalai("https://www.causalai.net/r125/").as_deref(), Some("r125"));
+        assert_eq!(normalize_causalai("causalai:r152").as_deref(), Some("r152"));
+        assert_eq!(normalize_causalai("causalai:152").as_deref(), Some("r152"));
+        assert_eq!(normalize_causalai("causalai:rabbit").as_deref(), None);
     }
 
     #[test]
