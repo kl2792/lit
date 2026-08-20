@@ -92,7 +92,9 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
             fetch_ol_bibtex(ctx, input).await?
         }
         InputType::Url => {
-            let title = fetch_title_from_url(input).await?;
+            // A proceedings landing page is HTML; its PDF is where the title is.
+            let target = crate::proceedings::pdf_url(input).unwrap_or_else(|| input.to_string());
+            let title = fetch_title_from_url(&target).await?;
             eprintln!("Extracted title: {}", &title[..title.len().min(80)]);
             let top = super::search::resolve_top(ctx, &title).await?;
             resolve_bibtex_from_result(ctx, &top).await?
@@ -248,9 +250,14 @@ pub async fn fetch_title_from_url(url: &str) -> Result<String, Box<dyn std::erro
         .build()?;
 
     let bytes = client.get(url).send().await?.bytes().await?;
+    title_from_pdf_bytes(&bytes)
+}
 
-    let tmp_path = std::env::temp_dir().join("lit_url_download.pdf");
-    std::fs::write(&tmp_path, &bytes)?;
+/// Extract a title from PDF bytes: the first line of `pdftotext` output with
+/// more than 15 characters.
+pub fn title_from_pdf_bytes(bytes: &[u8]) -> Result<String, Box<dyn std::error::Error>> {
+    let tmp_path = std::env::temp_dir().join(format!("lit_title_{}.pdf", std::process::id()));
+    std::fs::write(&tmp_path, bytes)?;
 
     let output = Command::new("pdftotext")
         .arg(&tmp_path)

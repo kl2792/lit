@@ -493,7 +493,9 @@ pub async fn lookup_data(ctx: &Context, input: &str) -> Result<LookupResult, Box
 
 /// Look up a paper from an arbitrary HTTPS URL by extracting the title and searching.
 async fn lookup_url_data(ctx: &Context, url: &str) -> Result<LookupResult, Box<dyn std::error::Error>> {
-    let title = add::fetch_title_from_url(url).await?;
+    // A proceedings landing page is HTML; its PDF is where the title is.
+    let target = crate::proceedings::pdf_url(url).unwrap_or_else(|| url.to_string());
+    let title = add::fetch_title_from_url(&target).await?;
     eprintln!("Extracted title: {}", &title[..title.len().min(80)]);
     let top = search::resolve_top(ctx, &title).await?;
     if let Some(ref doi) = top.doi {

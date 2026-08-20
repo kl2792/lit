@@ -482,22 +482,25 @@ fn run_db_stats(ctx: &cmd::Context) -> Result<(), Box<dyn std::error::Error>> {
 async fn run_read(ctx: &cmd::Context, id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let result = match cmd::read::run_data(ctx, id) {
         Ok(r) => r,
+        // Not downloaded yet: fetch it when the identifier says where it lives.
         Err(_) => {
             let normalized = id.trim();
-            let looks_like_arxiv = normalized
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_digit())
-                || normalized.starts_with("arxiv:");
-            if !looks_like_arxiv {
+            if lit::proceedings::pdf_url(normalized).is_some() {
+                let dir = cmd::download::fetch_proceedings(ctx, normalized, None).await?;
+                let citekey = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                cmd::read::run_data(ctx, &citekey)?
+            } else if normalized.chars().next().is_some_and(|c| c.is_ascii_digit())
+                || normalized.starts_with("arxiv:")
+            {
+                cmd::download::run(ctx, normalized, true, false, None, None).await?;
+                cmd::read::run_data(ctx, id)?
+            } else {
                 return Err(format!(
-                    "paper '{}' not found locally. Download it first with an arXiv ID.",
+                    "paper '{}' not found locally. Download it first with an arXiv ID or a proceedings URL.",
                     id
                 )
                 .into());
             }
-            cmd::download::run(ctx, normalized, true, false, None, None).await?;
-            cmd::read::run_data(ctx, id)?
         }
     };
 

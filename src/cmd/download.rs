@@ -38,6 +38,18 @@ pub async fn run(
 async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     use crate::api::{openalex as oa_api, semantic_scholar as s2_api};
 
+    // Proceedings landing pages state their PDF in the URL, so they skip the
+    // DOI cascade below, which has no open-access record to find for them.
+    if let Some(pdf) = crate::proceedings::pdf_url(input) {
+        if url_only {
+            println!("{}", pdf);
+            return Ok(());
+        }
+        let dir = fetch_proceedings(ctx, input, citekey).await?;
+        println!("Saved: {}", dir.display());
+        return Ok(());
+    }
+
     let doi = normalize_doi(input);
     let client = ctx.client();
 
@@ -130,7 +142,7 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&st
                 .arg(dir_name.join("paper.txt"))
                 .status();
             let today = today_string();
-            let yaml = build_doi_source_yaml(&meta, &doi, &today);
+            let yaml = build_source_yaml_field(&meta, "doi", &doi, &today);
             std::fs::write(dir_name.join("source.yaml"), &yaml)?;
             let kb = data.len() / 1024;
             println!("Saved: {} ({}KB)", dir_name.display(), kb);
@@ -148,6 +160,47 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&st
     }
 
     Ok(())
+}
+
+/// Download a paper from a proceedings landing page into `etc/pdf/<citekey>/`.
+///
+/// The landing page carries no machine-readable metadata, so the title comes
+/// from the PDF itself and the remaining fields from the usual search
+/// resolution. Returns the directory written.
+pub async fn fetch_proceedings(
+    ctx: &Context,
+    url: &str,
+    citekey: Option<&str>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let pdf_url = crate::proceedings::pdf_url(url)
+        .ok_or_else(|| format!("not a recognized proceedings URL: {}", url))?;
+
+    format::info(&format!("Fetching proceedings PDF: {}", pdf_url));
+    let data = fetch_pdf_via_curl(&pdf_url, None)
+        .await
+        .ok_or_else(|| format!("no PDF at {}", pdf_url))?;
+
+    let title = super::add::title_from_pdf_bytes(&data)?;
+    let meta = super::search::resolve_top(ctx, &title).await.unwrap_or(PaperResult {
+        title,
+        ..Default::default()
+    });
+
+    let dir_name = default_output_dir()
+        .join(citekey.map(|k| k.to_string()).unwrap_or_else(|| generate_dir_name(&meta)));
+    std::fs::create_dir_all(&dir_name)?;
+
+    let pdf_path = dir_name.join("paper.pdf");
+    std::fs::write(&pdf_path, &data)?;
+    let _ = Command::new("pdftotext")
+        .arg(&pdf_path)
+        .arg(dir_name.join("paper.txt"))
+        .status();
+
+    let yaml = build_source_yaml_field(&meta, "url", url, &today_string());
+    std::fs::write(dir_name.join("source.yaml"), &yaml)?;
+
+    Ok(dir_name)
 }
 
 /// Fetch URL as bytes via curl, returning Some only if the response is a valid PDF.
@@ -174,12 +227,14 @@ async fn fetch_pdf_via_curl(url: &str, cookie_path: Option<&std::path::Path>) ->
     if data.starts_with(b"%PDF") { Some(data) } else { None }
 }
 
-fn build_doi_source_yaml(paper: &PaperResult, doi: &str, retrieved: &str) -> String {
+/// Build a `source.yaml` whose provenance is one field: `doi` for the DOI
+/// cascade, `url` for a proceedings landing page.
+fn build_source_yaml_field(paper: &PaperResult, field: &str, value: &str, retrieved: &str) -> String {
     let authors_str = paper.authors.join(" and ").replace('"', "\\\"");
     let title = paper.title.replace('"', "\\\"");
     format!(
-        "title: \"{}\"\nauthors: \"{}\"\nyear: {}\ndoi: \"{}\"\nretrieved: \"{}\"\n",
-        title, authors_str, paper.year, doi, retrieved
+        "title: \"{}\"\nauthors: \"{}\"\nyear: {}\n{}: \"{}\"\nretrieved: \"{}\"\n",
+        title, authors_str, paper.year, field, value, retrieved
     )
 }
 

@@ -158,6 +158,18 @@ cat "$(lit read 2006.11239)"
 grep -i "diffusion" "$(lit read 2006.11239)"
 ```
 
+`lit read` also accepts a proceedings landing page, for the many conference
+papers with no arXiv mirror and no DOI that resolves to a file:
+
+```
+lit read "https://proceedings.neurips.cc/paper/2021/hash/<hash>-Abstract.html"
+```
+
+NeurIPS, PMLR, OpenReview, and the ACL Anthology each state the PDF in the
+landing-page URL, so `lit` rewrites the URL, takes the title from the PDF, and
+files it under the usual citekey. The same URLs work with `lit`, `lit add`, and
+`lit download`.
+
 If the paper isn't cached and the ID looks like arXiv, `lit read` auto-downloads
 the PDF, extracts text, then returns the path. Behaviour mirrors the historical
 MCP handler.

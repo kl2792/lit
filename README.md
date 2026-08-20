@@ -26,6 +26,7 @@ lit 10.1145/3442188.3445899           # DOI lookup
 lit https://arxiv.org/abs/2006.11239  # arXiv URL
 lit https://doi.org/10.1145/...       # DOI URL
 lit https://dblp.org/rec/...          # DBLP URL -> BibTeX
+lit https://proceedings.neurips.cc/...  # proceedings page -> PDF + metadata
 lit 978-0262039246                    # ISBN lookup
 lit "attention is all you need"       # search
 ```
