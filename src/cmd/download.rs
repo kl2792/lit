@@ -175,16 +175,24 @@ pub async fn fetch_proceedings(
     let pdf_url = crate::proceedings::pdf_url(url)
         .ok_or_else(|| format!("not a recognized proceedings URL: {}", url))?;
 
-    format::info(&format!("Fetching proceedings PDF: {}", pdf_url));
+    format::info(&format!("Fetching PDF: {}", pdf_url));
     let data = fetch_pdf_via_curl(&pdf_url, None)
         .await
         .ok_or_else(|| format!("no PDF at {}", pdf_url))?;
 
-    let title = super::add::title_from_pdf_bytes(&data)?;
-    let meta = super::search::resolve_top(ctx, &title).await.unwrap_or(PaperResult {
-        title,
-        ..Default::default()
-    });
+    // A scanned PDF carries no text layer, so the title is unrecoverable from
+    // it. That costs us the metadata lookup, but an explicit citekey already
+    // names the directory, so the download itself still stands.
+    let meta = match super::add::title_from_pdf_bytes(&data) {
+        Ok(title) => super::search::resolve_top(ctx, &title)
+            .await
+            .unwrap_or(PaperResult { title, ..Default::default() }),
+        Err(e) if citekey.is_some() => {
+            format::warn(&format!("No title in PDF ({}); recording it under the given citekey.", e));
+            PaperResult::default()
+        }
+        Err(e) => return Err(e),
+    };
 
     let dir_name = default_output_dir()
         .join(citekey.map(|k| k.to_string()).unwrap_or_else(|| generate_dir_name(&meta)));

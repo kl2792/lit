@@ -32,10 +32,15 @@ static OPENREVIEW_RE: LazyLock<Regex> =
 static ACL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://aclanthology\.org/([^/]+)/?$").unwrap());
 
+/// Any http(s) URL whose path ends in `.pdf`, ignoring query and fragment.
+static DIRECT_PDF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^https?://[^?#]+\.pdf(?:[?#]|$)").unwrap());
+
 /// Rewrite a proceedings landing-page URL into its PDF URL.
 ///
-/// Returns `None` for every other input, including a URL that is already a PDF,
-/// so callers can treat `Some` as "this host is handled here".
+/// A URL that already points at a PDF denotes itself, so a direct PDF link and
+/// a landing page reach the fetch path the same way. Returns `None` for every
+/// other input, so callers can treat `Some` as "there is a PDF at this URL".
 pub fn pdf_url(url: &str) -> Option<String> {
     let url = url.trim();
 
@@ -53,10 +58,13 @@ pub fn pdf_url(url: &str) -> Option<String> {
 
     if let Some(c) = ACL_RE.captures(url) {
         let id = &c[1];
-        if id.ends_with(".pdf") {
-            return None;
+        if !id.ends_with(".pdf") {
+            return Some(format!("https://aclanthology.org/{}.pdf", id));
         }
-        return Some(format!("https://aclanthology.org/{}.pdf", id));
+    }
+
+    if DIRECT_PDF_RE.is_match(url) {
+        return Some(url.to_string());
     }
 
     None
@@ -146,12 +154,24 @@ mod tests {
             "https://doi.org/10.1234/foo",
             "10.1234/foo",
             "structural credit assignment",
-            "https://example.com/paper.pdf",
-            "https://aclanthology.org/2020.acl-main.1.pdf",
-            "https://proceedings.neurips.cc/paper/2021/file/abc-Paper.pdf",
             "https://proceedings.mlr.press/v139/",
+            "https://example.com/paper.pdfx",
+            "ftp://example.com/paper.pdf",
         ] {
             assert_eq!(pdf_url(input), None, "expected None for {}", input);
+        }
+    }
+
+    #[test]
+    fn direct_pdf_urls_denote_themselves() {
+        for input in [
+            "https://example.com/paper.pdf",
+            "http://incompleteideas.net/papers/Sutton-PhD-thesis.pdf",
+            "https://aclanthology.org/2020.acl-main.1.pdf",
+            "https://proceedings.neurips.cc/paper/2021/file/abc-Paper.pdf",
+            "https://example.com/a.pdf?token=1",
+        ] {
+            assert_eq!(pdf_url(input).as_deref(), Some(input), "expected identity for {}", input);
         }
     }
 }
