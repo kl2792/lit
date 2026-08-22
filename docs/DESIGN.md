@@ -140,6 +140,19 @@ Search returns an array of these.
 `entry_key` is the canonical key as written to the file.
 **Callers must use this value for `\cite{}`; never construct the key heuristically.**
 
+When the input is a URL, `lit` reads the title off the PDF and searches for it.
+If the best result carries a different title, the command fails with
+
+```
+Search for "<title from the PDF>" returned "<title found>", which is a different paper
+```
+
+rather than filing the PDF under that paper's metadata. A title read off a PDF
+is not a query: the paper's name is already known, so a result by another name
+is the wrong paper. `lit download` handles the same error by keeping the
+title the PDF gave and recording the paper under it. A plain search query is
+unaffected, since there the best available match is the intended answer.
+
 ### `lit refs` / `lit cites`
 
 ```json
@@ -165,10 +178,25 @@ Search returns an array of these.
 ```json
 {
   "path": "/abs/path/to/extracted.txt",
-  "format": "text",         // "text" | "markdown"
+  "format": "txt (generated from PDF)",
   "auto_downloaded": true   // present only when the PDF was fetched on this call
 }
 ```
+
+`format` names the source the text came from, and is one of:
+
+| `format` | Meaning |
+|---|---|
+| `tex` | LaTeX source, preferred when present |
+| `txt` | A `paper.txt` that was already cached |
+| `txt (generated from PDF)` | Freshly extracted from the PDF's text layer |
+| `txt (recognised from scanned pages)` | Recovered by OCR under `--ocr` |
+| `txt (PDF is a scan with no text layer; re-run with --ocr to read it)` | The PDF carries page images only, and OCR was not requested |
+
+The last row is the one to branch on: `path` exists and is readable, but the
+file is near-empty. A scan is reported rather than silently recognised because
+OCR rasterises every page at 300 dpi and runs `tesseract` on each, which costs
+minutes on a long document. `--ocr` is the caller's decision to spend that.
 
 ### `lit verify` / `lit clean`
 
@@ -179,10 +207,17 @@ See README examples.
 
 ## Cache and rate-limit behavior
 
-- **Location:** `LIT_CACHE_DIR` (default: `etc/lit/cache` relative to binary).
-- **TTL:** 24 hours for search results, 7 days for identifier lookups.
+- **Location:** a table inside the SQLite database at `LIT_DB_PATH`.
+  Cache and index share one file so that a lookup and its cached response can
+  never disagree about which paper they describe. A `cache/` directory sitting
+  beside the database is read once, on startup, and folded into the table;
+  that path is a migration route off the old filesystem cache, not a location
+  `lit` writes to.
+- **TTL:** 24 hours for search results (`LIT_TTL_SEARCH`), 7 days for
+  identifier lookups (`LIT_TTL_LOOKUP`).
 - **Invalidation:** `--no-cache` bypasses on a single call.
-  No "clear cache" subcommand by design — delete the directory if you need a full reset.
+  There is no "clear cache" subcommand: the cache lives in the index, so
+  clearing it means deleting the database and running `lit db rebuild`.
 - **Rate limits:** respected per source. `S2_API_KEY` raises Semantic Scholar's shared-pool limit.
 - **`LIT_EMAIL`** is sent to Unpaywall to comply with their terms.
 

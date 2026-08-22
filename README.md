@@ -41,7 +41,8 @@ lit cites <id> [--hops N]        Get papers that cite this paper
 lit path <a> <b> [--max-hops N]  Shortest citation path between two papers
 lit download <id> [--source] [--url-only] [--dir DIR]
                                  Download PDF; --source for arXiv LaTeX source
-lit read <id>                    Locate paper text; auto-downloads arXiv PDFs
+lit read <id> [--ocr]            Locate paper text; auto-downloads arXiv PDFs
+                                 --ocr reads a scan with no text layer (slow)
 lit add <id> <bib_file>          Fetch BibTeX and append to file
 lit misc <key> <bib_file> -t TITLE -y YEAR -a AUTHOR ...
                                  Append hand-rolled @misc entry
@@ -80,11 +81,20 @@ lit db stats|rebuild|rollback    Database operations
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LIT_CACHE_DIR` | `etc/lit/cache` (relative to binary) | Cache directory |
+| `LIT_DB_PATH` | `~/Library/Application Support/lit/lit.db` (macOS), `~/.local/share/lit/lit.db` (Linux) | SQLite file holding the paper index and the API cache |
+| `LIT_PDF_DIR` | `lit/pdf` beside the database | Where downloaded PDFs are stored |
+| `LIT_PDF_EXTRACTOR` | *(unset)* | Command replacing the built-in `pdftotext` |
+| `LIT_TTL_LOOKUP` | `604800` (7 days) | Seconds a cached identifier lookup stays fresh |
+| `LIT_TTL_SEARCH` | `86400` (1 day) | Seconds a cached search result stays fresh |
+| `LIT_SOURCE` | *(unset)* | Default `--source` for search |
+| `LIT_DUMP_ENABLED` | `1` | Set to `0` to stop recording raw API responses |
 | `CURL_TIMEOUT` | `15` | HTTP timeout in seconds |
 | `NO_COLOR` | *(unset)* | Set to any non-empty value to disable color |
-| `LIT_EMAIL` | `lit-cli@users.noreply.github.com` | Email for Unpaywall API |
+| `LIT_EMAIL` | `lit-user@example.com` | Email for Unpaywall API |
 | `S2_API_KEY` | *(unset)* | Semantic Scholar API key (free, avoids shared rate limits) |
+
+The cache is a table inside the database, not a directory. `LIT_DB_PATH`
+therefore relocates the cache along with the index.
 
 ## Examples
 

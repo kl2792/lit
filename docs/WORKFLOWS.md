@@ -174,6 +174,30 @@ If the paper isn't cached and the ID looks like arXiv, `lit read` auto-downloads
 the PDF, extracts text, then returns the path. Behaviour mirrors the historical
 MCP handler.
 
+### Scanned PDFs
+
+An older paper is often a scan: page images with no text layer, from which
+`pdftotext` recovers nothing. `lit` says so instead of handing back a blank file:
+
+```bash
+lit read minsky1961steps --json
+# → {"path": "...", "format": "txt (PDF is a scan with no text layer; re-run with --ocr to read it)"}
+```
+
+Pass `--ocr` to rasterise the pages at 300 dpi and read them with `tesseract`:
+
+```bash
+lit read --ocr minsky1961steps
+```
+
+This takes minutes on a long document and is capped at 400 pages, which is why
+it is opt-in rather than automatic. The recognised text is cached as
+`paper.txt`, so the cost is paid once. If OCR recovers nothing the command
+fails rather than leaving a blank file that looks extracted.
+
+`lit download` prints the same warning when it saves a scan, so the scan is
+known at download time rather than discovered later.
+
 For JSON output (e.g. when calling from an agent):
 
 ```bash
@@ -265,13 +289,15 @@ lit db stats
 # Rebuild DB from filesystem (etc/pdf/**/source.yaml)
 lit db rebuild
 
-# Nuclear option (rare): delete the cache directory entirely
-rm -rf "${LIT_CACHE_DIR:-etc/lit/cache}"
+# Nuclear option (rare): delete the database, then rebuild the index
+rm -f "${LIT_DB_PATH:-$HOME/Library/Application Support/lit/lit.db}"
+lit db rebuild
 ```
 
-`lit db rebuild` is the right first move — it reconstructs the SQLite database
-from on-disk source-of-truth files. Only delete the cache dir if `rebuild` also
-fails to recover.
+`lit db rebuild` is the right first move: it reconstructs the SQLite database
+from on-disk source-of-truth files. Delete the database only if `rebuild` also
+fails to recover, and rebuild immediately afterwards, since the cache and the
+paper index are the same file.
 
 ---
 

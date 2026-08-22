@@ -12,8 +12,12 @@ setup() {
             export LIT="$BATS_TEST_DIRNAME/../target/debug/lit"
         fi
     fi
-    export LIT_CACHE_DIR="$BATS_TEST_DIRNAME/cache"
-    mkdir -p "$LIT_CACHE_DIR"
+    # The suite owns its database, so a run never depends on -- or writes to --
+    # the workspace one. Recorded API responses live in cache/ and reach the
+    # fresh database through the startup migration, which reads the cache/
+    # directory sitting beside the DB file. That is why the two are siblings.
+    mkdir -p "$BATS_TEST_DIRNAME/cache"
+    export LIT_DB_PATH="$BATS_TEST_DIRNAME/lit-test.db"
 }
 
 # ── Auto-detect ──────────────────────────────────────────────────────
@@ -92,9 +96,10 @@ setup() {
 
 # ── PDF / refs / cites ──────────────────────────────────────────────
 
-@test "pdf: finds URL" {
-    run "$LIT" pdf 10.1145/3442188.3445899
-    [[ "$output" =~ "pdf" ]] || [[ "$output" =~ "PDF" ]]
+@test "json flag: --json on a DOI" {
+    run "$LIT" --json 10.1145/3442188.3445899
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ '"title"' ]]
 }
 
 @test "refs: gets references" {
