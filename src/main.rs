@@ -164,6 +164,9 @@ enum Commands {
         /// Paper identifier (arXiv ID, DOI, or local cite-key).
         /// Auto-downloads arXiv PDFs if not cached.
         id: String,
+        /// Read a scanned PDF by rasterising and recognising its pages (slow)
+        #[arg(long)]
+        ocr: bool,
     },
     /// Remove an entry from a .bib file by citekey.
     Remove {
@@ -366,7 +369,7 @@ async fn main() {
                 cmd::check::run(&ctx, fix).await
             }
         }
-        Some(Commands::Read { id }) => run_read(&ctx, &id).await,
+        Some(Commands::Read { id, ocr }) => run_read(&ctx, &id, ocr).await,
         Some(Commands::Remove { citekey, bib_file }) => run_remove(&ctx, &citekey, &bib_file),
         Some(Commands::Misc {
             citekey,
@@ -479,8 +482,8 @@ fn run_db_stats(ctx: &cmd::Context) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Run `lit read`: locate paper text, auto-downloading from arXiv if needed.
-async fn run_read(ctx: &cmd::Context, id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let result = match cmd::read::run_data(ctx, id) {
+async fn run_read(ctx: &cmd::Context, id: &str, ocr: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let result = match cmd::read::run_data(ctx, id, ocr) {
         Ok(r) => r,
         // Not downloaded yet: fetch it when the identifier says where it lives.
         Err(_) => {
@@ -488,12 +491,12 @@ async fn run_read(ctx: &cmd::Context, id: &str) -> Result<(), Box<dyn std::error
             if lit::proceedings::pdf_url(normalized).is_some() {
                 let dir = cmd::download::fetch_proceedings(ctx, normalized, None).await?;
                 let citekey = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                cmd::read::run_data(ctx, &citekey)?
+                cmd::read::run_data(ctx, &citekey, ocr)?
             } else if normalized.chars().next().is_some_and(|c| c.is_ascii_digit())
                 || normalized.starts_with("arxiv:")
             {
                 cmd::download::run(ctx, normalized, true, false, None, None).await?;
-                cmd::read::run_data(ctx, id)?
+                cmd::read::run_data(ctx, id, ocr)?
             } else {
                 return Err(format!(
                     "paper '{}' not found locally. Download it first with an arXiv ID or a proceedings URL.",

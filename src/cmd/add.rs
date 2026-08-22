@@ -96,7 +96,7 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
             let target = crate::proceedings::pdf_url(input).unwrap_or_else(|| input.to_string());
             let title = fetch_title_from_url(&target).await?;
             eprintln!("Extracted title: {}", &title[..title.len().min(80)]);
-            let top = super::search::resolve_top(ctx, &title).await?;
+            let top = super::search::resolve_title(ctx, &title).await?;
             resolve_bibtex_from_result(ctx, &top).await?
         }
         _ => {

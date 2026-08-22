@@ -497,7 +497,7 @@ async fn lookup_url_data(ctx: &Context, url: &str) -> Result<LookupResult, Box<d
     let target = crate::proceedings::pdf_url(url).unwrap_or_else(|| url.to_string());
     let title = add::fetch_title_from_url(&target).await?;
     eprintln!("Extracted title: {}", &title[..title.len().min(80)]);
-    let top = search::resolve_top(ctx, &title).await?;
+    let top = search::resolve_title(ctx, &title).await?;
     if let Some(ref doi) = top.doi {
         return lookup_doi_data(ctx, doi).await;
     }

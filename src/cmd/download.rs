@@ -15,6 +15,7 @@ use crate::citekey::SKIP_WORDS;
 use crate::db;
 use crate::detect::{normalize_arxiv, normalize_doi};
 use crate::format;
+use crate::pdftext;
 
 /// Download timeout for source tarballs (seconds).
 const DOWNLOAD_TIMEOUT_SECS: u64 = 60;
@@ -137,10 +138,7 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&st
             std::fs::create_dir_all(&dir_name)?;
             let pdf_path = dir_name.join("paper.pdf");
             std::fs::write(&pdf_path, &data)?;
-            let _ = Command::new("pdftotext")
-                .arg(&pdf_path)
-                .arg(dir_name.join("paper.txt"))
-                .status();
+            extract_text(&pdf_path, &dir_name.join("paper.txt"));
             let today = today_string();
             let yaml = build_source_yaml_field(&meta, "doi", &doi, &today);
             std::fs::write(dir_name.join("source.yaml"), &yaml)?;
@@ -184,7 +182,7 @@ pub async fn fetch_proceedings(
     // it. That costs us the metadata lookup, but an explicit citekey already
     // names the directory, so the download itself still stands.
     let meta = match super::add::title_from_pdf_bytes(&data) {
-        Ok(title) => super::search::resolve_top(ctx, &title)
+        Ok(title) => super::search::resolve_title(ctx, &title)
             .await
             .unwrap_or(PaperResult { title, ..Default::default() }),
         Err(e) if citekey.is_some() => {
@@ -200,15 +198,26 @@ pub async fn fetch_proceedings(
 
     let pdf_path = dir_name.join("paper.pdf");
     std::fs::write(&pdf_path, &data)?;
-    let _ = Command::new("pdftotext")
-        .arg(&pdf_path)
-        .arg(dir_name.join("paper.txt"))
-        .status();
+    extract_text(&pdf_path, &dir_name.join("paper.txt"));
 
     let yaml = build_source_yaml_field(&meta, "url", url, &today_string());
     std::fs::write(dir_name.join("source.yaml"), &yaml)?;
 
     Ok(dir_name)
+}
+
+/// Extract `pdf` into `txt`, reporting a failure without aborting the save.
+///
+/// The PDF is already on disk and is the thing the user asked for; a missing
+/// text rendering of it is a degraded result, not a failed download.
+fn extract_text(pdf: &Path, txt: &Path) {
+    match pdftext::extract(pdf, txt, false) {
+        Ok(pdftext::Method::Scanned) => format::warn(
+            "This PDF is a scan with no text layer; read it with `lit read --ocr <citekey>`.",
+        ),
+        Ok(_) => {}
+        Err(e) => format::warn(&format!("Could not extract text: {}", e)),
+    }
 }
 
 /// Fetch URL as bytes via curl, returning Some only if the response is a valid PDF.

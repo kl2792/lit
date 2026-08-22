@@ -94,7 +94,7 @@ fn find_pdf_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
 /// Ensure readable text exists and return the path.
 ///
 /// Priority: .tex main file > paper.txt > pdftotext paper.pdf (cached as paper.txt)
-fn ensure_text(dir: &Path) -> Result<ReadResult, Box<dyn std::error::Error>> {
+fn ensure_text(dir: &Path, recognise: bool) -> Result<ReadResult, Box<dyn std::error::Error>> {
     // 1. Check for .tex source
     if let Some(main_tex) = find_main_tex(dir) {
         let tex_files = list_tex_files(dir);
@@ -121,10 +121,17 @@ fn ensure_text(dir: &Path) -> Result<ReadResult, Box<dyn std::error::Error>> {
     // 3. Run pdftotext on paper.pdf
     let pdf_path = dir.join("paper.pdf");
     if pdf_path.exists() {
-        run_pdftotext(&pdf_path, &txt_path)?;
+        let method = crate::pdftext::extract(&pdf_path, &txt_path, recognise)?;
+        let format = match method {
+            crate::pdftext::Method::TextLayer => "txt (generated from PDF)",
+            crate::pdftext::Method::Ocr => "txt (recognised from scanned pages)",
+            crate::pdftext::Method::Scanned => {
+                "txt (PDF is a scan with no text layer; re-run with --ocr to read it)"
+            }
+        };
         return Ok(ReadResult {
             path: txt_path,
-            format: "txt (generated from PDF)".to_string(),
+            format: format.to_string(),
             extra_files: vec![],
         });
     }
@@ -180,19 +187,6 @@ fn list_tex_files(dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Run pdftotext and write output to txt_path.
-fn run_pdftotext(pdf: &Path, txt_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let status = std::process::Command::new("pdftotext")
-        .arg("-layout")
-        .arg(pdf)
-        .arg(txt_path)
-        .status()?;
-
-    if !status.success() {
-        return Err("pdftotext failed".into());
-    }
-    Ok(())
-}
 
 pub struct ReadResult {
     pub path: PathBuf,
@@ -200,13 +194,18 @@ pub struct ReadResult {
     pub extra_files: Vec<String>,
 }
 
-/// Run the read command: find paper, ensure text, return path.
+/// Locate a cached paper and return its text, recognising the pages if asked.
+///
+/// `recognise` is the caller's answer to a scanned PDF: without it a scan
+/// returns its near-empty extraction and says so, with it the pages are
+/// rasterised and read, which is slow enough to be worth requesting.
 pub fn run_data(
     _ctx: &Context,
     query: &str,
+    recognise: bool,
 ) -> Result<ReadResult, Box<dyn std::error::Error>> {
     let dir = find_paper_dir(query)?;
-    ensure_text(&dir)
+    ensure_text(&dir, recognise)
 }
 
 #[cfg(test)]

@@ -141,6 +141,48 @@ pub async fn resolve_top(
         .ok_or_else(|| format!("No results found for: {}", query).into())
 }
 
+/// Resolve metadata for a title read off a PDF, refusing an unrelated paper.
+///
+/// [`resolve_top`] answers a search query, so it returns the best of whatever
+/// came back even when nothing came back that fits. A title lifted from a PDF
+/// is not a query: we already know what the paper is called, and a result by
+/// another name is the wrong paper, not a loose match. Returning an error lets
+/// the caller keep the title it read rather than file the PDF under a stranger.
+pub async fn resolve_title(
+    ctx: &Context,
+    title: &str,
+) -> Result<PaperResult, Box<dyn std::error::Error>> {
+    let top = resolve_top(ctx, title).await?;
+    if titles_match(title, &top.title) {
+        return Ok(top);
+    }
+    Err(format!(
+        "Search for \"{}\" returned \"{}\", which is a different paper",
+        title, top.title
+    )
+    .into())
+}
+
+/// Whether two titles name the same paper.
+///
+/// A title read off a PDF picks up running heads and drops subtitles, so exact
+/// equality is too strict. Every token of the shorter title appearing in the
+/// longer one is the signal that survives that noise; requiring at least two
+/// shared tokens keeps a one-word title from matching everything.
+fn titles_match(a: &str, b: &str) -> bool {
+    let (mut ta, mut tb) = (tokenize(a), tokenize(b));
+    ta.sort();
+    ta.dedup();
+    tb.sort();
+    tb.dedup();
+    let (short, long) = if ta.len() <= tb.len() { (&ta, &tb) } else { (&tb, &ta) };
+    if short.len() < 2 {
+        return false;
+    }
+    let shared = short.iter().filter(|t| long.contains(t)).count();
+    shared >= 2 && shared * 10 >= short.len() * 8
+}
+
 /// Fetch from a single backend.
 async fn fetch_single(
     client: &http::Client,
@@ -491,5 +533,41 @@ mod tests {
         };
         let results = rerank(vec![a, b], "paper");
         assert_eq!(results.len(), 1);
+    }
+    #[test]
+    fn titles_match_ignores_case_and_punctuation() {
+        assert!(titles_match(
+            "SHAP: A Unified Approach",
+            "shap - a unified approach"
+        ));
+    }
+
+    #[test]
+    fn titles_match_tolerates_a_dropped_subtitle() {
+        assert!(titles_match(
+            "Improving Causal Explanations",
+            "Improving Causal Explanations of Machine Learning Models"
+        ));
+    }
+
+    #[test]
+    fn titles_match_rejects_a_different_paper() {
+        assert!(!titles_match(
+            "Improving Causal Explanations",
+            "GPT-4 Technical Report"
+        ));
+    }
+
+    #[test]
+    fn titles_match_rejects_a_partial_word_overlap() {
+        assert!(!titles_match(
+            "Steps Toward Artificial Intelligence",
+            "Artificial Intelligence: A Modern Approach to Machine Learning"
+        ));
+    }
+
+    #[test]
+    fn titles_match_needs_more_than_one_token() {
+        assert!(!titles_match("Steps", "Steps"));
     }
 }

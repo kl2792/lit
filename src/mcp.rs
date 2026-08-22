@@ -346,7 +346,7 @@ pub async fn handle_read(ctx: &cmd::Context, args: &Value) -> Result<String, Str
     let query = args["query"].as_str().ok_or("missing 'query'")?;
 
     // Convert Box<dyn Error> to String immediately so the future remains Send.
-    let initial = cmd::read::run_data(ctx, query).map_err(|e| e.to_string());
+    let initial = cmd::read::run_data(ctx, query, false).map_err(|e| e.to_string());
 
     match initial {
         Ok(result) => {
@@ -368,7 +368,7 @@ pub async fn handle_read(ctx: &cmd::Context, args: &Value) -> Result<String, Str
                     .await
                     .map_err(|e| format!("auto-download failed: {}", e))?;
 
-                let result = cmd::read::run_data(ctx, query)
+                let result = cmd::read::run_data(ctx, query, false)
                     .map_err(|e| format!("read after download failed: {}", e))?;
 
                 let mut json = serde_json::Map::new();
