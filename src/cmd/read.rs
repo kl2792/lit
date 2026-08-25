@@ -94,6 +94,17 @@ fn find_pdf_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
 /// Ensure readable text exists and return the path.
 ///
 /// Priority: .tex main file > paper.txt > pdftotext paper.pdf (cached as paper.txt)
+/// Whether an existing `paper.txt` is the answer to this request.
+///
+/// A scan that `pdftotext` could not read leaves a file that is short but not
+/// empty. Any non-empty file used to count, so the extraction was skipped and
+/// the near-empty result returned again, ignoring the `--ocr` the caller passed
+/// precisely because they had already seen it: 107 MB of Sutton's thesis behind
+/// 223 bytes of whitespace.
+fn cached_text_answers(text: &str, recognise: bool) -> bool {
+    !text.is_empty() && !(recognise && crate::pdftext::needs_ocr(text, None))
+}
+
 fn ensure_text(dir: &Path, recognise: bool) -> Result<ReadResult, Box<dyn std::error::Error>> {
     // 1. Check for .tex source
     if let Some(main_tex) = find_main_tex(dir) {
@@ -108,8 +119,8 @@ fn ensure_text(dir: &Path, recognise: bool) -> Result<ReadResult, Box<dyn std::e
     // 2. Check for paper.txt
     let txt_path = dir.join("paper.txt");
     if txt_path.exists() {
-        let meta = std::fs::metadata(&txt_path)?;
-        if meta.len() > 0 {
+        let text = std::fs::read_to_string(&txt_path).unwrap_or_default();
+        if cached_text_answers(&text, recognise) {
             return Ok(ReadResult {
                 path: txt_path,
                 format: "txt".to_string(),
@@ -211,6 +222,26 @@ pub fn run_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ocr_is_not_skipped_by_a_scans_near_empty_text() {
+        // Sutton's thesis: 107 MB of scanned pages, 223 bytes of whitespace in
+        // paper.txt, and `--ocr` returning that file instead of reading the scan.
+        assert!(!cached_text_answers("   \n \n  ", true));
+    }
+
+    #[test]
+    fn a_real_text_layer_is_not_recognised_again() {
+        // OCR is slow, so asking for it must not discard work already done.
+        let text = "word ".repeat(100);
+        assert!(cached_text_answers(&text, true));
+    }
+
+    #[test]
+    fn without_ocr_a_scans_text_is_still_returned() {
+        // The caller who did not ask to rasterise gets what there is, as before.
+        assert!(cached_text_answers("   \n \n  ", false));
+    }
 
     #[test]
     fn test_find_pdf_base_exists() {
