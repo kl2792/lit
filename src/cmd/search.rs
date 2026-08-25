@@ -169,6 +169,12 @@ pub async fn resolve_title(
 /// equality is too strict. Every token of the shorter title appearing in the
 /// longer one is the signal that survives that noise; requiring at least two
 /// shared tokens keeps a one-word title from matching everything.
+///
+/// Those shared tokens also have to name a paper. When the title read off the
+/// PDF is the running head rather than the title, it is made of the words every
+/// document uses: "Technical Report" shares both of its tokens with "GPT-4
+/// Technical Report", cleared both thresholds, and filed two Causal AI Lab tech
+/// reports under OpenAI's metadata.
 fn titles_match(a: &str, b: &str) -> bool {
     let (mut ta, mut tb) = (tokenize(a), tokenize(b));
     ta.sort();
@@ -179,9 +185,21 @@ fn titles_match(a: &str, b: &str) -> bool {
     if short.len() < 2 {
         return false;
     }
-    let shared = short.iter().filter(|t| long.contains(t)).count();
-    shared >= 2 && shared * 10 >= short.len() * 8
+    let shared: Vec<_> = short.iter().filter(|t| long.contains(t)).collect();
+    let distinctive = shared.iter().filter(|t| !BOILERPLATE.contains(&t.as_str())).count();
+    distinctive >= 2 && shared.len() * 10 >= short.len() * 8
 }
+
+/// Words that belong to the furniture of a document rather than to its title.
+///
+/// A match carried only by these is a match to every paper that carries the same
+/// furniture, so it identifies nothing.
+const BOILERPLATE: &[&str] = &[
+    "a", "an", "and", "for", "in", "of", "on", "the", "to", "with",
+    "abstract", "arxiv", "conference", "cover", "draft", "journal", "page",
+    "paper", "papers", "preprint", "proceedings", "report", "reports",
+    "technical", "version", "volume", "workshop",
+];
 
 /// Fetch from a single backend.
 async fn fetch_single(
@@ -564,6 +582,20 @@ mod tests {
             "Steps Toward Artificial Intelligence",
             "Artificial Intelligence: A Modern Approach to Machine Learning"
         ));
+    }
+
+    #[test]
+    fn titles_match_rejects_a_title_that_is_only_boilerplate() {
+        // Two Causal AI Lab tech reports were filed under OpenAI's metadata: the
+        // title read off the cover page was the running head, and every token it
+        // has appears in "GPT-4 Technical Report".
+        assert!(!titles_match("Technical Report", "GPT-4 Technical Report"));
+    }
+
+    #[test]
+    fn titles_match_keeps_a_short_title_that_names_something() {
+        // The guard is about which words carry the match, not how many there are.
+        assert!(titles_match("Causal Inference", "Causal Inference: A Primer"));
     }
 
     #[test]
