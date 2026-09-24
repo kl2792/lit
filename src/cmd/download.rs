@@ -57,6 +57,10 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&st
 
     let uw_result = uw_body.ok().and_then(|b| unpaywall::parse_response(&b).ok());
     let title = uw_result.as_ref().map(|r| r.title.clone()).unwrap_or_else(|| "N/A".to_string());
+    // Whether any provider answered for this DOI, recorded before the records
+    // themselves are consumed, so the artifact can state it rather than leave
+    // `check` to guess from a missing field later.
+    let uw_answered = uw_result.is_some();
     let uw_pdf = uw_result.and_then(|r| r.pdf_url);
 
     let s2_result = s2_body.ok().and_then(|b| s2_api::parse_paper(&b).ok());
@@ -97,7 +101,9 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&st
 
     println!("Title: {}", title);
 
-    // Build a synthetic PaperResult for metadata (citekey generation).
+    // Semantic Scholar's record when it answered, otherwise one assembled from
+    // what the other lookups returned, which is metadata only if one did.
+    let confirmed = s2_result.is_some() || uw_answered;
     let meta = s2_result.unwrap_or_else(|| PaperResult {
         title: title.clone(),
         doi: if doi.is_empty() { None } else { Some(doi.clone()) },
@@ -115,7 +121,7 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&st
         Ok((data, delivered_by)) => {
             let dir_name = {
                 let slug = citekey.map(|k| k.to_string()).unwrap_or_else(|| generate_dir_name(&meta));
-                default_output_dir().join(slug)
+                crate::paths::artifact_dir()?.join(slug)
             };
             std::fs::create_dir_all(&dir_name)?;
             let pdf_path = dir_name.join("paper.pdf");
@@ -127,7 +133,7 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&st
             let today = today_string();
             // Provenance is the tier that produced these bytes, not the first tier
             // that merely had a candidate URL.
-            let yaml = build_doi_source_yaml(&meta, &doi, citekey.as_deref(), Some(delivered_by.as_str()), &today);
+            let yaml = build_doi_source_yaml(&meta, &doi, citekey.as_deref(), Some(delivered_by.as_str()), &today, confirmed);
             std::fs::write(dir_name.join("source.yaml"), &yaml)?;
             let kb = data.len() / 1024;
             println!("Saved: {} ({}KB)", dir_name.display(), kb);
@@ -360,12 +366,18 @@ fn failure_report(
     lines
 }
 
+/// Build `source.yaml` for a DOI download.
+///
+/// `confirmed` says whether `paper` is a provider's record for this DOI rather
+/// than a stand-in assembled from the DOI itself. `lit check` reads the flag
+/// instead of re-deriving the answer from a missing title.
 fn build_doi_source_yaml(
     paper: &PaperResult,
     doi: &str,
     bibtex_key: Option<&str>,
     source_url: Option<&str>,
     retrieved: &str,
+    confirmed: bool,
 ) -> String {
     let authors_str = paper.authors.join(" and ").replace('"', "\\\"");
     let title = paper.title.replace('"', "\\\"");
@@ -375,6 +387,9 @@ fn build_doi_source_yaml(
     }
     if let Some(url) = source_url {
         yaml.push_str(&format!("source_url: \"{}\"\n", url.replace('"', "\\\"")));
+    }
+    if confirmed {
+        yaml.push_str("metadata_confirmed: true\n");
     }
     yaml.push_str(&format!("retrieved: \"{}\"\n", retrieved));
     yaml
@@ -396,8 +411,7 @@ async fn run_source(
         Some(d) => d.to_path_buf(),
         None => {
             let slug = generate_dir_name(&paper);
-            let base = default_output_dir();
-            base.join(slug)
+            crate::paths::artifact_dir()?.join(slug)
         }
     };
 
@@ -473,23 +487,6 @@ async fn run_source(
 
 // -- Helpers (moved from source.rs) -------------------------------------------
 
-fn default_output_dir() -> PathBuf {
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut dir = cwd.as_path();
-        loop {
-            let candidate = dir.join("etc/pdf");
-            if candidate.is_dir() {
-                return candidate;
-            }
-            match dir.parent() {
-                Some(p) => dir = p,
-                None => break,
-            }
-        }
-    }
-    PathBuf::from("etc/pdf")
-}
-
 async fn fetch_metadata(ctx: &Context, arxiv_id: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
     let url = arxiv::query_url(arxiv_id);
     let client = ctx.client();
@@ -527,6 +524,10 @@ fn extract_title_slug(title: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Build `source.yaml` for an arXiv download.
+///
+/// The record is always the arXiv API's answer for `arxiv_id`, so the artifact
+/// is confirmed by construction.
 fn build_source_yaml(paper: &PaperResult, arxiv_id: &str, retrieved: &str) -> String {
     let authors_str = paper.authors.join(" and ");
     let title = paper.title.replace('"', "\\\"");
@@ -537,6 +538,7 @@ fn build_source_yaml(paper: &PaperResult, arxiv_id: &str, retrieved: &str) -> St
     yaml.push_str(&format!("authors: \"{}\"\n", authors));
     yaml.push_str(&format!("year: {}\n", paper.year));
     yaml.push_str(&format!("arxiv: \"{}\"\n", arxiv_id));
+    yaml.push_str("metadata_confirmed: true\n");
     yaml.push_str(&format!("retrieved: \"{}\"\n", retrieved));
     yaml
 }
@@ -665,6 +667,25 @@ mod tests {
         assert!(yaml.contains("year: 2019"));
         assert!(yaml.contains("arxiv: \"1912.02503\""));
         assert!(yaml.contains("retrieved: \"2026-03-01\""));
+        // The record came from the arXiv API, so `check` need never ask again.
+        assert!(yaml.contains("metadata_confirmed: true"));
+    }
+
+    #[test]
+    fn a_doi_artifact_records_whether_a_provider_supplied_its_metadata() {
+        let paper = PaperResult {
+            title: "A Paper".to_string(),
+            authors: vec!["Jane Doe".to_string()],
+            year: "2024".to_string(),
+            ..Default::default()
+        };
+        let confirmed = build_doi_source_yaml(&paper, "10.1234/test", None, None, "2026-03-01", true);
+        assert!(confirmed.contains("metadata_confirmed: true"));
+
+        // A synthetic record built from the DOI alone confirms nothing, so the
+        // flag must be absent rather than asserted.
+        let synthetic = build_doi_source_yaml(&paper, "10.1234/test", None, None, "2026-03-01", false);
+        assert!(!synthetic.contains("metadata_confirmed"));
     }
 
     fn tier(label: &'static str, url: &str) -> Tier {
@@ -807,6 +828,7 @@ mod tests {
             Some("doe2024paper"),
             Some("https://ez.example.com/paper.pdf"),
             "2026-03-01",
+            true,
         );
         assert!(yaml.contains("source_url: \"https://ez.example.com/paper.pdf\""));
         assert!(yaml.contains("bibtex_key: \"doe2024paper\""));

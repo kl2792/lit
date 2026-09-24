@@ -29,6 +29,7 @@ It holds the synopsis and installation, and points here for everything else.
 An ADR is written when a choice was not forced, so that the next person can tell a deliberate decision from an accident.
 
 - [`adr/ADR-002-artifact-acquisition-and-provenance.md`](adr/ADR-002-artifact-acquisition-and-provenance.md): recorded facts over re-derivation, covering catalog DOI lookup, the acquisition tier order, artifact provenance, failure typing and BibTeX sanitization.
+- [`adr/ADR-003-where-lit-keeps-its-state.md`](adr/ADR-003-where-lit-keeps-its-state.md): where `lit` keeps its state, one resolver per path, each an environment override, a stated default, and an error.
 
 ADR-001 is not here.
 It governs the boundary between `lit` and the repository that embeds it, so it lives in the parent repository at `docs/ADR-001-lit-and-repository-workflow.md`.

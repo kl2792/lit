@@ -35,13 +35,21 @@ A change that alters what the tool promises, or that closes off an alternative s
 | Record | Decides | Status |
 |--------|---------|--------|
 | [ADR-002](ADR-002-artifact-acquisition-and-provenance.md) | Recorded facts over re-derivation: catalog DOI lookup, acquisition tier order, artifact provenance, failure typing, BibTeX sanitization | Proposed |
+| [ADR-003](ADR-003-where-lit-keeps-its-state.md) | Where `lit` keeps its state: one resolver per path, each an environment override, a stated default, and an error | Proposed |
 
 ADR-001 is not in this log.
 It governs the boundary between `lit` and the repository that embeds it, so it belongs to the repository containing both, at `docs/ADR-001-lit-and-repository-workflow.md` in the parent.
 A record that binds two repositories cannot live in one of them.
 
-## Known gap
+## Known gaps
 
-No record covers where `lit` keeps its state.
-`DESIGN.md` has a "Where state lives" section asserting config precedence, path resolution and database creation as MUSTs, and no decision here supports any of it.
-That section is either a decision nobody wrote down or prose nobody agreed to, and until a record settles which, its invariants are unenforceable.
+These are normative claims in the derived views that no record decides.
+Each is a finding against the log under the citation rule above.
+
+- `docs/DESIGN.md` requires callers to use the `entry_key` returned by `lit add` and `lit misc` and never to construct a citekey heuristically.
+  Canonicalisation is `lit`'s, so ADR-001 leaves the rule here, and nothing here states it.
+- `docs/DESIGN.md` requires every environment variable it names to be read by the code.
+  The rule earned itself: `LIT_CACHE_DIR` was documented in three files and read by none.
+  It is a claim a test could hold, so what it needs is that test rather than a record.
+- `docs/DESIGN.md` requires the unbuilt `lit author` command to surface OpenAlex record merges rather than present a merge as one work.
+  A requirement on a command that does not exist has nothing to check it, and it becomes decidable when the command is specified.

@@ -6,7 +6,7 @@ Proposed.
 
 ## Context
 
-This record covers one uncommitted change set spanning 19 files, 1415 insertions and 455 deletions.
+This record covers one change set, landed as `ab105d1`.
 It touches catalog sync, acquisition fallback, artifact provenance, failure typing, retry policy, BibTeX sanitization, TLS selection and the search flag surface.
 Those look unrelated, but four of them are the same defect in different clothing, and it is worth stating the shared shape once rather than six times.
 
@@ -50,6 +50,7 @@ Artifact-producing commands MUST write to `source.yaml`:
 - `bibtex_key`, when the artifact belongs to a bibliography entry
 - `source_url`, when the artifact came from a URL
 - every available stable identifier, including `doi`, `isbn` and `arxiv`
+- `metadata_confirmed`, when a metadata provider answered for the work's identifier
 
 `lit attach <citekey> <bib_file> <pdf>` attaches a PDF to an entry that already exists, and MUST NOT create or modify any BibTeX entry.
 It validates `%PDF` magic bytes before writing and refuses to overwrite an existing directory without `--force`.
@@ -128,55 +129,36 @@ Artifacts with genuinely insufficient evidence stay visible as explicit work ite
 
 ### Known limitations in this change set
 
-Three independent reviews ran over the diff, split by area.
-The findings below were confirmed against the source; the ones marked "verified here" were additionally re-read directly rather than taken from the review.
+Three independent reviews ran over the diff, split by area, and raised twenty-one findings, numbered L1 to L21.
+Those numbers are immutable and are not reused.
+A finding that has since been fixed is held by the test that fixed it, so it is removed from this table rather than tracked here; what remains is what this record accepts as a limitation of the decision itself.
 
-| ID | Limitation | Location |
-|----|-----------|----------|
-| L1 | Neither `clear_clio_db` nor `clio sync --force` deletes from `clio_doi`, and inserts are `INSERT OR IGNORE`, so a stale DOI-to-URL row survives every re-sync and permanently shadows a corrected URL. `docs/CLIO.md:147` claims force "clears index and re-syncs unconditionally". Verified here. | `src/api/clio.rs:162-165`, `:191`; `src/cmd/clio.rs:139-146` |
-| L2 | An existing `clio.db` can never populate `clio_doi` without `--force`, because sync skips files already recorded in `clio_meta`. On any machine with a completed prior sync the new lookup returns `None` forever with no message. | `src/api/clio.rs` sync path |
-| L3 | `source_url` records the first tier that had a candidate URL, not the tier that delivered the bytes. When an open-access URL exists but its fetch fails and EZProxy succeeds, the artifact claims the open-access URL as its source. This contradicts the tier decision above. Verified here. | `src/cmd/download.rs:158` |
-| L4 | A dead open-access link disables the Clio tier but not the EZProxy tier, because the Clio branch is gated on `pdf_url.is_none()`. | `src/cmd/download.rs:100` |
-| L5 | `source.yaml` gets two `bibtex_key` lines: `build_misc_source_yaml` writes one and `attach_pdf_data` appends another. A strict YAML parser rejects duplicate keys, and the two readers in `check.rs` disagree, one taking the first and one the last. Verified here. | `src/cmd/misc.rs:173` vs `:208` |
-| L6 | `attach` substitutes `title: "unknown"`, `authors: "unknown"` and `year: "?"` when the entry lacks them, and persists those to `source.yaml`. This violates the MUST NOT invent clause above. `merge_bib_fallback` only overrides an author list that is exactly `"[]"`, so the fabricated value survives into `upsert_paper`. Verified here. | `src/cmd/misc.rs:137-145`; `src/cmd/check.rs:59` |
-| L7 | The unresolved report is lost on any error. A `?` in the loop returns before the write, after database rows have already committed, leaving filesystem and database inconsistent. Verified here. | `src/cmd/check.rs:262`, `:290`, `:306-312` |
-| L8 | `upsert_paper` and `set_local_path` are two unsynchronized statements with no transaction. A failure between them leaves a paper row with no `local_path`, which the next run re-upserts as a fresh insert for an identifier-less artifact. | `src/cmd/check.rs:290-291` |
-| L9 | `set_local_path` overwrites unconditionally, so two artifact directories sharing one DOI flip the same row's pointer on alternating runs, each run reporting the other as missing. This is a direct idempotence violation. | `src/cmd/check.rs:290-291`; `src/db.rs:665-672` |
-| L10 | `strip_prefix(&root).unwrap_or(&dir_path)` stores an absolute path when the artifact is not under the computed root, and `project_root()` is cwd-dependent, so the dedup key is unstable across invocation directories. | `src/cmd/check.rs:251-255`, `:103-121` |
-| L11 | Under `--json`, prose status lines print to stdout alongside the JSON object, so the output is not machine-parseable. Verified here. | `src/cmd/check.rs:298-316` |
-| L12 | Ambiguity is undefined in the implementation. `entries.iter().find(...)` takes the first match and never detects duplicate keys in the bibliography. | `src/cmd/check.rs:267` |
-| L13 | `isbn` is written by `attach` but never parsed by `parse_source_yaml` and never used by the identifier fallback, so books never resolve through `check --fix`. | `src/cmd/check.rs:158-172`, `:71-87` |
-| L14 | The identifier lookup fires only when the title is still `unknown`, so a titled artifact with a bare DOI never gets its remaining fields filled. Widening it as written above costs one network call per artifact. | `src/cmd/check.rs:271` |
-| L15 | `attach --force` overwrites `paper.pdf` and `source.yaml` but leaves the previous `paper.txt`, because `ensure_text` returns early when a non-empty file exists. The extracted text keeps describing the old PDF. | `src/cmd/misc.rs:167`; `src/cmd/read.rs:143-153` |
-| L16 | `attach --force` skips rollback: `dir_existed` is recomputed after the download and is `true` in the overwrite case, so a failed write leaves a half-written directory with no warning. Verified here. | `src/cmd/misc.rs:155`, `:166-172` |
-| L17 | `.lit/unresolved-artifacts.json` is newly generated project-local state and is absent from `.gitignore`, so a `--fix` run dirties the tree. Verified here. | `src/cmd/check.rs:307-312`; `.gitignore` |
-| L18 | `src/config.rs` is not declared in `src/lib.rs`, so `config::get()` is never compiled or called and its tests never run. The new "Where state lives" section of `DESIGN.md` is normative about machinery no compiled code uses, and asserts every claim is covered by a test. Verified here. | `src/lib.rs`; `docs/DESIGN.md:147-149` |
-| L19 | Three MUST invariants in `DESIGN.md` are violated by current code: a default derived from `current_exe()`, no `create_dir_all` before opening the database, and no `lit db path` subcommand. | `docs/DESIGN.md:277-291`; `src/main.rs:274-283`; `src/db.rs:40-41` |
-| L20 | `lit search --local` is silently overridden by `--source`, because `use_remote = !local \|\| source.is_some()`. | `src/main.rs:334` |
-| L21 | `lit attach` is documented nowhere: absent from `README.md`, `docs/DESIGN.md`, `docs/WORKFLOWS.md` and the lit skill. | `src/main.rs:218` |
+No finding remains open against this record.
+L8 and L14 were the last two, and each is now held by a test: `db::tests::a_failed_local_path_write_leaves_no_paper_row` for the transaction, and `cmd::check::tests::an_unconfirmed_artifact_gets_its_remaining_fields_from_the_provider` for the confirmation guard.
 
-### Required tests, not yet written
+Two adjacent decisions this record does not make.
+`check::rebuild` writes the same statement pair without the transaction, because an upsert failure there warns and continues while a path failure aborts, and collapsing them would force one policy on both; it writes into a `.db.new` that is swapped in only after the whole load succeeds, so it cannot leave the live database in the state L8 describes.
+Nothing writes `metadata_confirmed` back after `check` confirms an artifact, which would make `check --fix` mutate `source.yaml` where today it only reads it.
 
-The sanitize decision is covered: ten tests, including one asserting that findings are empty exactly when the pass is a no-op, which is the convergence contract stated as an executable oracle.
+### Tests required before this record is accepted
 
-The provenance decision is not.
-`attach_pdf_data` has no integration test, and `tests/` contains no `check` file at all.
-The following are required before this record moves to Accepted:
+The sanitize decision is stated as an executable oracle: findings are empty exactly when the pass is a no-op, so convergence is checked rather than maintained.
+
+The provenance decision needs the following before this record moves to Accepted.
 
 - Idempotence: `check --fix` twice over a fixture tree leaves paper count, `local_path` values and report file byte-identical.
-- Duplicate creation: two artifacts sharing a DOI, and two runs from different working directories, exercising L9 and L10.
+- Duplicate creation: two artifacts sharing a DOI, and two runs from different working directories.
 - Resolution order: a `bibtex_key` disagreeing with the directory name must win; the directory name must be used only when `bibtex_key` is absent.
 - Ambiguity: duplicate keys in the bibliography must reach the unresolved report rather than silently taking the first.
-- Fabrication: an entry lacking author or title must make `attach` fail rather than write `unknown`, which is L6.
-- Unresolved report: created with the right shape, deleted when the set empties, and preserved when a later artifact raises an error, which is L7.
+- Fabrication: an entry lacking author or title must make `attach` fail rather than write `unknown`.
+- Unresolved report: created with the right shape, deleted when the set empties, and preserved when a later artifact raises an error.
 
-`fill_identifier_fallback` constructs its client inline, which is the structural reason the reconciler cannot be tested end to end.
-Testing it requires injecting the client.
+End-to-end coverage of the reconciler requires that `fill_identifier_fallback` take its HTTP client as a parameter.
+A client constructed inline cannot be pointed at a fixture.
 
 ## Evidence
 
 Convergence was measured before the fix, not inferred: two consecutive `lit clean --apply` runs on the same file reported the same three findings and printed "Sanitized 1 entry" both times while changing no bytes.
 
-The release build passes and 383 tests pass.
 One bats test, `auto-detect: ISBN` at `test/lit.bats:48`, fails against an Open Library lookup that returns HTTP 404 for the queried ISBN.
 That failure is provider-side and predates this change set.

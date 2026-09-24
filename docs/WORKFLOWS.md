@@ -328,8 +328,10 @@ lit db rebuild
 ```
 
 `lit db path` first: a "missing" paper is usually a database in a different
-place from the one you expect, which `LIT_DB_PATH` and the working directory
-both influence.
+place from the one you expect, which `LIT_DB_PATH` sets and the executable's
+location otherwise determines.
+`LIT_PROJECT_ROOT` sets the artifact library that `check` scans, which is
+otherwise the nearest directory above you holding a non-empty `etc/pdf/`.
 `lit db rebuild` reconstructs the SQLite database, cache included, from the
 on-disk source-of-truth files, so there is no separate cache to delete.
 

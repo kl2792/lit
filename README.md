@@ -96,12 +96,14 @@ lit clio sync [--check] [--force]
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LIT_DB_PATH` | `etc/lit/lit.db` (relative to the binary) | SQLite database, which also holds the response cache |
+| `LIT_PROJECT_ROOT` | nearest directory above the working directory holding a non-empty `etc/pdf/` | Root of the artifact library that `check`, `download` and `read` operate on |
 | `LIT_CLIO_DB_PATH` | `etc/lit/clio.db` (nearest `etc/lit/` above the working directory) | Columbia catalog index |
 | `CURL_TIMEOUT` | `15` | HTTP timeout in seconds |
 | `LIT_MAX_ATTEMPTS` | `4` | HTTP attempts before giving up; backoff is 1s, 2s, 4s |
 | `NO_COLOR` | *(unset)* | Set to any non-empty value to disable color |
 | `LIT_EMAIL` | `lit-cli@users.noreply.github.com` | Email for Unpaywall API |
 | `S2_API_KEY` | *(unset)* | Semantic Scholar API key (free, avoids shared rate limits) |
+| `LIT_INLINE_TIMEOUT_MS` | `1000` | `lit-mcp` only: milliseconds a tool call may run before the server returns a task id and notifies on completion |
 
 `lit db path` prints the resolved value of each path above together with the
 source that set it.

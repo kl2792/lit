@@ -108,22 +108,13 @@ fn find_paper_dir_in(base: &Path, query: &str) -> Result<PathBuf, ReadError> {
     }
 }
 
-/// Walk up from cwd to find the `etc/pdf` artifact root.
+/// The artifact root every reader and writer shares.
+///
+/// A fourth walk for a literal `etc/pdf` would be a fourth answer to one
+/// question, so this defers to the resolver that `check` and `download` use
+/// and that `LIT_PROJECT_ROOT` overrides.
 pub fn find_pdf_base() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut dir = cwd.as_path();
-        loop {
-            let candidate = dir.join("etc/pdf");
-            if candidate.is_dir() {
-                return Ok(candidate);
-            }
-            match dir.parent() {
-                Some(p) => dir = p,
-                None => break,
-            }
-        }
-    }
-    Err("etc/pdf/ directory not found".into())
+    crate::paths::artifact_dir().map_err(Into::into)
 }
 
 /// Ensure readable text exists and return the path.
@@ -263,12 +254,11 @@ mod tests {
         dir
     }
 
+    /// `read`, `check` and `download` must name the same artifact root, which
+    /// holds only while this is the shared resolver rather than a copy of it.
     #[test]
-    fn test_find_pdf_base_exists() {
-        // This test only works when run from within the ice repo
-        if let Ok(base) = find_pdf_base() {
-            assert!(base.ends_with("etc/pdf"));
-        }
+    fn find_pdf_base_is_the_shared_artifact_dir_resolver() {
+        assert_eq!(find_pdf_base().ok(), crate::paths::artifact_dir().ok());
     }
 
     #[test]

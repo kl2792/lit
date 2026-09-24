@@ -120,10 +120,12 @@ Hiding it would force users to poke at SQLite directly when something goes wrong
 
 `check --fix` is provenance-first.
 Artifact writers record a `bibtex_key` and stable identifiers when available.
+They also record `metadata_confirmed` when a metadata provider answered for the work's identifier, which is what the checker reads to decide whether a lookup is still owed.
 When an artifact is not indexed, the checker may use an explicitly supplied
 bibliography (`--bib-file`) to fill missing fields for that citekey before upserting it.
 It never invents metadata; unresolved artifacts remain unchanged and are emitted
 as structured records in JSON mode and persisted to `.lit/unresolved-artifacts.json`.
+Decided by [ADR-002](adr/ADR-002-artifact-acquisition-and-provenance.md).
 
 ---
 
@@ -159,6 +161,7 @@ Search returns an array of these.
 
 `entry_key` is the canonical key as written to the file.
 **Callers must use this value for `\cite{}`; never construct the key heuristically.**
+No record decides this rule; it is listed as an open gap in [the log](adr/README.md).
 
 ### `lit refs` / `lit cites`
 
@@ -255,37 +258,43 @@ and double the effective API quota.
 
 ## Where state lives
 
-This section is normative.
-It records what the code resolves today and the invariants that constrain any change to it.
-An earlier draft described a `config::get()` layer over `.litconfig` files; `src/config.rs`
-was never declared in `src/lib.rs`, never compiled, and referenced a `toml` dependency the
-crate does not have, so it was deleted rather than wired in.
-The lesson the deletion preserves: a second path-resolution implementation that nothing
-calls reads as the authority when someone changes paths, and its tests pass while the real
-resolver diverges.
+This section is normative and restates
+[ADR-003](adr/ADR-003-where-lit-keeps-its-state.md), which decides every invariant below
+except where another record or an open gap is named.
 
 ### The paths
 
-There is one resolution mechanism per path, and no configuration file.
+Each path resolves in three steps: the environment variable if it is set, otherwise the
+stated default, otherwise an error naming the variable that would fix it.
+One resolver per path, and no configuration file.
+Paths that do not yet meet this are listed under "Open gaps" below.
 
 | What | Environment | Default | Resolved by |
 |---|---|---|---|
-| Database, including the response cache | `LIT_DB_PATH` | `etc/lit/lit.db` under the executable's grandparent directory | `main.rs`, `bin/lit-mcp.rs` |
+| Database, including the response cache | `LIT_DB_PATH` | `etc/lit/lit.db` under the executable's grandparent directory | `paths.rs`, called by both binaries |
+| Project root | `LIT_PROJECT_ROOT` | nearest ancestor of the working directory holding a non-empty `etc/pdf/` | `paths.rs` |
+| PDF artifacts | *(via the project root)* | `etc/pdf/` under the project root | `paths.rs`; `cmd/read.rs` and `cmd/download.rs` both call `paths::artifact_dir()` |
 | Clio catalog index | `LIT_CLIO_DB_PATH` | nearest `etc/lit/` at or above the working directory | `api/clio.rs` |
-| PDF artifacts | *(none)* | nearest `etc/pdf/` at or above the working directory | `cmd/read.rs` |
-| EZProxy cookies | *(none)* | nearest `.cache/lit/clio/cookies.txt` at or above the working directory | `main.rs` |
-| Unresolved-artifact report | *(none)* | `.lit/unresolved-artifacts.json` under the project root | `cmd/check.rs` |
+| EZProxy cookies | *(none)* | nearest `.cache/lit/clio/cookies.txt` at or above the working directory | `cmd/download.rs` |
+| Unresolved-artifact report | *(via the project root)* | `.lit/unresolved-artifacts.json` under the project root | `cmd/check.rs` |
 
 `lit db path` prints each resolved value with the source that set it.
 
 ### Invariants
 
+- A path MUST NOT fall back to the working directory or to a bare relative path.
+  A scan rooted at the wrong place finds no artifacts and reports what an intact library
+  reports, so the fallback makes a misconfiguration indistinguishable from a pass.
+  Held by `paths::tests::project_root_without_artifacts_is_an_error`.
+- An empty `etc/pdf/` MUST NOT satisfy the project-root search.
+  A fresh clone and a checkout whose artifacts were never fetched both present one.
+  Held by `paths::tests::empty_artifact_dir_does_not_count_as_a_root`.
 - A default MUST NOT be derived from the location of the executable.
   Where a binary is installed is not a statement about where a user's library lives.
   Deriving one from the other means `make install` silently repoints the library, and
   `make clean` silently deletes it.
-  The database default violates this, in `main.rs` and `bin/lit-mcp.rs`; see "Decisions
-  pending".
+  The database default deviates from this; ADR-003 carries the deviation deliberately and
+  leaves the replacement open, because changing it repoints every existing installation.
 - No user-generated state may live under `target/`.
   `make clean` runs `cargo clean`.
 - `lit` MUST create the parent directory of the database before opening it.
@@ -298,18 +307,13 @@ There is one resolution mechanism per path, and no configuration file.
   exists to diagnose.
 - Every environment variable this document names MUST be read by the code.
   `LIT_CACHE_DIR` was documented in three files and read by none.
+  No record decides this rule; it is listed as an open gap in [the log](adr/README.md).
 
-### Decisions pending
+### Open gaps
 
-- Where the database default should point, once it stops being derived from the executable:
-  either `$XDG_DATA_HOME/lit` falling back to `~/.local/share/lit`, or the in-repo
-  `etc/lit/`.
-  The first is conventional and survives a rebuild from any checkout; the second keeps a
-  research workspace self-contained and backed up with the repository.
-  Until this is settled, `LIT_DB_PATH` is the way to pin an absolute path.
-- Whether the two resolvers of the database path, in `main.rs` and `bin/lit-mcp.rs`, should
-  become one.
-  They agree today by copy, which is the shape that produced the divergence above.
+- The Clio index default and the EZProxy cookie path are both working-directory dependent,
+  and the cookie path has no override.
+  ADR-003 records both as unruled.
 
 ---
 
@@ -375,6 +379,8 @@ A single entry can fold two distinct works together, and the absorbed work's coa
 vanish without any indication.
 Where an entry's locations disagree about venue, `lit author` must say so rather than
 present the merge as one work.
+No record decides either requirement, and nothing checks them while the command is unbuilt;
+both are listed as an open gap in [the log](adr/README.md).
 
 ### Naming the unnamed: `lookup`
 

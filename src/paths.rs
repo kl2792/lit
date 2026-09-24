@@ -73,11 +73,32 @@ fn resolve_project_root(env_value: Option<PathBuf>, cwd: &Path) -> Result<PathBu
     ))
 }
 
-/// The project root for this process.
-pub fn project_root() -> Result<PathBuf, String> {
+/// Where artifact directories live, one per paper.
+///
+/// `lit download`'s output directory is derived from the root rather than
+/// searched for again, so a download lands in the same tree `lit check` scans
+/// whatever directory the command was run from.
+fn resolve_artifact_dir(env_value: Option<PathBuf>, cwd: &Path) -> Result<PathBuf, String> {
+    resolve_project_root(env_value, cwd).map(|root| root.join(ARTIFACT_DIR))
+}
+
+/// The override and the working directory, the inputs every root resolver takes.
+fn root_inputs() -> Result<(Option<PathBuf>, PathBuf), String> {
     let cwd = std::env::current_dir()
         .map_err(|e| format!("cannot read the working directory: {}", e))?;
-    resolve_project_root(std::env::var_os(ROOT_ENV).map(PathBuf::from), &cwd)
+    Ok((std::env::var_os(ROOT_ENV).map(PathBuf::from), cwd))
+}
+
+/// The project root for this process.
+pub fn project_root() -> Result<PathBuf, String> {
+    let (env_value, cwd) = root_inputs()?;
+    resolve_project_root(env_value, &cwd)
+}
+
+/// The artifact directory for this process.
+pub fn artifact_dir() -> Result<PathBuf, String> {
+    let (env_value, cwd) = root_inputs()?;
+    resolve_artifact_dir(env_value, &cwd)
 }
 
 #[cfg(test)]
@@ -134,6 +155,37 @@ mod tests {
             std::fs::canonicalize(root).unwrap(),
             std::fs::canonicalize(tmp.path()).unwrap()
         );
+    }
+
+    #[test]
+    fn artifact_dir_is_the_artifact_directory_of_the_resolved_root() {
+        // Where `lit download` writes must not depend on where the user stood.
+        let tmp = tempfile::tempdir().unwrap();
+        let artifacts = tmp.path().join(ARTIFACT_DIR).join("smith2020paper");
+        std::fs::create_dir_all(&artifacts).unwrap();
+        std::fs::write(artifacts.join("source.yaml"), "title: T\n").unwrap();
+        let start = tmp.path().join("a/b/c");
+        std::fs::create_dir_all(&start).unwrap();
+
+        let from_deep = resolve_artifact_dir(None, &start).unwrap();
+        let from_root = resolve_artifact_dir(None, tmp.path()).unwrap();
+        assert_eq!(from_deep, from_root);
+        assert_eq!(from_root, tmp.path().join(ARTIFACT_DIR));
+    }
+
+    #[test]
+    fn artifact_dir_follows_the_root_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = resolve_artifact_dir(Some(PathBuf::from("/srv/corpus")), tmp.path()).unwrap();
+        assert_eq!(dir, PathBuf::from("/srv/corpus/etc/pdf"));
+    }
+
+    /// Falling back to a relative `etc/pdf` would write the artifact under
+    /// whatever directory the user happened to be in.
+    #[test]
+    fn artifact_dir_without_a_root_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(resolve_artifact_dir(None, tmp.path()).is_err());
     }
 
     /// A missing root must stop the run, not scan an empty directory and pass.

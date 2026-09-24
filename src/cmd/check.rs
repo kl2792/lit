@@ -20,6 +20,23 @@ fn yaml_field(content: &str, wanted: &str) -> Option<String> {
     })
 }
 
+/// The `source.yaml` key recording that a provider confirmed this metadata.
+///
+/// An artifact-producing command that resolved the work through CrossRef, arXiv
+/// or Open Library writes it; one built from a bibliography entry, a filename
+/// or hand-entered text does not.
+const CONFIRMED_KEY: &str = "metadata_confirmed";
+
+/// Whether a provider ever confirmed this artifact's metadata.
+///
+/// `title: "unknown"` used to stand in for this, which conflated "nothing is
+/// known" with "nothing was checked": an artifact with a present but incomplete
+/// record was therefore never completed. The absence of the key means
+/// unconfirmed, so artifacts written before it existed are looked up once.
+fn is_confirmed(content: &str) -> bool {
+    yaml_field(content, CONFIRMED_KEY).is_some_and(|value| value == "true")
+}
+
 fn paper_from_bib_entry(entry: &crate::bibtex::BibEntry, local_path: &str) -> Option<PaperRow> {
     let title = entry.get_field("title")?.to_string();
     let authors = entry.get_field("author").unwrap_or_default();
@@ -364,7 +381,7 @@ async fn reconcile_artifact(
         }
     }
 
-    if paper.title == "unknown" {
+    if !is_confirmed(&content) {
         paper = fill_identifier_fallback(client, paper).await;
     }
 
@@ -378,27 +395,29 @@ async fn reconcile_artifact(
         )));
     }
 
-    let id = ctx
+    // One transaction: a paper row committed without its local_path is exactly
+    // the half-written state this reconciler exists to repair.
+    let claim = ctx
         .db
-        .upsert_paper(&paper, Some("source_yaml"))
-        .map_err(|e| ArtifactError { reason: "upsert_failed", error: e.into() })?;
+        .upsert_paper_with_local_path(&paper, Some("source_yaml"), rel_path, |id| {
+            assigned.get(&id).is_none_or(|claimed| claimed == rel_path)
+        })
+        .map_err(|e| ArtifactError { reason: "reconcile_failed", error: e.into() })?;
 
-    if let Some(claimed) = assigned.get(&id)
-        && claimed != rel_path
-    {
-        return Ok(Outcome::Unresolved(unresolved_record(
+    match claim {
+        crate::db::PathClaim::Taken(id) => Ok(Outcome::Fixed(id)),
+        crate::db::PathClaim::Rejected(id) => Ok(Outcome::Unresolved(unresolved_record(
             rel_path,
             candidate.as_deref(),
             "local_path_conflict",
             &[],
-            Some(format!("paper id={} already points at {}", id, claimed)),
-        )));
+            Some(format!(
+                "paper id={} already points at {}",
+                id,
+                assigned.get(&id).map(String::as_str).unwrap_or("another artifact")
+            )),
+        ))),
     }
-
-    ctx.db
-        .set_local_path(id, rel_path)
-        .map_err(|e| ArtifactError { reason: "local_path_write_failed", error: e.into() })?;
-    Ok(Outcome::Fixed(id))
 }
 
 pub async fn run(
@@ -869,7 +888,76 @@ bibtex_key: lewis1973causation
         }
     }
 
-    const LEWIS_YAML: &str = "title: \"Causation\"\nauthors: \"David Lewis\"\nyear: 1973\ndoi: \"10.2307/2025310\"\n";
+    /// A fully confirmed artifact, so reconciling it makes no provider call.
+    const LEWIS_YAML: &str = "title: \"Causation\"\nauthors: \"David Lewis\"\nyear: 1973\ndoi: \"10.2307/2025310\"\nmetadata_confirmed: true\n";
+
+    /// A CrossRef body for `LEWIS_DOI`, as the response cache stores it.
+    const LEWIS_CROSSREF: &str = r#"{"message":{"title":["Causation"],"published":{"date-parts":[[1973]]},"container-title":["The Journal of Philosophy"],"DOI":"10.2307/2025310","author":[{"given":"David","family":"Lewis"}]}}"#;
+
+    const LEWIS_DOI: &str = "10.2307/2025310";
+
+    impl Fixture {
+        /// Seed the response cache so the identifier lookup resolves offline.
+        fn seed_doi_lookup(&self, doi: &str, body: &str) {
+            self.ctx.db.cache_set(
+                &crate::db::Db::cache_key("doi", doi),
+                &crate::api::crossref::doi_url(doi),
+                body,
+            );
+        }
+
+        fn only_paper(&self) -> PaperRow {
+            let mut found = self.ctx.db.search_local("Causation", 10).unwrap();
+            assert_eq!(found.len(), 1, "expected exactly one paper");
+            found.pop().unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_artifact_gets_its_remaining_fields_from_the_provider() {
+        // L14/D7: the old guard fired only on a `unknown` title, so a titled
+        // artifact with a bare DOI kept its empty year and journal forever.
+        let f = Fixture::new();
+        f.seed_doi_lookup(LEWIS_DOI, LEWIS_CROSSREF);
+        f.artifact(
+            "lewis1973causation",
+            "title: \"Causation\"\nauthors: \"David Lewis\"\ndoi: \"10.2307/2025310\"\n",
+        );
+
+        f.fix(None).await.unwrap();
+
+        let paper = f.only_paper();
+        assert_eq!(paper.year.as_deref(), Some("1973"));
+        assert_eq!(paper.journal.as_deref(), Some("The Journal of Philosophy"));
+    }
+
+    #[tokio::test]
+    async fn a_confirmed_artifact_is_not_looked_up_again() {
+        // The guard exists because a cold cache costs one network call per
+        // artifact; `metadata_confirmed` is what the guard now reads.
+        let f = Fixture::new();
+        f.seed_doi_lookup(LEWIS_DOI, LEWIS_CROSSREF);
+        f.artifact(
+            "lewis1973causation",
+            "title: \"Causation\"\nauthors: \"David Lewis\"\ndoi: \"10.2307/2025310\"\nmetadata_confirmed: true\n",
+        );
+
+        f.fix(None).await.unwrap();
+
+        let paper = f.only_paper();
+        assert!(paper.year.is_none(), "a confirmed artifact must not be re-fetched");
+        assert!(paper.journal.is_none(), "a confirmed artifact must not be re-fetched");
+    }
+
+    #[test]
+    fn metadata_confirmed_is_a_provenance_flag_not_a_bibliographic_field() {
+        let yaml = "title: \"Causation\"\nmetadata_confirmed: true\n";
+        assert_eq!(yaml_field(yaml, "metadata_confirmed"), Some("true".into()));
+        assert!(!is_confirmed("title: \"Causation\"\n"));
+        assert!(is_confirmed(yaml));
+        // It describes the file's provenance, so no column changes because of it.
+        assert_eq!(parse_source_yaml(yaml, "etc/pdf/x").title, "Causation");
+    }
 
     #[tokio::test]
     async fn fix_twice_leaves_papers_paths_and_report_identical() {
@@ -892,8 +980,8 @@ bibtex_key: lewis1973causation
     async fn two_artifacts_sharing_a_doi_do_not_flip_the_row_pointer() {
         // L9: the second artifact resolves to the row the first one claimed.
         let f = Fixture::new();
-        f.artifact("alpha", "title: \"Shared Work\"\nauthors: \"A Author\"\ndoi: \"10.1/shared\"\n");
-        f.artifact("beta", "title: \"Shared Work\"\nauthors: \"A Author\"\ndoi: \"10.1/shared\"\n");
+        f.artifact("alpha", "title: \"Shared Work\"\nauthors: \"A Author\"\ndoi: \"10.1/shared\"\nmetadata_confirmed: true\n");
+        f.artifact("beta", "title: \"Shared Work\"\nauthors: \"A Author\"\ndoi: \"10.1/shared\"\nmetadata_confirmed: true\n");
 
         f.fix(None).await.unwrap();
         assert_eq!(f.paper_count(), 1, "one DOI is one paper");
@@ -906,6 +994,24 @@ bibtex_key: lewis1973causation
         f.fix(None).await.unwrap();
         assert_eq!(f.local_paths(), vec!["etc/pdf/alpha".to_string()], "the pointer must not alternate");
         assert_eq!(f.report_records(), first);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_artifact_leaves_the_row_it_could_not_claim_untouched() {
+        // L8: the upsert and the local_path write are one transaction, so an
+        // artifact that loses the claim rolls its own metadata back instead of
+        // editing a row it was not allowed to point at.
+        let f = Fixture::new();
+        f.artifact("alpha", "title: \"Alpha Title\"\nauthors: \"A Author\"\ndoi: \"10.1/shared\"\nmetadata_confirmed: true\n");
+        f.artifact("beta", "title: \"Beta Title\"\nauthors: \"B Author\"\ndoi: \"10.1/shared\"\nmetadata_confirmed: true\n");
+
+        f.fix(None).await.unwrap();
+
+        assert_eq!(f.paper_count(), 1);
+        assert_eq!(f.ctx.db.search_local("Beta", 10).unwrap().len(), 0, "the rejected write must roll back");
+        let kept = f.ctx.db.search_local("Alpha", 10).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].local_path.as_deref(), Some("etc/pdf/alpha"));
     }
 
     #[tokio::test]
