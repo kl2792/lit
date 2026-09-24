@@ -67,6 +67,26 @@ download in a browser and rerun with the local path. An existing
 
 ---
 
+## 2b. Attach a PDF to an entry you already have
+
+The bibliography entry is already correct and you have just obtained the PDF.
+`lit misc --pdf` is the wrong tool here: it would write a second entry.
+Use `attach`, which never creates or modifies BibTeX.
+
+```bash
+lit attach halpern2016actual refs.bib ~/Downloads/actual-causality.pdf
+lit attach halpern2016actual refs.bib https://example.org/actual-causality.pdf
+```
+
+It fails if `refs.bib` has no entry under that citekey, and if the bytes do not
+begin with `%PDF`, so a login page saved as a `.pdf` is caught rather than
+filed. On success it writes `etc/pdf/<citekey>/` with `paper.pdf`,
+`source.yaml`, and extracted `paper.txt`, recording the citekey and the source
+in `source.yaml` so `lit check --fix` can reconcile the artifact into the
+database later. An existing directory is an error unless you pass `--force`.
+
+---
+
 ## 3. Stub a forthcoming preprint
 
 You need to cite a paper that doesn't have an arXiv ID yet (e.g. waiting for
@@ -183,7 +203,7 @@ lit verify ext/Improving-Causal-Explanations/references.bib -j 8
 
 ```bash
 lit read 2006.11239
-# → /abs/path/to/etc/pdf/2006.11239/text.md
+# → /abs/path/to/etc/pdf/2006.11239/paper.txt
 ```
 
 The output is a path — use shell substitution to feed it into another command:
@@ -201,7 +221,7 @@ For JSON output (e.g. when calling from an agent):
 
 ```bash
 lit read 2006.11239 --json
-# → {"path": "...", "format": "markdown", "extra_files": [...]}
+# → {"path": "...", "format": "txt (generated from PDF)", "extra_files": []}
 ```
 
 ---
@@ -221,6 +241,9 @@ metadata) but only covers papers you have already downloaded:
 ```bash
 lit search --local "shapley xai"
 ```
+
+`--local` and `--source` are mutually exclusive: `--source` names a remote
+backend, so the pair has no meaning and `lit` rejects it rather than picking one.
 
 `--source` is the lever for recall vs. precision vs. latency:
 - `oa` (default) — broad, fast.
@@ -297,16 +320,18 @@ lit --no-cache <id>
 # Inspect what's there
 lit db stats
 
+# Show every resolved state path and what set it
+lit db path
+
 # Rebuild DB from filesystem (etc/pdf/**/source.yaml)
 lit db rebuild
-
-# Nuclear option (rare): delete the cache directory entirely
-rm -rf "${LIT_CACHE_DIR:-etc/lit/cache}"
 ```
 
-`lit db rebuild` is the right first move — it reconstructs the SQLite database
-from on-disk source-of-truth files. Only delete the cache dir if `rebuild` also
-fails to recover.
+`lit db path` first: a "missing" paper is usually a database in a different
+place from the one you expect, which `LIT_DB_PATH` and the working directory
+both influence.
+`lit db rebuild` reconstructs the SQLite database, cache included, from the
+on-disk source-of-truth files, so there is no separate cache to delete.
 
 ---
 

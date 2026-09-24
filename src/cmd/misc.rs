@@ -5,7 +5,7 @@
 /// creates `etc/pdf/<citekey>/` with `paper.pdf`, `source.yaml`, and
 /// `paper.txt` before writing the bib entry (artifact first, bib last).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub use super::add::AddResult;
 
@@ -116,14 +116,155 @@ fn write_artifact_then_bib(
     bytes: &[u8],
     force: bool,
 ) -> Result<AddResult, Box<dyn std::error::Error>> {
-    std::fs::create_dir_all(dir)?;
-    std::fs::write(dir.join("paper.pdf"), bytes)?;
-    let yaml = build_misc_source_yaml(params, &super::today_string());
-    std::fs::write(dir.join("source.yaml"), &yaml)?;
-    if let Err(e) = super::read::ensure_text(dir) {
+    write_artifact(params, dir, bytes, "")?;
+    run_data(params, bib_file, force)
+}
+
+/// Read a required BibTeX field, or fail.
+///
+/// ADR-002 forbids inventing an author, a title or an identifier, so an entry
+/// that lacks one is a defect in the bibliography and stops the attach rather
+/// than being papered over with a placeholder.
+fn required_field<'a>(entry: &'a crate::bibtex::BibEntry, field: &str) -> Result<&'a str, String> {
+    entry
+        .get_field(field)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "bibliography entry '{}' has no {}; lit will not invent one, fix the entry first",
+                entry.key, field
+            )
+        })
+}
+
+/// Write an artifact for a citekey that already exists in a bibliography.
+/// Unlike `run_pdf_data`, this never creates or replaces a BibTeX entry.
+pub fn attach_pdf_data(
+    citekey: &str,
+    bib_file: &Path,
+    pdf: &str,
+    force: bool,
+    pdf_root: &Path,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(bib_file)?;
+    let entry = crate::bibtex::parse_bib_file(&content)
+        .into_iter()
+        .find(|entry| entry.key == citekey)
+        .ok_or_else(|| format!("no bibliography entry found for citekey '{}'", citekey))?;
+    let title = required_field(&entry, "title")?.to_string();
+    let authors = required_field(&entry, "author")?
+        .split(" and ")
+        .map(str::trim)
+        .map(str::to_string)
+        .collect();
+    // A missing year is omitted rather than fabricated; see build_misc_source_yaml.
+    let year = entry.get_field("year").unwrap_or_default().trim().to_string();
+    let params = MiscParams {
+        citekey: citekey.to_string(),
+        title,
+        authors,
+        year,
+        howpublished: entry.get_field("url").map(str::to_string),
+        note: Some(format!("attached to existing bibliography entry {}", citekey)),
+    };
+    let dir = pdf_root.join(citekey);
+    if dir.exists() && !force {
+        return Err(format!("{} already exists; rerun with --force to overwrite", dir.display()).into());
+    }
+    let bytes = if pdf.starts_with("http://") || pdf.starts_with("https://") {
+        fetch_pdf_bytes_via_curl(pdf).map_err(std::io::Error::other)?
+    } else {
+        std::fs::read(pdf)?
+    };
+    if !bytes.starts_with(b"%PDF") {
+        return Err(format!("{} is not a PDF (missing %PDF magic bytes)", pdf).into());
+    }
+    // bibtex_key is already the first line of the generated source.yaml, so the
+    // provenance block carries only what the generator does not know.
+    let mut provenance = format!("source_url: \"{}\"\n", pdf.replace('"', "\\\""));
+    for field in ["doi", "isbn", "arxiv"] {
+        if let Some(value) = entry.get_field(field) {
+            provenance.push_str(&format!("{}: \"{}\"\n", field, value.replace('"', "\\\"")));
+        }
+    }
+    write_artifact(&params, &dir, &bytes, &provenance)?;
+    Ok(dir)
+}
+
+/// Build the artifact in a sibling staging directory, then move it into place.
+///
+/// Every file is written before anything replaces the target, so a failure
+/// leaves either the previous artifact or nothing at all, never a directory
+/// whose `paper.pdf`, `source.yaml` and `paper.txt` describe different works.
+/// Staging inside `dir`'s parent keeps the move within one filesystem.
+fn write_artifact(
+    params: &MiscParams,
+    dir: &Path,
+    bytes: &[u8],
+    extra_yaml: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let staging = staging_path(dir);
+    let _ = std::fs::remove_dir_all(&staging);
+    let result = fill_staging(params, &staging, bytes, extra_yaml)
+        .and_then(|()| publish(&staging, dir).map_err(Into::into));
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
+}
+
+/// Staging directory for `dir`, a dot-prefixed sibling so scans of `etc/pdf/`
+/// that look for `source.yaml` never pick a half-written artifact up.
+fn staging_path(dir: &Path) -> PathBuf {
+    let name = dir.file_name().unwrap_or_default().to_string_lossy().to_string();
+    let parent = dir.parent().unwrap_or(Path::new("."));
+    parent.join(format!(".lit-staging-{}-{}", name, std::process::id()))
+}
+
+fn fill_staging(
+    params: &MiscParams,
+    staging: &Path,
+    bytes: &[u8],
+    extra_yaml: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(staging)?;
+    std::fs::write(staging.join("paper.pdf"), bytes)?;
+    let mut yaml = build_misc_source_yaml(params, &super::today_string());
+    yaml.push_str(extra_yaml);
+    std::fs::write(staging.join("source.yaml"), &yaml)?;
+    if let Err(e) = super::read::ensure_text(staging) {
         crate::format::warn(&format!("text extraction failed: {}", e));
     }
-    run_data(params, bib_file, force)
+    Ok(())
+}
+
+/// Move `staging` onto `dir`, keeping one complete copy at every instant.
+///
+/// The previous artifact steps aside before the new one lands and is deleted
+/// only once the move succeeded, so a failed rename restores it.
+fn publish(staging: &Path, dir: &Path) -> std::io::Result<()> {
+    if !dir.exists() {
+        if let Some(parent) = dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        return std::fs::rename(staging, dir);
+    }
+    // Appended, not `with_extension`, so a citekey containing a dot cannot
+    // make two artifacts share one backup name.
+    let backup = PathBuf::from(format!("{}.old", staging.display()));
+    let _ = std::fs::remove_dir_all(&backup);
+    std::fs::rename(dir, &backup)?;
+    match std::fs::rename(staging, dir) {
+        Ok(()) => {
+            let _ = std::fs::remove_dir_all(&backup);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::rename(&backup, dir);
+            Err(e)
+        }
+    }
 }
 
 /// Identifier-less `source.yaml` builder, following the `download.rs`
@@ -134,9 +275,13 @@ fn build_misc_source_yaml(params: &MiscParams, retrieved: &str) -> String {
     let title = params.title.replace('"', "\\\"");
     let authors = params.authors.join(" and ").replace('"', "\\\"");
     let mut yaml = String::new();
+    yaml.push_str(&format!("bibtex_key: \"{}\"\n", params.citekey.replace('"', "\\\"")));
     yaml.push_str(&format!("title: \"{}\"\n", title));
     yaml.push_str(&format!("authors: \"{}\"\n", authors));
-    yaml.push_str(&format!("year: {}\n", params.year));
+    // An empty year means the source had none; a placeholder would be invention.
+    if !params.year.is_empty() {
+        yaml.push_str(&format!("year: {}\n", params.year));
+    }
     if let Some(ref hp) = params.howpublished {
         yaml.push_str(&format!("howpublished: \"{}\"\n", hp.replace('"', "\\\"")));
     }

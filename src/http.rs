@@ -28,6 +28,7 @@ impl Client {
             .unwrap_or(15);
 
         let inner = reqwest::Client::builder()
+            .use_rustls_tls()
             .timeout(Duration::from_secs(timeout_secs))
             .user_agent("lit/1.0")
             .build()
@@ -98,7 +99,11 @@ impl Client {
     /// Automatically adds `x-api-key` header for Semantic Scholar if `$S2_API_KEY` is set.
     /// Rejects responses larger than 50 MB.
     pub async fn get(&self, url: &str) -> Result<String, Box<dyn std::error::Error>> {
-        let max_attempts = 60;
+        let max_attempts = std::env::var("LIT_MAX_ATTEMPTS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(4);
         for attempt in 0..max_attempts {
             let mut req = self.inner.get(url);
             if url.contains("semanticscholar.org") {
@@ -110,10 +115,11 @@ impl Client {
                 Ok(r) => r,
                 Err(e) if e.is_timeout() || e.is_connect() => {
                     if attempt < max_attempts - 1 {
-                        eprintln!("note: {} (attempt {}/{}), retrying in 1s...",
+                        let wait = 1u64 << attempt.min(2);
+                        eprintln!("note: {} (attempt {}/{}), retrying in {}s...",
                             if e.is_timeout() { "timeout" } else { "connection error" },
-                            attempt + 1, max_attempts);
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                            attempt + 1, max_attempts, wait);
+                        tokio::time::sleep(Duration::from_secs(wait)).await;
                         continue;
                     }
                     return Err(e.into());
@@ -134,12 +140,13 @@ impl Client {
                     tokio::time::sleep(Duration::from_secs(wait)).await;
                     continue;
                 }
-                return Err(format!("HTTP 429 Too Many Requests for {} (retried {}x over ~60s)", url, max_attempts).into());
+                return Err(format!("HTTP 429 Too Many Requests for {} after {} attempts", url, max_attempts).into());
             }
             if resp.status().is_server_error() && attempt < max_attempts - 1 {
-                eprintln!("note: HTTP {} (attempt {}/{}), retrying in 1s...",
-                    resp.status(), attempt + 1, max_attempts);
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                let wait = 1u64 << attempt.min(2);
+                eprintln!("note: HTTP {} (attempt {}/{}), retrying in {}s...",
+                    resp.status(), attempt + 1, max_attempts, wait);
+                tokio::time::sleep(Duration::from_secs(wait)).await;
                 continue;
             }
             if !resp.status().is_success() {
@@ -179,4 +186,19 @@ fn looks_valid(body: &str) -> bool {
         && (trimmed.starts_with('{')
             || trimmed.starts_with('[')
             || trimmed.starts_with('<'))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_rustls_client_builds() {
+        // Guards the sandbox fix: TLS must come from rustls with bundled webpki
+        // roots. macOS SecureTransport (reqwest default-tls) needs keychain
+        // access and fails with OSStatus -26276 inside seatbelt sandboxes.
+        // `use_rustls_tls()` only compiles while a rustls-tls feature is on.
+        reqwest::Client::builder()
+            .use_rustls_tls()
+            .build()
+            .expect("rustls-backed client should build without keychain access");
+    }
 }

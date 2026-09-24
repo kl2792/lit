@@ -5,7 +5,7 @@
 /// both refs and cites at each hop) since two papers may be connected through
 /// a shared reference even if neither cites the other.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 
 use super::Context;
 use crate::api::semantic_scholar;
@@ -54,7 +54,7 @@ pub async fn run_data(
             if api_calls >= MAX_API_CALLS {
                 break;
             }
-            let neighbors = fetch_neighbors(&client, ctx, id, &mut api_calls).await;
+            let neighbors = fetch_neighbors(&client, id, &mut api_calls).await;
             for (nid, ntitle) in neighbors {
                 titles.insert(nid.clone(), ntitle.clone());
                 if !parent_a.contains_key(&nid) {
@@ -74,7 +74,7 @@ pub async fn run_data(
             if api_calls >= MAX_API_CALLS {
                 break;
             }
-            let neighbors = fetch_neighbors(&client, ctx, id, &mut api_calls).await;
+            let neighbors = fetch_neighbors(&client, id, &mut api_calls).await;
             for (nid, ntitle) in neighbors {
                 titles.insert(nid.clone(), ntitle.clone());
                 if !parent_b.contains_key(&nid) {
@@ -123,7 +123,6 @@ pub async fn run(
 /// Fetch both refs and cites for a paper, returning (id, title) pairs.
 async fn fetch_neighbors(
     client: &crate::http::Client,
-    ctx: &Context,
     paper_id: &str,
     api_calls: &mut usize,
 ) -> Vec<(String, String)> {

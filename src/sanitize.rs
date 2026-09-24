@@ -7,7 +7,8 @@
 /// Transformations, per field value:
 /// - HTML entities (named and numeric) decoded, then LaTeX-escaped:
 ///   `&` -> `\&`, `<`/`>` -> `\textless{}`/`\textgreater{}`.
-/// - Unicode en/em dashes -> `--`/`---`.
+/// - Unicode punctuation -> its LaTeX spelling, per the `PUNCTUATION` table:
+///   dashes, curly quotes, ellipsis, prime, minus sign and non-breaking space.
 /// - `month` field normalized to bare three-letter macros (`month = jun`);
 ///   unmappable values pass through unchanged with a warning.
 ///
@@ -19,6 +20,51 @@
 /// entity, so sanitized text is a fixed point.
 
 use crate::bibtex::{parse_bib_file, BibEntry};
+
+/// Unicode punctuation that pdfTeX cannot typeset from a plain source file,
+/// paired with its LaTeX spelling.
+///
+/// Only punctuation appears here. An accented letter in an author name is
+/// correct as written and a Greek letter in a title carries meaning, so
+/// neither is translated; what breaks a build is the character that has a
+/// LaTeX spelling and was emitted in its Unicode form instead.
+///
+/// Every replacement is ASCII and no ASCII character is a key, so applying
+/// the table twice changes nothing. `test_punctuation_table_invariants` pins
+/// both halves of that claim.
+/// Three entries take the safe reading rather than the faithful one, because a
+/// metadata provider emits these as encoding artifacts more often than as
+/// typographic intent. U+00A0 becomes an ordinary space, not the `~` tie that
+/// would make a scraped title unbreakable at every word. U+2011 loses its
+/// non-breaking sense, and U+2212 renders at hyphen width rather than as the
+/// `$-$` that would nest wrongly inside a title already in math mode.
+const PUNCTUATION: [(char, &str); 12] = [
+    ('\u{2010}', "-"),       // hyphen
+    ('\u{2011}', "-"),       // non-breaking hyphen
+    ('\u{2013}', "--"),      // en dash
+    ('\u{2014}', "---"),     // em dash
+    ('\u{2018}', "`"),       // left single quote
+    ('\u{2019}', "'"),       // right single quote, the apostrophe case
+    ('\u{201C}', "``"),      // left double quote
+    ('\u{201D}', "''"),      // right double quote
+    ('\u{2026}', "\\dots{}"), // horizontal ellipsis
+    ('\u{2032}', "'"),       // prime
+    ('\u{2212}', "-"),       // minus sign
+    ('\u{00A0}', " "),       // non-breaking space
+];
+
+/// The `PUNCTUATION` characters present in `value`, in order of first
+/// appearance and without repeats. Empty means only that this table has
+/// nothing to do here; an HTML entity or a bare `&` still needs rewriting.
+fn punctuation_findings(value: &str) -> Vec<char> {
+    let mut found: Vec<char> = Vec::new();
+    for c in value.chars() {
+        if PUNCTUATION.iter().any(|(u, _)| *u == c) && !found.contains(&c) {
+            found.push(c);
+        }
+    }
+    found
+}
 
 /// The twelve bare BibTeX month macros.
 const MONTH_MACROS: [&str; 12] = [
@@ -178,12 +224,17 @@ pub(crate) fn sanitize_field_value(value: &str) -> String {
     transform_value(value)
 }
 
-/// Transform a field value, leaving `\url{...}` spans verbatim.
-fn transform_value(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
+/// Split a field value into segments, each paired with whether the pass leaves
+/// it verbatim. `\url{...}` spans are verbatim; everything else is transformed.
+///
+/// `transform_value` rewrites exactly the non-verbatim segments and
+/// `field_findings` inspects exactly the same ones, so the writer and the
+/// linter cannot disagree about what is in scope.
+fn segments(value: &str) -> Vec<(&str, bool)> {
+    let mut out = Vec::new();
     let mut rest = value;
     while let Some(idx) = rest.find("\\url{") {
-        out.push_str(&transform_segment(&rest[..idx]));
+        out.push((&rest[..idx], false));
         let bytes = rest.as_bytes();
         let mut pos = idx + 5; // past "\url{"
         let mut depth = 1;
@@ -195,17 +246,111 @@ fn transform_value(value: &str) -> String {
             }
             pos += 1;
         }
-        out.push_str(&rest[idx..pos]);
+        out.push((&rest[idx..pos], true));
         rest = &rest[pos..];
     }
-    out.push_str(&transform_segment(rest));
+    out.push((rest, false));
     out
+}
+
+/// Transform a field value, leaving `\url{...}` spans verbatim.
+fn transform_value(value: &str) -> String {
+    segments(value)
+        .into_iter()
+        .map(|(seg, verbatim)| {
+            if verbatim {
+                seg.to_string()
+            } else {
+                transform_segment(seg)
+            }
+        })
+        .collect()
+}
+
+/// Why `lit clean` should rewrite this field, or empty if it should not.
+///
+/// The first test is the one that matters: a field the pass would leave
+/// unchanged yields no findings, whatever it contains. So every finding names
+/// something `lit clean --apply` actually fixes, and a second run reports
+/// nothing. A linter that scanned for defects independently would flag text
+/// the pass is designed to preserve, such as the `\&amp;` that
+/// `decode_html_entities` deliberately leaves alone, and never converge.
+///
+/// The remaining work is explanatory: naming which characters are responsible.
+pub fn field_findings(name: &str, value: &str) -> Vec<String> {
+    if name == "url" || name == "doi" {
+        return Vec::new();
+    }
+    if name == "month" {
+        // An unmappable value is left in place by design, so reporting it
+        // would be a finding no run can ever clear.
+        return match (map_month(value), is_month_macro(value)) {
+            (Some(_), false) => vec![format!("non-macro month value '{}'", value)],
+            _ => Vec::new(),
+        };
+    }
+    if transform_value(value) == value {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    for (seg, verbatim) in segments(value) {
+        if verbatim {
+            continue;
+        }
+        for c in punctuation_findings(seg) {
+            let latex = PUNCTUATION
+                .iter()
+                .find(|(u, _)| *u == c)
+                .map(|(_, l)| *l)
+                .unwrap_or("");
+            out.push(format!("U+{:04X} should be written {}", c as u32, latex));
+        }
+        let decoded = decode_numeric_entities(&decode_html_entities(seg));
+        if decoded != seg {
+            out.push("HTML entity".to_string());
+        }
+        if strip_html_tags(&decoded) != decoded {
+            out.push("HTML tag".to_string());
+        }
+    }
+    out.dedup();
+    if out.is_empty() {
+        out.push("character needing a LaTeX escape".to_string());
+    }
+    out.into_iter().map(|f| format!("{} in {}", f, name)).collect()
 }
 
 /// Decode entities, normalize dashes, then LaTeX-escape.
 fn transform_segment(s: &str) -> String {
     let decoded = decode_numeric_entities(&decode_html_entities(s));
-    latex_escape(&normalize_dashes(&decoded))
+    latex_escape(&normalize_punctuation(&strip_html_tags(&decoded)))
+}
+
+/// Remove markup tags that may appear when a metadata provider HTML-escapes
+/// an otherwise plain title (for example `&lt;i&gt;L&lt;/i&gt;`).
+/// Comparisons such as `x < y` are preserved because the `<` is not followed
+/// by a tag-shaped character.
+fn strip_html_tags(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<'
+            && i + 1 < bytes.len()
+            && (bytes[i + 1].is_ascii_alphabetic()
+                || bytes[i + 1] == b'/'
+                || bytes[i + 1] == b'!'
+                || bytes[i + 1] == b'?')
+            && let Some(end) = s[i + 1..].find('>')
+        {
+            i += end + 2;
+            continue;
+        }
+        let c = s[i..].chars().next().expect("valid UTF-8 boundary");
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
 }
 
 /// Decode `&#NNN;` and `&#xHH;` numeric entities.
@@ -260,9 +405,17 @@ fn decode_numeric_entities(s: &str) -> String {
     out
 }
 
-/// Normalize Unicode en/em dashes to LaTeX `--`/`---`.
-fn normalize_dashes(s: &str) -> String {
-    s.replace('\u{2014}', "---").replace('\u{2013}', "--")
+/// Rewrite every Unicode punctuation character in `PUNCTUATION` to its LaTeX
+/// spelling, in a single pass so that a replacement is never itself rescanned.
+fn normalize_punctuation(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match PUNCTUATION.iter().find(|(u, _)| *u == c) {
+            Some((_, latex)) => out.push_str(latex),
+            None => out.push(c),
+        }
+    }
+    out
 }
 
 /// Escape `&` (unless already escaped), `<`, and `>` for LaTeX.
@@ -307,6 +460,12 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_metadata_html_tags_but_preserve_comparisons() {
+        assert_eq!(transform_segment("&lt;i&gt;L&lt;/i&gt; = λ W"), "L = λ W");
+        assert_eq!(transform_segment("x < y"), "x \\textless{} y");
+    }
+
+    #[test]
     fn test_decode_numeric_entities() {
         assert_eq!(decode_numeric_entities("A &#38; B"), "A & B");
         assert_eq!(decode_numeric_entities("A &#x26; B"), "A & B");
@@ -326,6 +485,143 @@ mod tests {
         assert_eq!(map_month("12"), Some("dec"));
         assert_eq!(map_month("0"), None);
         assert_eq!(map_month("13"), None);
+    }
+
+    #[test]
+    fn test_normalize_punctuation() {
+        // The case this table was written for: the DOI record for Bareinboim
+        // et al. (2022) carries a curly apostrophe in "On Pearl's Hierarchy".
+        assert_eq!(transform_segment("On Pearl\u{2019}s Hierarchy"), "On Pearl's Hierarchy");
+        assert_eq!(transform_segment("\u{201C}quoted\u{201D}"), "``quoted''");
+        assert_eq!(transform_segment("a \u{2018}b\u{2019} c"), "a `b' c");
+        assert_eq!(transform_segment("1\u{2013}9"), "1--9");
+        assert_eq!(transform_segment("a \u{2014} b"), "a --- b");
+        assert_eq!(transform_segment("and so on\u{2026}"), "and so on\\dots{}");
+        assert_eq!(transform_segment("Lee\u{00A0}et al."), "Lee et al.");
+        assert_eq!(transform_segment("non\u{2010}linear"), "non-linear");
+        assert_eq!(transform_segment("non\u{2011}linear"), "non-linear");
+        assert_eq!(transform_segment("x\u{2032}"), "x'");
+        assert_eq!(transform_segment("\u{2212}1"), "-1");
+    }
+
+    #[test]
+    fn test_normalize_punctuation_preserves_letters() {
+        // Accented and Greek letters are correct as written; only punctuation
+        // has a LaTeX spelling that the source was supposed to use.
+        assert_eq!(transform_segment("Bareinboim, Pl\u{e8}cko"), "Bareinboim, Pl\u{e8}cko");
+        assert_eq!(transform_segment("L = \u{3bb} W"), "L = \u{3bb} W");
+    }
+
+    #[test]
+    fn test_normalize_punctuation_is_idempotent() {
+        // Every replacement is ASCII and no ASCII character is a table key.
+        let once = transform_segment("On Pearl\u{2019}s \u{201C}Hierarchy\u{201D}, 1\u{2013}9");
+        assert_eq!(transform_segment(&once), once);
+    }
+
+    #[test]
+    fn test_punctuation_findings() {
+        assert_eq!(punctuation_findings("On Pearl\u{2019}s"), vec!['\u{2019}']);
+        // Ordered by first appearance, without repeats.
+        assert_eq!(
+            punctuation_findings("a\u{2013}b \u{2019} c\u{2013}d"),
+            vec!['\u{2013}', '\u{2019}']
+        );
+        assert!(punctuation_findings("plain ascii, 1--9").is_empty());
+        assert!(punctuation_findings("Pl\u{e8}cko").is_empty());
+    }
+
+    #[test]
+    fn test_punctuation_table_invariants() {
+        // The idempotence argument in the table's doc comment, as a test: every
+        // key is non-ASCII, so no replacement can re-enter the table, and no
+        // replacement contains a character `latex_escape` would rewrite.
+        for (key, latex) in PUNCTUATION {
+            assert!(!key.is_ascii(), "key {:?} is ASCII", key);
+            assert_eq!(normalize_punctuation(latex), latex, "replacement {:?} re-fires", latex);
+            assert_eq!(latex_escape(latex), latex, "replacement {:?} needs escaping", latex);
+        }
+    }
+
+    #[test]
+    fn test_findings_are_empty_exactly_when_the_pass_is_a_no_op() {
+        // The convergence contract: `lit clean` must not report what
+        // `--apply` will not change, or it repeats the finding forever.
+        let cases = [
+            ("title", "On Pearl\u{2019}s Hierarchy"),
+            ("title", "A &amp; B"),
+            ("title", r"A \&amp; B"),        // an intended fixed point
+            ("title", "A \\& B"),
+            ("note", "see \\url{http://x.com/a\u{2013}b}"), // verbatim span
+            ("url", "http://x.com/a\u{2013}b"),
+            ("doi", "10.1/a\u{2013}b"),
+            ("month", "June"),
+            ("month", "jun"),
+            ("month", "June 2020"),          // unmappable, so unfixable
+            ("pages", "507--556"),
+        ];
+        for (name, value) in cases {
+            // Mirrors `sanitize_entry_fields`: exempt fields are never passed
+            // to the transform at all, and month takes the macro branch.
+            let sanitized = match name {
+                "url" | "doi" => value.to_string(),
+                "month" => map_month(value).unwrap_or(value).to_string(),
+                _ => transform_value(value),
+            };
+            let findings = field_findings(name, value);
+            assert_eq!(
+                findings.is_empty(),
+                sanitized == value,
+                "{} = {:?}: findings {:?}, pass gives {:?}",
+                name, value, findings, sanitized
+            );
+        }
+    }
+
+    #[test]
+    fn test_findings_name_the_character() {
+        assert_eq!(
+            field_findings("title", "On Pearl\u{2019}s"),
+            vec!["U+2019 should be written ' in title"]
+        );
+        assert_eq!(field_findings("title", "A &amp; B"), vec!["HTML entity in title"]);
+        assert_eq!(field_findings("title", "<i>L</i>"), vec!["HTML tag in title"]);
+        assert_eq!(
+            field_findings("title", "Smith & Jones"),
+            vec!["character needing a LaTeX escape in title"]
+        );
+    }
+
+    #[test]
+    fn test_url_spans_and_exempt_fields_keep_their_punctuation() {
+        // The pass copies `\url{...}` verbatim, so the lint must not ask for a
+        // rewrite there either.
+        let value = "see \\url{http://x.com/a\u{2013}b} and 1\u{2013}9";
+        assert_eq!(
+            transform_value(value),
+            "see \\url{http://x.com/a\u{2013}b} and 1--9"
+        );
+        assert_eq!(
+            field_findings("note", value),
+            vec!["U+2013 should be written -- in note"]
+        );
+    }
+
+    #[test]
+    fn test_numeric_entity_decoding_into_a_table_character() {
+        // The only place the decode-then-normalize order in `transform_segment`
+        // is observable: the entity must decode first, then normalize.
+        assert_eq!(transform_segment("1&#8211;9"), "1--9");
+        assert_eq!(transform_segment("Pearl&#8217;s"), "Pearl's");
+    }
+
+    #[test]
+    fn test_sanitize_bibtex_rewrites_curly_apostrophe() {
+        let input = "@inbook{bareinboim2022pearls,\n  title = {On Pearl\u{2019}s Hierarchy},\n  year = {2022}\n}";
+        let out = sanitize_bibtex(input);
+        assert!(out.changed);
+        assert!(out.text.contains("On Pearl's Hierarchy"), "got: {}", out.text);
+        assert!(!out.text.contains('\u{2019}'));
     }
 
     #[test]

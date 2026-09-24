@@ -35,10 +35,19 @@ impl std::fmt::Debug for Db {
 impl Db {
     /// Open (or create) a SQLite database at `path`.
     ///
-    /// Sets pragmas, creates tables/indices/triggers if missing, checks schema
-    /// version, and evicts stale unreferenced cache entries.
+    /// Creates the parent directory, sets pragmas, creates tables/indices/triggers
+    /// if missing, checks schema version, and evicts stale unreferenced cache entries.
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).context("failed to open database")?;
+        // SQLite will not create intermediate directories, and its failure here
+        // reports neither the path nor the cause once wrapped in context below.
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let conn = Connection::open(path)
+            .with_context(|| format!("failed to open database at {}", path.display()))?;
 
         // Pragmas
         conn.execute_batch(
@@ -1067,6 +1076,15 @@ mod tests {
         let f = NamedTempFile::new().unwrap();
         let db = Db::open(f.path()).unwrap();
         (f, db)
+    }
+
+    #[test]
+    fn test_open_creates_missing_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/deeper/lit.db");
+        let db = Db::open(&path).unwrap();
+        drop(db);
+        assert!(path.is_file(), "{} was not created", path.display());
     }
 
     #[test]

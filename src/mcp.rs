@@ -49,8 +49,7 @@ pub fn tool_definitions() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Paper identifier: citekey (e.g. 'conmy2023acdc'), arXiv ID, or substring"},
-                    "source": {"type": "boolean", "description": "Prefer arXiv LaTeX source over PDF (default false)"}
+                    "query": {"type": "string", "description": "Paper identifier: citekey (e.g. 'conmy2023acdc'), arXiv ID, or substring"}
                 },
                 "required": ["query"]
             }
@@ -345,8 +344,7 @@ pub async fn handle_lookup(ctx: &cmd::Context, args: &Value) -> Result<String, S
 pub async fn handle_read(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
     let query = args["query"].as_str().ok_or("missing 'query'")?;
 
-    // Convert Box<dyn Error> to String immediately so the future remains Send.
-    let initial = cmd::read::run_data(ctx, query).map_err(|e| e.to_string());
+    let initial = cmd::read::run_data(ctx, query);
 
     match initial {
         Ok(result) => {
@@ -358,7 +356,12 @@ pub async fn handle_read(ctx: &cmd::Context, args: &Value) -> Result<String, Str
             json.insert("format".into(), Value::String(result.format));
             serde_json::to_string(&Value::Object(json)).map_err(|e| e.to_string())
         }
-        Err(_) => {
+        // Local source exists but is unreadable (or other failure): surface the
+        // real cause instead of the misleading "not found locally" message.
+        Err(e @ (cmd::read::ReadError::Unreadable { .. } | cmd::read::ReadError::Other(_))) => {
+            Err(e.to_string())
+        }
+        Err(cmd::read::ReadError::NotFound(_)) => {
             let normalized = query.trim();
             let looks_like_arxiv = normalized.chars().next().is_some_and(|c| c.is_ascii_digit())
                 || normalized.starts_with("arxiv:");
@@ -672,6 +675,24 @@ mod tests {
                 name,
             );
         }
+    }
+
+    #[test]
+    fn read_tool_advertises_only_the_argument_the_handler_reads() {
+        let defs = tool_definitions();
+        let read = defs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "read")
+            .expect("read tool");
+        let props: Vec<&str> = read["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(props, vec!["query"]);
     }
 
     #[test]
@@ -1047,7 +1068,11 @@ mod tests {
     #[tokio::test]
     async fn search_local_empty_db() {
         let ctx = make_test_ctx();
-        let result = handle_search(&ctx, &json!({"query": "test"})).await.unwrap();
+        // local: true keeps the test hermetic; without it a live network
+        // search runs and returns real results.
+        let result = handle_search(&ctx, &json!({"query": "test", "local": true}))
+            .await
+            .unwrap();
         assert_eq!(result, "No results found");
     }
 
@@ -1064,7 +1089,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_tool_search() {
         let ctx = make_test_ctx();
-        let result = dispatch_tool(&ctx, "search", &json!({"query": "test"})).await;
+        let result = dispatch_tool(&ctx, "search", &json!({"query": "test", "local": true})).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "No results found");
     }

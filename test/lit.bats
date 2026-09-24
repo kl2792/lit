@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
 # lit -- bats test suite
-# Uses cached API responses in test/cache/ for offline reproducibility.
+# Runs against an isolated database at test/fixture/lit.db.
+# Tests that query a metadata provider still reach the network and can fail on
+# a provider outage; they are not offline-reproducible yet.
 # Run: bats test/lit.bats  OR  make test
 
 setup() {
@@ -12,8 +14,12 @@ setup() {
             export LIT="$BATS_TEST_DIRNAME/../target/debug/lit"
         fi
     fi
-    export LIT_CACHE_DIR="$BATS_TEST_DIRNAME/cache"
-    mkdir -p "$LIT_CACHE_DIR"
+    # Isolation is via LIT_DB_PATH because the response cache is a table inside
+    # the database, not a directory. The previous LIT_CACHE_DIR export named a
+    # variable no source file reads, so it isolated nothing and the suite ran
+    # against the real database and the live network.
+    export LIT_DB_PATH="$BATS_TEST_DIRNAME/fixture/lit.db"
+    mkdir -p "$(dirname "$LIT_DB_PATH")"
 }
 
 # ── Auto-detect ──────────────────────────────────────────────────────

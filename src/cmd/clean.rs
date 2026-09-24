@@ -87,8 +87,8 @@ pub fn run(
         }
     }
 
-    // --- Detect sanitize-lint findings (ADR-001): `&amp;`, Unicode dashes,
-    // non-macro month values ---
+    // --- Detect sanitize-lint findings (ADR-001): `&amp;`, Unicode
+    // punctuation, non-macro month values ---
     let lint: Vec<(String, String)> = entries
         .iter()
         .flat_map(|e| {
@@ -216,26 +216,18 @@ pub fn print_report(report: &CleanReport, apply: bool) {
 
 // -- Helpers ------------------------------------------------------------------
 
-/// Sanitize-lint findings for one entry (ADR-001): `&amp;` in any field value,
-/// Unicode dashes in any field value, and non-macro `month` values.
-/// `url`/`doi` fields are exempt, mirroring the sanitize pass.
+/// Sanitize-lint findings for one entry (ADR-001).
+///
+/// The rules live in `sanitize::field_findings` rather than here, so a finding
+/// is reported exactly when `--apply` would change the field. Duplicating them
+/// is what previously let `lit clean` flag text the pass preserves on purpose
+/// and report the same issue on every run.
 fn lint_findings(entry: &bibtex::BibEntry) -> Vec<String> {
-    let mut findings = Vec::new();
-    for (name, value) in &entry.fields {
-        if name == "url" || name == "doi" {
-            continue;
-        }
-        if value.contains("&amp;") {
-            findings.push(format!("HTML entity &amp; in {}", name));
-        }
-        if value.contains('\u{2013}') || value.contains('\u{2014}') {
-            findings.push(format!("Unicode dash in {}", name));
-        }
-        if name == "month" && !sanitize::is_month_macro(value) {
-            findings.push(format!("non-macro month value '{}'", value));
-        }
-    }
-    findings
+    entry
+        .fields
+        .iter()
+        .flat_map(|(name, value)| sanitize::field_findings(name, value))
+        .collect()
 }
 
 /// Rewrite lint-flagged entries through the sanitize pass (skipping removed
@@ -257,7 +249,12 @@ fn apply_lint_fixes(
         for warning in &outcome.warnings {
             format::warn(warning);
         }
-        if let Some(new_content) = bibtex::replace_entry_block(&content, &entry.key, &outcome.text) {
+        // Report only entries whose bytes moved. `replace_entry_block` succeeds
+        // for any key present in the file, so reporting on that alone claimed a
+        // fix whenever the pass had decided to leave the entry alone.
+        if let Some(new_content) = bibtex::replace_entry_block(&content, &entry.key, &outcome.text)
+            && new_content != content
+        {
             content = new_content;
             fixed.push(entry.key.clone());
         }

@@ -33,27 +33,37 @@ lit "attention is all you need"       # search
 ### Commands
 
 ```
-lit search <query> [-l N] [-s oa|ss|cr|dblp|book|philpapers|clio|all] [--local]
-                                 Search papers (remote APIs; --local = downloaded only)
+lit search <query> [-l N] [--local | -s oa|ss|cr|dblp|book|philpapers|clio|all]
+                                 Search papers; remote APIs by default, --local
+                                 restricts to downloaded papers
 lit refs <id> [--hops N]         Get references of a paper
 lit cites <id> [--hops N]        Get papers that cite this paper
 lit path <a> <b> [--max-hops N]  Shortest citation path between two papers
-lit download <id> [--source] [--url-only] [--dir DIR]
-                                 Download PDF; --source for arXiv LaTeX source
+lit download <id> [--source] [--url-only] [--dir DIR] [--citekey KEY]
+                                 Download PDF; --source for arXiv LaTeX source;
+                                 --citekey names the output directory
 lit read <id>                    Locate paper text; auto-downloads arXiv PDFs
 lit add <id> <bib_file> [--key KEY] [--force]
                                  Fetch BibTeX and upsert into file
 lit misc <key> <bib_file> -t TITLE -y YEAR -a AUTHOR ... [--pdf PATH|URL] [--force]
                                  Append hand-rolled @misc entry; --pdf also
                                  ingests the artifact into etc/pdf/<key>/
+lit attach <key> <bib_file> <pdf> [--force]
+                                 Attach a PDF to an entry that already exists,
+                                 leaving the BibTeX untouched
 lit remove <key> <bib_file>      Remove an entry by citekey
 lit verify <bib_file> [-j N]     Verify .bib entries against APIs
 lit clean <bib_file> [--apply] [--prune] [--tex DIR ...]
                                  Scan for malformed entries, dupes, orphans,
                                  and LaTeX-breaking artifacts (&amp;, Unicode
                                  dashes, non-macro months)
-lit check [--fix] [--conflicts]  Check DB<->filesystem consistency
-lit db stats|rebuild|rollback    Database operations
+lit check [--fix] [--conflicts] [--bib-file FILE]
+                                 Check DB<->filesystem consistency
+lit db stats|rebuild|path        Database operations; path prints every resolved
+                                 state path and the source that set it
+lit clio auth                    Report EZProxy cookie status
+lit clio sync [--check] [--force]
+                                 Download and index the Columbia catalog
 ```
 
 ### Flags
@@ -85,11 +95,16 @@ lit db stats|rebuild|rollback    Database operations
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LIT_CACHE_DIR` | `etc/lit/cache` (relative to binary) | Cache directory |
+| `LIT_DB_PATH` | `etc/lit/lit.db` (relative to the binary) | SQLite database, which also holds the response cache |
+| `LIT_CLIO_DB_PATH` | `etc/lit/clio.db` (nearest `etc/lit/` above the working directory) | Columbia catalog index |
 | `CURL_TIMEOUT` | `15` | HTTP timeout in seconds |
+| `LIT_MAX_ATTEMPTS` | `4` | HTTP attempts before giving up; backoff is 1s, 2s, 4s |
 | `NO_COLOR` | *(unset)* | Set to any non-empty value to disable color |
 | `LIT_EMAIL` | `lit-cli@users.noreply.github.com` | Email for Unpaywall API |
 | `S2_API_KEY` | *(unset)* | Semantic Scholar API key (free, avoids shared rate limits) |
+
+`lit db path` prints the resolved value of each path above together with the
+source that set it.
 
 ## Examples
 
@@ -167,21 +182,93 @@ Use `--no-cache` to bypass the cache and fetch fresh results.
 
 ```
 make test          # unit tests + bats integration tests
-make test-unit     # cargo test (94 tests)
-make test-bats     # bats test/lit.bats (26 tests)
+make test-unit     # cargo test
+make test-bats     # bats test/lit.bats
 ```
+
+### Sandboxed olmOCR
+
+`docker/olmocr` runs image-only PDFs through olmOCR 2 on one NVIDIA GPU.
+The runtime has no network, runs as a non-root user with no Linux capabilities,
+uses a read-only root filesystem and input mount, and writes only to its output
+mount.
+The official image and embedded model are pinned by OCI digest; update the
+digest deliberately when upgrading olmOCR.
+
+Build the pinned image while network access is available:
+
+```bash
+docker compose -f docker/olmocr/compose.yaml build
+```
+
+Create an empty output directory owned by UID 65532, then process one PDF whose
+basename contains only letters, digits, dots, underscores, or hyphens:
+
+```bash
+mkdir -p /path/to/output
+sudo chown 65532:65532 /path/to/output
+OLMOCR_INPUT_DIR=/path/to/pdfs \
+OLMOCR_OUTPUT_DIR=/path/to/output \
+OLMOCR_PDF=paper.pdf \
+OLMOCR_GPU=0 \
+docker compose -f docker/olmocr/compose.yaml run --rm olmocr
+```
+
+Treat generated Markdown as untrusted text and verify quotations against the
+original page image.
+
+### Artifact reconciliation
+
+`lit check --fix` imports artifact metadata from `source.yaml` into the local
+database.
+When an artifact has `bibtex_key` provenance, pass the owning bibliography with
+`--bib-file` so missing fields can be recovered from the BibTeX entry:
+
+```
+lit check --fix --bib-file refs.bib
+lit check --fix --json --bib-file refs.bib
+```
+
+The repair is idempotent.
+Artifacts with no unambiguous metadata are left unchanged and reported as
+machine-readable `unresolved` records in JSON mode and written to
+`.lit/unresolved-artifacts.json`.
+
+### Attaching a PDF to an existing entry
+
+`lit attach <citekey> <bib_file> <pdf> [--force]` files a PDF against a
+bibliography entry that already exists.
+It never creates or modifies a BibTeX entry, which is what separates it from
+`lit misc --pdf`.
+
+```
+lit attach halpern2016actual refs.bib ~/Downloads/actual-causality.pdf
+```
+
+The source may be a local path or a URL.
+`lit` rejects anything whose first bytes are not `%PDF`, writes
+`etc/pdf/<citekey>/` with `paper.pdf`, `source.yaml` and extracted `paper.txt`,
+and records in `source.yaml` the citekey, where the PDF came from, and the
+entry's `doi` and `isbn` when it has them, so `lit check --fix` can reconcile
+the artifact later.
+An existing `etc/pdf/<citekey>/` directory is an error unless you pass
+`--force`.
 
 ## Project structure
 
 ```
 src/
   main.rs           CLI entry point (clap)
+  lib.rs            Library surface shared by the CLI and the MCP server
+  bin/lit-mcp.rs    MCP server binary
+  mcp.rs            MCP tool definitions and handlers
+  db.rs             SQLite store: papers, citations, response cache, FTS index
   detect.rs         Input type detection + normalization
   citekey.rs        BibTeX key generation (lastname2017word)
-  cache.rs          File-based cache with TTL
-  http.rs           HTTP client (reqwest blocking, cache-aware)
+  http.rs           HTTP client (reqwest, retry + backoff, cache-aware)
   format.rs         Colored output, truncation
   bibtex.rs         BibTeX parsing and generation
+  sanitize.rs       BibTeX value normalization; `lit clean` derives its findings from it
   api/
     openalex.rs     OpenAlex API
     semantic_scholar.rs  Semantic Scholar API
@@ -189,17 +276,26 @@ src/
     dblp.rs         DBLP API
     arxiv.rs        arXiv API (XML)
     openlibrary.rs  OpenLibrary API
+    philpapers.rs   PhilPapers API
     unpaywall.rs    Unpaywall API
+    causalai.rs     causalai.net technical reports
+    clio.rs         Columbia catalog: MARCXML sync, local index, EZProxy
   cmd/
     search.rs       Search with source selection + cascade
     refs.rs         Paper references
     cites.rs        Paper citations
-    pdf.rs          Open-access PDF finder
-    source.rs       arXiv source download
+    path.rs         Shortest citation path
+    download.rs     PDF and arXiv source acquisition
+    read.rs         Locate and extract paper text
     open.rs         Open in browser
     add.rs          Fetch + append BibTeX
+    misc.rs         Hand-rolled @misc entries and PDF attachment
+    clean.rs        Offline .bib linting
     verify.rs       Parallel .bib verification
+    check.rs        DB <-> filesystem reconciliation, rebuild
+    clio.rs         Clio auth and sync
+tests/              Integration tests keyed to the ADRs
 test/
-  lit.bats          Integration tests (26 tests)
+  lit.bats          Bats integration tests
   cache/            Cached API responses for offline testing
 ```

@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use lit::{api, bibtex, cmd, db, format};
+use lit::{api, bibtex, cmd, db, format, paths};
 use std::path::PathBuf;
 use lit::api::clio as clio_api;
 
@@ -69,7 +69,7 @@ enum Commands {
         #[arg(short, long)]
         source: Option<SearchSource>,
         /// Search local DB only (only papers you have downloaded)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "source")]
         local: bool,
     },
     /// Get references of a paper
@@ -156,6 +156,9 @@ enum Commands {
         /// Report cross-source field conflicts for papers with multiple sources
         #[arg(long)]
         conflicts: bool,
+        /// Bibliography used to recover metadata for unindexed artifacts
+        #[arg(long = "bib-file")]
+        bib_file: Option<PathBuf>,
     },
     /// Database operations
     Db {
@@ -212,6 +215,15 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Attach a PDF to an existing bibliography entry without changing BibTeX.
+    Attach {
+        citekey: String,
+        bib_file: PathBuf,
+        pdf: String,
+        /// Overwrite an existing artifact directory.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -220,6 +232,8 @@ enum DbAction {
     Stats,
     /// Rebuild database from etc/pdf/**/source.yaml files
     Rebuild,
+    /// Print every resolved state path and the source that set it
+    Path,
     /// Rollback database to a previous state (not yet implemented)
     Rollback {
         /// Timestamp to roll back to (ISO 8601)
@@ -259,16 +273,7 @@ async fn main() {
     };
 
     // Resolve DB path (used by rebuild and normal open)
-    let db_path = std::env::var("LIT_DB_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let exe = std::env::current_exe().unwrap_or_default();
-            exe.parent()
-                .unwrap_or(std::path::Path::new("."))
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join("etc/lit/lit.db")
-        });
+    let (db_path, db_path_source) = paths::db_path();
 
     // Handle `lit db rebuild` before opening the DB — rebuild creates a fresh DB
     // and doesn't need the old one (which may have a stale schema version).
@@ -277,6 +282,13 @@ async fn main() {
             format::error(&e.to_string());
             std::process::exit(1);
         }
+        std::process::exit(0);
+    }
+
+    // `db path` diagnoses a misconfiguration, so it must run even when the
+    // configured database cannot be opened.
+    if let Some(Commands::Db { action: DbAction::Path }) = &cli.command {
+        run_db_path(&db_path, db_path_source);
         std::process::exit(0);
     }
 
@@ -319,8 +331,7 @@ async fn main() {
             local,
         }) => {
             let q = query.join(" ");
-            let use_remote = !local || source.is_some();
-            if use_remote {
+            if !local {
                 let src = source.map(|s| match s {
                     SearchSource::Oa => cmd::search::Source::Oa,
                     SearchSource::Ss => cmd::search::Source::Ss,
@@ -370,11 +381,11 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
-        Some(Commands::Check { fix, conflicts }) => {
+        Some(Commands::Check { fix, conflicts, bib_file }) => {
             if conflicts {
                 cmd::check::run_conflicts(&ctx)
             } else {
-                cmd::check::run(&ctx, fix).await
+                cmd::check::run(&ctx, fix, bib_file.as_deref()).await
             }
         }
         Some(Commands::Read { id }) => run_read(&ctx, &id).await,
@@ -390,11 +401,16 @@ async fn main() {
             pdf,
             force,
         }) => run_misc(&ctx, citekey, &bib_file, title, year, authors, howpublished, note, pdf, force),
+        Some(Commands::Attach { citekey, bib_file, pdf, force }) => {
+            run_attach(&ctx, &citekey, &bib_file, &pdf, force)
+        }
         Some(Commands::Db { action }) => match action {
             DbAction::Stats => run_db_stats(&ctx),
             DbAction::Rebuild => {
                 cmd::check::rebuild(&db_path).map_err(|e| e.into())
             }
+            // Handled before the database is opened.
+            DbAction::Path => Ok(()),
             DbAction::Rollback { timestamp } => {
                 eprintln!("rollback to {}: not yet implemented", timestamp);
                 Ok(())
@@ -472,6 +488,29 @@ fn run_local_search(
     Ok(())
 }
 
+/// Print every resolved state path with the source that set it.
+fn run_db_path(db_path: &std::path::Path, db_path_source: &str) {
+    println!("database    {}  [{}]", db_path.display(), db_path_source);
+
+    let clio_source = match std::env::var_os("LIT_CLIO_DB_PATH") {
+        Some(_) => "LIT_CLIO_DB_PATH",
+        None => "default, etc/lit/ found from the working directory",
+    };
+    println!(
+        "clio index  {}  [{}]",
+        clio_api::default_clio_db_path().display(),
+        clio_source
+    );
+
+    match cmd::read::find_pdf_base() {
+        Ok(p) => println!(
+            "pdf store   {}  [default, found from the working directory]",
+            p.display()
+        ),
+        Err(e) => println!("pdf store   unresolved: {}", e),
+    }
+}
+
 /// Print database statistics.
 fn run_db_stats(ctx: &cmd::Context) -> Result<(), Box<dyn std::error::Error>> {
     let stats = ctx.db.db_stats()?;
@@ -495,7 +534,7 @@ fn run_db_stats(ctx: &cmd::Context) -> Result<(), Box<dyn std::error::Error>> {
 async fn run_read(ctx: &cmd::Context, id: &str) -> Result<(), Box<dyn std::error::Error>> {
     let result = match cmd::read::run_data(ctx, id) {
         Ok(r) => r,
-        Err(_) => {
+        Err(cmd::read::ReadError::NotFound(_)) => {
             let normalized = id.trim();
             let looks_like_arxiv = normalized
                 .chars()
@@ -512,6 +551,9 @@ async fn run_read(ctx: &cmd::Context, id: &str) -> Result<(), Box<dyn std::error
             cmd::download::run(ctx, normalized, true, false, None, None).await?;
             cmd::read::run_data(ctx, id)?
         }
+        // Local source exists but is unreadable (or other failure): surface the
+        // real cause instead of the misleading "not found locally" message.
+        Err(e) => return Err(e.into()),
     };
 
     if ctx.json {
@@ -620,4 +662,46 @@ fn run_misc(
         println!("Added @misc{{{}}} to {}", result.entry_key, bib_file.display());
     }
     Ok(())
+}
+
+fn run_attach(
+    ctx: &cmd::Context,
+    citekey: &str,
+    bib_file: &std::path::Path,
+    pdf: &str,
+    force: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pdf_root = cmd::read::find_pdf_base()?;
+    let dir = cmd::misc::attach_pdf_data(citekey, bib_file, pdf, force, &pdf_root)?;
+    if ctx.json {
+        println!("{}", serde_json::json!({
+            "citekey": citekey,
+            "bib_file": bib_file.display().to_string(),
+            "dir": dir.display().to_string(),
+        }));
+    } else {
+        println!("Attached: {}", dir.display());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn search_rejects_local_together_with_source() {
+        let err = Cli::command()
+            .try_get_matches_from(["lit", "search", "--local", "-s", "clio", "q"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn search_accepts_local_and_source_separately() {
+        let cmd = Cli::command();
+        assert!(cmd.clone().try_get_matches_from(["lit", "search", "--local", "q"]).is_ok());
+        assert!(cmd.try_get_matches_from(["lit", "search", "-s", "clio", "q"]).is_ok());
+    }
 }

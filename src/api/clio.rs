@@ -142,21 +142,87 @@ pub fn parse_search(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::
     Ok(results)
 }
 
+/// Schema version this code writes.
+///
+/// Version 2 added `clio_doi`. A version 1 database has the table (created by
+/// `init_clio_db`) but no rows, and sync cannot fill it because the per-file
+/// progress in `clio_meta` marks every extract as done.
+pub const CLIO_SCHEMA_VERSION: i64 = 2;
+
 /// Initialize the clio.db schema (idempotent — safe to call on an existing DB).
 pub fn init_clio_db(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS clio_fts USING fts5(
             title, authors, year, isbn, issn, doi, url, online, publisher
         );
-        CREATE TABLE IF NOT EXISTS clio_meta (key TEXT PRIMARY KEY, value TEXT);",
+        CREATE TABLE IF NOT EXISTS clio_meta (key TEXT PRIMARY KEY, value TEXT);
+        CREATE TABLE IF NOT EXISTS clio_doi (
+            doi TEXT PRIMARY KEY,
+            url TEXT NOT NULL,
+            access INTEGER DEFAULT 0
+        );",
+    )?;
+    stamp_initial_schema_version(conn)?;
+    Ok(())
+}
+
+/// Read the recorded schema version, or `None` when the database predates the marker.
+pub fn schema_version(conn: &Connection) -> Option<i64> {
+    conn.query_row(
+        "SELECT value FROM clio_meta WHERE key='schema_version'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|s| s.parse().ok())
+}
+
+/// Record the schema version of the data currently in the database.
+pub fn set_schema_version(conn: &Connection, version: i64) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute(
+        "INSERT OR REPLACE INTO clio_meta VALUES ('schema_version', ?1)",
+        params![version.to_string()],
     )?;
     Ok(())
 }
 
-/// Clear the FTS index before a full re-sync (makes sync idempotent).
+/// Give an unmarked database the version its contents were written under.
+///
+/// Per-file progress means a sync ran before the marker existed, hence before
+/// `clio_doi`; anything else is a database being created now.
+fn stamp_initial_schema_version(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
+    if schema_version(conn).is_some() {
+        return Ok(());
+    }
+    let synced_files: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM clio_meta WHERE key LIKE 'file:%'",
+        [],
+        |row| row.get(0),
+    )?;
+    let version = if synced_files > 0 { 1 } else { CLIO_SCHEMA_VERSION };
+    set_schema_version(conn, version)
+}
+
+/// True when this database's DOI index is missing because it was synced before
+/// `clio_doi` existed, so `lookup_doi_url` returns `None` for every DOI.
+///
+/// Only a full re-sync can fill it, so callers report this rather than repairing it.
+pub fn doi_index_stale(conn: &Connection) -> bool {
+    schema_version(conn).unwrap_or(1) < CLIO_SCHEMA_VERSION
+}
+
+/// Clear all indexed data and sync progress before a full re-sync.
+///
+/// `clio_doi` is cleared with the rest: inserts are `INSERT OR IGNORE`, so a row
+/// left behind would shadow the re-synced URL forever.
 pub fn clear_clio_db(conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
-    conn.execute_batch("DELETE FROM clio_fts;")?;
-    Ok(())
+    conn.execute_batch(
+        "DELETE FROM clio_fts;
+         DELETE FROM clio_doi;
+         DELETE FROM clio_meta WHERE key LIKE 'file:%';
+         DELETE FROM clio_meta WHERE key='last_sync';",
+    )?;
+    set_schema_version(conn, CLIO_SCHEMA_VERSION)
 }
 
 /// A single Clio catalog record (pre-parsed from MARCXML).
@@ -178,12 +244,15 @@ pub fn insert_batch(
     conn: &Connection,
     records: &[ClioRecord],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut stmt = conn.prepare(
+    let mut fts_stmt = conn.prepare(
         "INSERT INTO clio_fts (title, authors, year, isbn, issn, doi, url, online, publisher)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )?;
+    let mut doi_stmt = conn.prepare(
+        "INSERT OR IGNORE INTO clio_doi (doi, url, access) VALUES (?1, ?2, ?3)",
+    )?;
     for r in records {
-        stmt.execute(params![
+        fts_stmt.execute(params![
             r.title,
             r.authors,
             r.year,
@@ -194,8 +263,23 @@ pub fn insert_batch(
             if r.online { "1" } else { "0" },
             r.publisher,
         ])?;
+        if !r.doi.is_empty() && !r.url.is_empty() {
+            doi_stmt.execute(params![r.doi, r.url, 0i32])?;
+        }
     }
     Ok(())
+}
+
+/// Look up a full-text URL for a DOI in the local Clio index.
+/// Returns the URL if found, None otherwise.
+pub fn lookup_doi_url(conn: &Connection, doi: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT url FROM clio_doi WHERE doi = ?1",
+        rusqlite::params![doi],
+        |row| row.get(0),
+    )
+    .ok()
+    .filter(|s: &String| !s.is_empty())
 }
 
 /// Search the Clio FTS5 table and return matching papers.
@@ -281,6 +365,8 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PaperResult> {
 struct RecordState {
     /// Current tag being processed (e.g. "245").
     tag: String,
+    /// ind1 value for current datafield.
+    ind1: String,
     /// ind2 value for 856 fields.
     ind2: String,
     /// Current subfield code.
@@ -302,6 +388,16 @@ struct RecordState {
     url: String,
     online: bool,
     publisher: String,
+
+    // Per-datafield accumulators (cleared in flush_datafield)
+    /// 024 $a — identifier value.
+    f024_a: String,
+    /// 024 $2 — scheme (e.g. "doi").
+    f024_scheme: String,
+    /// 856 $u — URL.
+    f856_url: String,
+    /// 856 $7 — access flag ("0"=open, "1"=restricted).
+    f856_access: String,
 }
 
 impl RecordState {
@@ -312,14 +408,45 @@ impl RecordState {
         if !self.current_author.is_empty() {
             self.authors.push(std::mem::take(&mut self.current_author));
         }
+
+        // Process 024: identifier field — extract DOI if scheme is "doi"
+        if self.tag == "024" && self.f024_scheme == "doi" && self.doi.is_empty() {
+            self.doi = std::mem::take(&mut self.f024_a);
+        }
+        self.f024_a.clear();
+        self.f024_scheme.clear();
+
+        // Process 856: electronic access field
+        if self.tag == "856" && !self.f856_url.is_empty() {
+            let url = std::mem::take(&mut self.f856_url);
+            // If the URL is a doi.org link, extract DOI and still store the URL
+            if url.contains("doi.org/") {
+                if self.doi.is_empty() {
+                    if let Some(doi) = extract_doi_from_url(&url) {
+                        self.doi = doi;
+                    }
+                }
+                // Store doi.org URLs when ind2 is "0" (online resource) or "1" (version of resource)
+                if (self.ind2 == "0" || self.ind2 == "1") && self.url.is_empty() {
+                    self.url = url;
+                    self.online = true;
+                }
+            } else if self.ind2 == "0" && self.url.is_empty() {
+                self.url = url;
+                self.online = true;
+            } else if self.ind2 == "1" && self.url.is_empty() {
+                self.url = url;
+                self.online = true;
+            }
+        }
+        self.f856_url.clear();
+        self.f856_access.clear();
     }
 
     /// Build a `ClioRecord` from accumulated state and reset.
     fn into_record(mut self) -> ClioRecord {
-        // Flush any pending author
-        if !self.current_author.is_empty() {
-            self.authors.push(self.current_author);
-        }
+        // Flush the last datafield (024/856 accumulators + pending author)
+        self.flush_datafield();
 
         let title = match (self.title_a.as_str(), self.title_b.as_str()) {
             ("", "") => String::new(),
@@ -382,6 +509,7 @@ pub fn parse_marcxml(xml: &[u8]) -> Result<Vec<ClioRecord>, Box<dyn std::error::
                             // Flush previous author if switching datafields
                             s.flush_datafield();
                             s.tag = attr_str(e, b"tag");
+                            s.ind1 = attr_str(e, b"ind1");
                             s.ind2 = attr_str(e, b"ind2");
                         }
                     }
@@ -466,22 +594,16 @@ pub fn parse_marcxml(xml: &[u8]) -> Result<Vec<ClioRecord>, Box<dyn std::error::
                                     s.issn = text.trim().to_string();
                                 }
                             }
-                            "856" => {
-                                if s.subfield_code == 'u' {
-                                    if text.contains("doi.org") {
-                                        // Extract the DOI path from a doi.org URL
-                                        if s.doi.is_empty() {
-                                            if let Some(path) = extract_doi_from_url(text) {
-                                                s.doi = path;
-                                            }
-                                        }
-                                    } else if s.ind2 == "0" && s.url.is_empty() {
-                                        // Full-text link
-                                        s.url = text.to_string();
-                                        s.online = true;
-                                    }
-                                }
-                            }
+                            "024" => match s.subfield_code {
+                                'a' => s.f024_a = text.to_string(),
+                                '2' => s.f024_scheme = text.to_string(),
+                                _ => {}
+                            },
+                            "856" => match s.subfield_code {
+                                'u' => s.f856_url = text.to_string(),
+                                '7' => s.f856_access = text.to_string(),
+                                _ => {}
+                            },
                             "260" | "264" => match s.subfield_code {
                                 'b' => {
                                     if s.publisher.is_empty() {
@@ -690,6 +812,39 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_marcxml_doi_from_024() {
+        let xml = minimal_marc(
+            r#"<datafield tag="245" ind1=" " ind2=" ">
+                 <subfield code="a">Some Paper</subfield>
+               </datafield>
+               <datafield tag="024" ind1="7" ind2=" ">
+                 <subfield code="a">10.1234/test</subfield>
+                 <subfield code="2">doi</subfield>
+               </datafield>"#,
+        );
+        let records = parse_marcxml(&xml).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].doi, "10.1234/test");
+    }
+
+    #[test]
+    fn test_parse_marcxml_856_doi_url_sets_both_doi_and_url() {
+        let xml = minimal_marc(
+            r#"<datafield tag="245" ind1=" " ind2=" ">
+                 <subfield code="a">Some Paper</subfield>
+               </datafield>
+               <datafield tag="856" ind1="4" ind2="0">
+                 <subfield code="u">https://doi.org/10.5678/example</subfield>
+               </datafield>"#,
+        );
+        let records = parse_marcxml(&xml).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].doi, "10.5678/example");
+        assert_eq!(records[0].url, "https://doi.org/10.5678/example");
+        assert!(records[0].online);
+    }
+
+    #[test]
     fn test_parse_marcxml_online_url() {
         let xml = minimal_marc(
             r#"<datafield tag="245" ind1=" " ind2=" ">
@@ -789,6 +944,159 @@ mod tests {
         let results2 = search_clio(&conn, "deep", 10).unwrap();
         assert_eq!(results2.len(), 1);
         assert_eq!(results2[0].title, "Deep Learning");
+    }
+
+    #[test]
+    fn test_lookup_doi_url_found() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_clio_db(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO clio_doi (doi, url, access) VALUES (?1, ?2, ?3)",
+            params!["10.1234/test", "https://example.com/paper.pdf", 0i32],
+        )
+        .unwrap();
+        let result = lookup_doi_url(&conn, "10.1234/test");
+        assert_eq!(result, Some("https://example.com/paper.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_lookup_doi_url_not_found() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_clio_db(&conn).unwrap();
+        let result = lookup_doi_url(&conn, "10.9999/missing");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_insert_batch_populates_clio_doi() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_clio_db(&conn).unwrap();
+        let records = vec![ClioRecord {
+            title: "Test Paper".into(),
+            doi: "10.1234/batch".into(),
+            url: "https://publisher.com/paper".into(),
+            online: true,
+            ..Default::default()
+        }];
+        insert_batch(&conn, &records).unwrap();
+        let result = lookup_doi_url(&conn, "10.1234/batch");
+        assert_eq!(result, Some("https://publisher.com/paper".to_string()));
+    }
+
+    #[test]
+    fn test_clear_clio_db_removes_doi_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_clio_db(&conn).unwrap();
+        let records = vec![ClioRecord {
+            title: "Test Paper".into(),
+            doi: "10.1234/stale".into(),
+            url: "https://old.example.com/paper".into(),
+            online: true,
+            ..Default::default()
+        }];
+        insert_batch(&conn, &records).unwrap();
+
+        clear_clio_db(&conn).unwrap();
+
+        assert_eq!(lookup_doi_url(&conn, "10.1234/stale"), None);
+        let fts_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM clio_fts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(fts_rows, 0);
+    }
+
+    #[test]
+    fn test_clear_clio_db_lets_resync_correct_a_url() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_clio_db(&conn).unwrap();
+        let old = vec![ClioRecord {
+            doi: "10.1234/moved".into(),
+            url: "https://old.example.com/paper".into(),
+            ..Default::default()
+        }];
+        insert_batch(&conn, &old).unwrap();
+
+        clear_clio_db(&conn).unwrap();
+        let new = vec![ClioRecord {
+            doi: "10.1234/moved".into(),
+            url: "https://new.example.com/paper".into(),
+            ..Default::default()
+        }];
+        insert_batch(&conn, &new).unwrap();
+
+        assert_eq!(
+            lookup_doi_url(&conn, "10.1234/moved"),
+            Some("https://new.example.com/paper".to_string())
+        );
+    }
+
+    #[test]
+    fn test_clear_clio_db_removes_sync_progress() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_clio_db(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO clio_meta VALUES ('file:extract-001.xml.gz', '10');
+             INSERT INTO clio_meta VALUES ('last_sync', '2026-01-01');",
+        )
+        .unwrap();
+
+        clear_clio_db(&conn).unwrap();
+
+        let progress: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM clio_meta WHERE key LIKE 'file:%' OR key='last_sync'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(progress, 0);
+    }
+
+    #[test]
+    fn test_clear_clio_db_stamps_current_schema_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_clio_db(&conn).unwrap();
+        set_schema_version(&conn, 1).unwrap();
+
+        clear_clio_db(&conn).unwrap();
+
+        assert!(!doi_index_stale(&conn));
+    }
+
+    #[test]
+    fn test_doi_index_stale_for_database_synced_before_clio_doi() {
+        let conn = Connection::open_in_memory().unwrap();
+        // A pre-upgrade database: FTS index and per-file progress, no version marker.
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE clio_fts USING fts5(
+                title, authors, year, isbn, issn, doi, url, online, publisher
+             );
+             CREATE TABLE clio_meta (key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO clio_meta VALUES ('file:extract-001.xml.gz', '10');",
+        )
+        .unwrap();
+
+        init_clio_db(&conn).unwrap();
+
+        assert!(doi_index_stale(&conn));
+    }
+
+    #[test]
+    fn test_doi_index_not_stale_for_fresh_database() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_clio_db(&conn).unwrap();
+        assert!(!doi_index_stale(&conn));
+    }
+
+    #[test]
+    fn test_init_clio_db_preserves_recorded_schema_version() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_clio_db(&conn).unwrap();
+        set_schema_version(&conn, 1).unwrap();
+
+        init_clio_db(&conn).unwrap();
+
+        assert!(doi_index_stale(&conn), "a second init must not silently clear the stale marker");
     }
 
     #[test]

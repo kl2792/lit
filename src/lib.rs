@@ -7,6 +7,7 @@ pub mod detect;
 pub mod format;
 pub mod http;
 pub mod mcp;
+pub mod paths;
 pub mod sanitize;
 
 // Re-export key types for MCP and other library consumers.

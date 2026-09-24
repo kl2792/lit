@@ -144,9 +144,25 @@ A completed sync is guarded by a 30-day check:
 
 ```bash
 lit clio sync           # skips if synced within 30 days
-lit clio sync --force   # clears index and re-syncs unconditionally
+lit clio sync --force   # deletes clio_fts, clio_doi and all sync progress, then re-syncs
 lit clio sync --check   # report: record count, files done, last sync date
 ```
+
+`--force` deletes the DOI table along with the full-text index.
+Inserts into `clio_doi` are `INSERT OR IGNORE`, so a surviving row would shadow the re-synced URL for that DOI forever.
+
+### DOI lookups and the schema version
+
+`clio_doi(doi, url, access)` maps a DOI to a full-text URL, which `lit download` consults after the open-access tier and before EZProxy.
+FTS5 tokenization makes exact DOI match through the full-text index unreliable, so exact lookup gets its own table.
+
+`lit download <doi> --url-only` prints every candidate URL, one per line, in that same tier order, because both paths read one list of tiers.
+It previously printed a single line, the open-access URL or the EZProxy URL, which stopped matching the download path once the Clio tier stopped being skipped after a live open-access link.
+Warnings go to stderr, so stdout stays a plain URL list.
+
+`clio_meta` records the schema version the data was written under.
+A database synced before `clio_doi` existed is version 1: the table is empty, and a plain `lit clio sync` cannot fill it because every extract file is already recorded as done.
+`lit clio sync`, `lit clio sync --check` and `lit download` report this and ask for `lit clio sync --force`, which is the only operation that builds the DOI index for such a database.
 
 ### MARC field mapping
 
@@ -157,9 +173,9 @@ lit clio sync --check   # report: record count, files done, last sync date
 | `year` | 008 bytes 7–10 | fallback: 260/264 `$c` (first 4-digit run) |
 | `isbn` | 020 | `$a` (first) |
 | `issn` | 022 | `$a` (first) |
-| `doi` | 856 | `$u` containing `doi.org` |
-| `url` | 856 ind2=0 | `$u` (first full-text link) |
-| `online` | 856 ind2=0 | true when any full-text 856 present |
+| `doi` | 024, 856 | `024 $a` when `$2` is `doi`, else `856 $u` containing `doi.org/` |
+| `url` | 856 ind2=0 or 1 | `$u` (first full-text link) |
+| `online` | 856 ind2=0 or 1 | true when any full-text 856 present |
 | `publisher` | 260 or 264 | `$b` |
 
 ### Using the catalog in search

@@ -6,3 +6,6 @@ etc/lit/lit.db-wal
 etc/lit/lit.db.bak
 etc/lit/cache/
 etc/pdf/
+.lit/
+test/fixture/
+.claude/

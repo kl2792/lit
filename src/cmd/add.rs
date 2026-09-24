@@ -233,7 +233,26 @@ async fn fetch_ol_bibtex(ctx: &Context, url: &str) -> Result<String, Box<dyn std
             let edition_url = openlibrary::edition_url(&parts.id);
             let body = client.get(&edition_url).await?;
             let ed = openlibrary::parse_edition(&body)?;
-            (ed.title, ed.publisher, ed.year, ed.author_keys)
+            if !ed.author_keys.is_empty() {
+                (ed.title, ed.publisher, ed.year, ed.author_keys)
+            } else {
+                let edition: serde_json::Value = serde_json::from_str(&body)?;
+                let work_keys = edition["works"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|w| w["key"].as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let mut fallback_authors = Vec::new();
+                for work_key in work_keys {
+                    let work_id = work_key.trim_start_matches("/works/");
+                    let work_body = client.get(&openlibrary::work_url(work_id)).await?;
+                    fallback_authors.extend(openlibrary::parse_work(&work_body)?.author_keys);
+                }
+                (ed.title, ed.publisher, ed.year, fallback_authors)
+            }
         }
         openlibrary::OlKind::Works => {
             let work_url = openlibrary::work_url(&parts.id);
@@ -252,6 +271,7 @@ async fn fetch_ol_bibtex(ctx: &Context, url: &str) -> Result<String, Box<dyn std
                     publisher: None,
                     year: "?".to_string(),
                     author_keys: work.author_keys.clone(),
+                    isbn: None,
                 });
             let author_keys = if !earliest.author_keys.is_empty() {
                 earliest.author_keys
@@ -262,23 +282,21 @@ async fn fetch_ol_bibtex(ctx: &Context, url: &str) -> Result<String, Box<dyn std
         }
     };
 
-    // Fetch the first author's name
-    let author_name = if let Some(key) = author_keys.first() {
-        let author_url = openlibrary::author_url(key);
-        match client.get(&author_url).await {
-            Ok(body) => {
-                let raw = openlibrary::parse_author(&body).unwrap_or_else(|_| "Unknown".to_string());
-                normalize_ol_author(&raw)
-            }
-            Err(_) => "Unknown".to_string(),
-        }
-    } else {
-        "Unknown".to_string()
-    };
+    // Resolve every author, and fail rather than emitting a misleading
+    // `Unknown` author when the metadata endpoint is unavailable.
+    let mut authors = Vec::with_capacity(author_keys.len());
+    for key in &author_keys {
+        let body = client.get(&openlibrary::author_url(key)).await?;
+        let raw = openlibrary::parse_author(&body)?;
+        authors.push(normalize_ol_author(&raw));
+    }
+    if authors.is_empty() {
+        return Err("Open Library edition has no resolvable author names".into());
+    }
 
     let result = crate::api::PaperResult {
         title,
-        authors: vec![author_name],
+        authors,
         year,
         venue: publisher,
         ..Default::default()
@@ -292,6 +310,7 @@ async fn fetch_ol_bibtex(ctx: &Context, url: &str) -> Result<String, Box<dyn std
 /// the first line of extracted text with more than 15 characters.
 pub async fn fetch_title_from_url(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
+        .use_rustls_tls()
         .timeout(Duration::from_secs(60))
         .build()?;
 
@@ -407,11 +426,7 @@ async fn resolve_bibtex_from_result(
 /// Generate BibTeX for a book from a PaperResult.
 fn generate_book_bibtex(result: &crate::api::PaperResult) -> String {
     let key = crate::citekey::generate(&result.authors, &result.year, &result.title);
-    let author_str = result
-        .authors
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "Unknown".to_string());
+    let author_str = result.authors.join(" and ");
 
     let mut fields = vec![
         format!("  title = {{{}}}", result.title),

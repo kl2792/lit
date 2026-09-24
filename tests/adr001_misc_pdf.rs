@@ -45,6 +45,7 @@ fn local_pdf_creates_artifact_then_bib_entry() {
     assert!(saved.starts_with(b"%PDF"));
 
     let yaml = std::fs::read_to_string(dir.join("source.yaml")).unwrap();
+    assert!(yaml.contains("bibtex_key: \"maiti2026tier\""), "yaml: {}", yaml);
     assert!(yaml.contains("title: \"Counterfactual Tiers Tech Report\""), "yaml: {}", yaml);
     assert!(yaml.contains("authors: \"Aurghya Maiti and Elias Bareinboim\""), "yaml: {}", yaml);
     assert!(yaml.contains("year: 2026"), "yaml: {}", yaml);

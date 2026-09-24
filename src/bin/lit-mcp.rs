@@ -11,7 +11,6 @@
 /// `{"status":"started","task_id":"..."}` and a `notifications/message` is
 /// pushed when the task finishes.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +19,7 @@ use lit::mcp::{
     dispatch_tool, make_context, make_error, make_response, make_tool_error, make_tool_result,
     tool_definitions, SERVER_NAME, SERVER_VERSION,
 };
-use lit::{cmd, db};
+use lit::{cmd, db, paths};
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -154,17 +153,8 @@ async fn handle_message(
 }
 
 fn main() {
-    // Resolve DB path (same logic as main.rs).
-    let db_path = std::env::var("LIT_DB_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let exe = std::env::current_exe().unwrap_or_default();
-            exe.parent()
-                .unwrap_or(std::path::Path::new("."))
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join("etc/lit/lit.db")
-        });
+    // The shared resolver, so this server and `lit` cannot open different files.
+    let (db_path, _source) = paths::db_path();
 
     let database = match db::Db::open(&db_path) {
         Ok(db) => Arc::new(db),
