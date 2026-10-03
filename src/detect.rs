@@ -175,6 +175,18 @@ pub fn normalize_doi(input: &str) -> String {
     input.to_string()
 }
 
+/// The arXiv identifier an arXiv-registered DOI (`10.48550/arXiv.<id>`) names,
+/// normalized as `normalize_arxiv` would, or `None` for any other DOI.
+pub fn arxiv_id_from_doi(doi: &str) -> Option<String> {
+    const PREFIX: &str = "10.48550/arxiv.";
+    let head = doi.get(..PREFIX.len())?;
+    if !head.eq_ignore_ascii_case(PREFIX) {
+        return None;
+    }
+    let id = &doi[PREFIX.len()..];
+    (ARXIV_NEW_RE.is_match(id) || ARXIV_OLD_RE.is_match(id)).then(|| normalize_arxiv(id))
+}
+
 /// Strip hyphens and spaces from an ISBN string.
 pub fn normalize_isbn(input: &str) -> String {
     input.chars().filter(|c| *c != '-' && *c != ' ').collect()
@@ -502,6 +514,34 @@ mod tests {
             normalize_arxiv("https://arxiv.org/pdf/2006.11239.pdf"),
             "2006.11239"
         );
+    }
+
+    // ── arxiv_id_from_doi ──
+
+    #[test]
+    fn arxiv_id_from_doi_new_style() {
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv.2510.24941"), Some("2510.24941".to_string()));
+    }
+
+    #[test]
+    fn arxiv_id_from_doi_is_case_insensitive_in_the_prefix() {
+        // DOIs are case-insensitive, and DataCite lowercases them in some records.
+        assert_eq!(arxiv_id_from_doi("10.48550/ARXIV.2510.24941"), Some("2510.24941".to_string()));
+        assert_eq!(arxiv_id_from_doi("10.48550/arxiv.2510.24941"), Some("2510.24941".to_string()));
+    }
+
+    #[test]
+    fn arxiv_id_from_doi_old_style() {
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv.hep-th/9901001"), Some("hep-th/9901001".to_string()));
+    }
+
+    #[test]
+    fn arxiv_id_from_doi_rejects_other_dois() {
+        assert_eq!(arxiv_id_from_doi("10.1145/3442188.3445899"), None);
+        // Same registrant, but the suffix is not an arXiv identifier.
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv.notanid"), None);
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv."), None);
+        assert_eq!(arxiv_id_from_doi(""), None);
     }
 
     // ── normalize_doi ──

@@ -41,6 +41,7 @@ DOI extraction prefers MARC `024` with `$2 == "doi"` and falls back to an `856 $
 ### Acquisition: an explicit tier order
 
 `lit download <doi>` resolves in the order open-access URL, then the local Clio index, then EZProxy.
+An arXiv identifier, including an arXiv DOI (`10.48550/arXiv.<id>`), is fetched from arXiv directly and never enters these tiers, because arXiv is open access and a DOI resolver adds only a failure point.
 The tier that actually produced the bytes is the artifact's provenance.
 
 ### Provenance: artifacts are self-describing

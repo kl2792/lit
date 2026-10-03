@@ -13,7 +13,7 @@ use crate::api::arxiv;
 use crate::api::{extract_last_name, unpaywall, PaperResult};
 use crate::citekey::SKIP_WORDS;
 use crate::db;
-use crate::detect::{normalize_arxiv, normalize_doi};
+use crate::detect::{arxiv_id_from_doi, detect_type, normalize_arxiv, normalize_doi, InputType};
 use crate::format;
 
 /// Download timeout for source tarballs (seconds).
@@ -33,13 +33,49 @@ pub async fn run(
     run_pdf(ctx, input, url_only, citekey).await
 }
 
+/// Download a PDF to etc/pdf/<citekey>/, from arXiv for an arXiv preprint and
+/// through the DOI tiers otherwise.
+async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    match classify(input) {
+        Target::Arxiv(id) => run_arxiv_pdf(ctx, &id, url_only, citekey).await,
+        Target::Doi(doi) => run_doi_pdf(ctx, &doi, url_only, citekey).await,
+    }
+}
+
+/// Download an arXiv preprint's PDF from arXiv, with metadata from the arXiv API.
+async fn run_arxiv_pdf(ctx: &Context, arxiv_id: &str, url_only: bool, citekey: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let tiers = arxiv_tiers(arxiv_id);
+    if url_only {
+        for url in tier_urls(&tiers) {
+            println!("{}", url);
+        }
+        return Ok(());
+    }
+
+    let paper = fetch_metadata(ctx, arxiv_id).await?;
+    println!("Title: {}", paper.title);
+
+    match fetch_tiers(&tiers).await {
+        Ok((data, delivered_by)) => {
+            let yaml = build_source_yaml(&paper, arxiv_id, citekey, Some(&delivered_by), &today_string());
+            save_pdf(&paper, citekey, &data, &yaml)
+        }
+        Err(failures) => {
+            for line in failure_report(&failures, Some(&tiers[0].url), None, None) {
+                println!("{}", line);
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Find open-access PDF via Unpaywall, with S2 and OpenAlex fallbacks.
 /// Resolves in tier order (open access, Clio, EZProxy) and downloads the first
 /// tier that delivers bytes to etc/pdf/<citekey>/.
-async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_doi_pdf(ctx: &Context, doi: &str, url_only: bool, citekey: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     use crate::api::{openalex as oa_api, semantic_scholar as s2_api};
 
-    let doi = normalize_doi(input);
+    let doi = doi.to_string();
     let client = ctx.client();
 
     let uw_key = db::Db::cache_key("unpaywall", &doi);
@@ -110,42 +146,90 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&st
         ..Default::default()
     });
 
-    // A tier is tried whenever the ones before it returned no bytes, so a dead
-    // link in one tier cannot disable a later one.
-    let fetched = fetch_first_success(&tiers, |url, cookies| async move {
-        fetch_pdf_via_curl(&url, cookies.as_deref()).await
-    })
-    .await;
-
-    match fetched {
+    match fetch_tiers(&tiers).await {
         Ok((data, delivered_by)) => {
-            let dir_name = {
-                let slug = citekey.map(|k| k.to_string()).unwrap_or_else(|| generate_dir_name(&meta));
-                crate::paths::artifact_dir()?.join(slug)
-            };
-            std::fs::create_dir_all(&dir_name)?;
-            let pdf_path = dir_name.join("paper.pdf");
-            std::fs::write(&pdf_path, &data)?;
-            let _ = Command::new("pdftotext")
-                .arg(&pdf_path)
-                .arg(dir_name.join("paper.txt"))
-                .status();
-            let today = today_string();
             // Provenance is the tier that produced these bytes, not the first tier
             // that merely had a candidate URL.
-            let yaml = build_doi_source_yaml(&meta, &doi, citekey.as_deref(), Some(delivered_by.as_str()), &today, confirmed);
-            std::fs::write(dir_name.join("source.yaml"), &yaml)?;
-            let kb = data.len() / 1024;
-            println!("Saved: {} ({}KB)", dir_name.display(), kb);
+            let yaml = build_doi_source_yaml(&meta, &doi, citekey, Some(delivered_by.as_str()), &today_string(), confirmed);
+            save_pdf(&meta, citekey, &data, &yaml)
         }
         Err(failures) => {
             for line in failure_report(&failures, pdf_url.as_deref(), clio_url.as_deref(), ez_url.as_deref()) {
                 println!("{}", line);
             }
+            Ok(())
         }
     }
+}
 
+/// Fetch the tiers in order with curl.
+///
+/// A tier is tried whenever the ones before it returned no bytes, so a dead
+/// link in one tier cannot disable a later one.
+async fn fetch_tiers(tiers: &[Tier]) -> Result<(Vec<u8>, String), Vec<FetchError>> {
+    fetch_first_success(tiers, |url, cookies| async move {
+        fetch_pdf_via_curl(&url, cookies.as_deref()).await
+    })
+    .await
+}
+
+/// Write `paper.pdf`, its `pdftotext` extraction, and `source.yaml` to
+/// etc/pdf/<citekey>/, naming the directory from `meta` when no citekey is given.
+fn save_pdf(meta: &PaperResult, citekey: Option<&str>, data: &[u8], yaml: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let slug = citekey.map(|k| k.to_string()).unwrap_or_else(|| generate_dir_name(meta));
+    let dir_name = crate::paths::artifact_dir()?.join(slug);
+    std::fs::create_dir_all(&dir_name)?;
+    let pdf_path = dir_name.join("paper.pdf");
+    std::fs::write(&pdf_path, data)?;
+    let _ = Command::new("pdftotext")
+        .arg(&pdf_path)
+        .arg(dir_name.join("paper.txt"))
+        .status();
+    std::fs::write(dir_name.join("source.yaml"), yaml)?;
+    println!("Saved: {} ({}KB)", dir_name.display(), data.len() / 1024);
     Ok(())
+}
+
+/// What a `lit download` input names: an arXiv preprint (by normalized id) or a
+/// DOI. arXiv preprints are fetched from arXiv itself, never through a DOI
+/// resolver or EZProxy.
+#[derive(Debug, PartialEq, Eq)]
+enum Target {
+    Arxiv(String),
+    Doi(String),
+}
+
+/// Classify a download input.
+///
+/// arXiv-registered DOIs (`10.48550/arXiv.<id>`) are arXiv preprints too.
+fn classify(input: &str) -> Target {
+    if detect_type(input) == InputType::Arxiv {
+        return Target::Arxiv(normalize_arxiv(input));
+    }
+    let doi = normalize_doi(input);
+    match arxiv_id_from_doi(&doi) {
+        Some(id) => Target::Arxiv(id),
+        None => Target::Doi(doi),
+    }
+}
+
+/// The arXiv identifier `--source` fetches: the one `classify` finds, so an
+/// arXiv DOI works here as it does for the PDF, and otherwise the input read as
+/// an arXiv identifier, since `--source` accepts nothing else.
+fn source_arxiv_id(input: &str) -> String {
+    match classify(input) {
+        Target::Arxiv(id) => id,
+        Target::Doi(_) => normalize_arxiv(input),
+    }
+}
+
+/// The tiers for an arXiv preprint: arXiv's own PDF, which is open access.
+fn arxiv_tiers(arxiv_id: &str) -> Vec<Tier> {
+    vec![Tier {
+        label: "arXiv PDF",
+        url: format!("https://arxiv.org/pdf/{}", arxiv_id),
+        cookies: None,
+    }]
 }
 
 /// One acquisition tier: a candidate URL and the cookie jar its fetch needs.
@@ -382,17 +466,22 @@ fn build_doi_source_yaml(
     let authors_str = paper.authors.join(" and ").replace('"', "\\\"");
     let title = paper.title.replace('"', "\\\"");
     let mut yaml = format!("title: \"{}\"\nauthors: \"{}\"\nyear: {}\ndoi: \"{}\"\n", title, authors_str, paper.year, doi);
+    push_provenance(&mut yaml, bibtex_key, source_url);
+    if confirmed {
+        yaml.push_str("metadata_confirmed: true\n");
+    }
+    yaml.push_str(&format!("retrieved: \"{}\"\n", retrieved));
+    yaml
+}
+
+/// Append the citekey and the URL that delivered the bytes, when known.
+fn push_provenance(yaml: &mut String, bibtex_key: Option<&str>, source_url: Option<&str>) {
     if let Some(key) = bibtex_key {
         yaml.push_str(&format!("bibtex_key: \"{}\"\n", key.replace('"', "\\\"")));
     }
     if let Some(url) = source_url {
         yaml.push_str(&format!("source_url: \"{}\"\n", url.replace('"', "\\\"")));
     }
-    if confirmed {
-        yaml.push_str("metadata_confirmed: true\n");
-    }
-    yaml.push_str(&format!("retrieved: \"{}\"\n", retrieved));
-    yaml
 }
 
 /// Download arXiv LaTeX source tarball.
@@ -401,7 +490,7 @@ async fn run_source(
     input: &str,
     dir_override: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let arxiv_id = normalize_arxiv(input);
+    let arxiv_id = source_arxiv_id(input);
     let url = format!("https://arxiv.org/e-print/{}", arxiv_id);
 
     format::info(&format!("Looking up metadata for arXiv:{}", arxiv_id));
@@ -466,7 +555,7 @@ async fn run_source(
     }
 
     let today = today_string();
-    let yaml = build_source_yaml(&paper, &arxiv_id, &today);
+    let yaml = build_source_yaml(&paper, &arxiv_id, None, None, &today);
     let yaml_path = dir_name.join("source.yaml");
     std::fs::write(&yaml_path, &yaml)?;
     format::info(&format!("Wrote {}", yaml_path.display()));
@@ -528,7 +617,13 @@ fn extract_title_slug(title: &str) -> String {
 ///
 /// The record is always the arXiv API's answer for `arxiv_id`, so the artifact
 /// is confirmed by construction.
-fn build_source_yaml(paper: &PaperResult, arxiv_id: &str, retrieved: &str) -> String {
+fn build_source_yaml(
+    paper: &PaperResult,
+    arxiv_id: &str,
+    bibtex_key: Option<&str>,
+    source_url: Option<&str>,
+    retrieved: &str,
+) -> String {
     let authors_str = paper.authors.join(" and ");
     let title = paper.title.replace('"', "\\\"");
     let authors = authors_str.replace('"', "\\\"");
@@ -538,6 +633,7 @@ fn build_source_yaml(paper: &PaperResult, arxiv_id: &str, retrieved: &str) -> St
     yaml.push_str(&format!("authors: \"{}\"\n", authors));
     yaml.push_str(&format!("year: {}\n", paper.year));
     yaml.push_str(&format!("arxiv: \"{}\"\n", arxiv_id));
+    push_provenance(&mut yaml, bibtex_key, source_url);
     yaml.push_str("metadata_confirmed: true\n");
     yaml.push_str(&format!("retrieved: \"{}\"\n", retrieved));
     yaml
@@ -661,7 +757,7 @@ mod tests {
             year: "2019".to_string(),
             ..Default::default()
         };
-        let yaml = build_source_yaml(&paper, "1912.02503", "2026-03-01");
+        let yaml = build_source_yaml(&paper, "1912.02503", None, None, "2026-03-01");
         assert!(yaml.contains("title: \"Hindsight Credit Assignment\""));
         assert!(yaml.contains("authors: \"Anna Harutyunyan and Will Dabney\""));
         assert!(yaml.contains("year: 2019"));
@@ -669,6 +765,21 @@ mod tests {
         assert!(yaml.contains("retrieved: \"2026-03-01\""));
         // The record came from the arXiv API, so `check` need never ask again.
         assert!(yaml.contains("metadata_confirmed: true"));
+        assert!(!yaml.contains("bibtex_key") && !yaml.contains("source_url"));
+    }
+
+    #[test]
+    fn test_build_source_yaml_records_citekey_and_delivering_url() {
+        let paper = PaperResult { title: "A Paper".to_string(), year: "2025".to_string(), ..Default::default() };
+        let yaml = build_source_yaml(
+            &paper,
+            "2510.24941",
+            Some("zhao2025can"),
+            Some("https://arxiv.org/pdf/2510.24941"),
+            "2026-03-01",
+        );
+        assert!(yaml.contains("bibtex_key: \"zhao2025can\""));
+        assert!(yaml.contains("source_url: \"https://arxiv.org/pdf/2510.24941\""));
     }
 
     #[test]
@@ -933,6 +1044,52 @@ mod tests {
         }];
         let lines = failure_report(&not_pdf, None, None, None);
         assert!(lines.iter().any(|l| l.contains("No open-access PDF found")), "{:?}", lines);
+    }
+
+    #[test]
+    fn test_classify_routes_every_arxiv_form_to_arxiv() {
+        let cases = [
+            ("2510.24941", "2510.24941"),
+            ("2510.24941v4", "2510.24941"),
+            ("arXiv:2510.24941", "2510.24941"),
+            ("arxiv:2510.24941v4", "2510.24941"),
+            ("hep-th/9901001", "hep-th/9901001"),
+            ("https://arxiv.org/abs/2510.24941", "2510.24941"),
+            ("10.48550/arXiv.2510.24941", "2510.24941"),
+            ("https://doi.org/10.48550/arXiv.2510.24941", "2510.24941"),
+            ("10.48550/arXiv.hep-th/9901001", "hep-th/9901001"),
+        ];
+        for (input, id) in cases {
+            assert_eq!(classify(input), Target::Arxiv(id.to_string()), "input {:?}", input);
+        }
+    }
+
+    #[test]
+    fn test_classify_keeps_a_publisher_doi_a_doi() {
+        assert_eq!(classify("10.1145/3442188.3445899"), Target::Doi("10.1145/3442188.3445899".to_string()));
+        assert_eq!(
+            classify("https://doi.org/10.1145/3442188.3445899"),
+            Target::Doi("10.1145/3442188.3445899".to_string())
+        );
+    }
+
+    #[test]
+    fn test_source_arxiv_id_accepts_an_arxiv_doi() {
+        assert_eq!(source_arxiv_id("10.48550/arXiv.2510.24941"), "2510.24941");
+        assert_eq!(source_arxiv_id("https://doi.org/10.48550/arXiv.2510.24941v2"), "2510.24941");
+    }
+
+    #[test]
+    fn test_source_arxiv_id_keeps_normalizing_other_inputs() {
+        assert_eq!(source_arxiv_id("2006.11239v2"), "2006.11239");
+        assert_eq!(source_arxiv_id("https://arxiv.org/pdf/2006.11239.pdf"), "2006.11239");
+    }
+
+    #[test]
+    fn test_arxiv_tiers_are_arxiv_only() {
+        assert_eq!(tier_urls(&arxiv_tiers("2510.24941")), vec!["https://arxiv.org/pdf/2510.24941"]);
+        assert_eq!(tier_urls(&arxiv_tiers("hep-th/9901001")), vec!["https://arxiv.org/pdf/hep-th/9901001"]);
+        assert!(arxiv_tiers("2510.24941").iter().all(|t| t.cookies.is_none()), "arXiv needs no session cookie");
     }
 
     #[test]

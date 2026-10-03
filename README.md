@@ -40,7 +40,9 @@ lit refs <id> [--hops N]         Get references of a paper
 lit cites <id> [--hops N]        Get papers that cite this paper
 lit path <a> <b> [--max-hops N]  Shortest citation path between two papers
 lit download <id> [--source] [--url-only] [--dir DIR] [--citekey KEY]
-                                 Download PDF; --source for arXiv LaTeX source;
+                                 Download PDF (arXiv IDs and arXiv DOIs from
+                                 arXiv; other DOIs via open access, Clio,
+                                 EZProxy); --source for arXiv LaTeX source;
                                  --citekey names the output directory
 lit read <id>                    Locate paper text; auto-downloads arXiv PDFs
 lit add <id> <bib_file> [--key KEY] [--force]

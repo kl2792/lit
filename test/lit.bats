@@ -22,6 +22,20 @@ setup() {
     mkdir -p "$(dirname "$LIT_DB_PATH")"
 }
 
+# ── Download routing ─────────────────────────────────────────────────
+
+@test "download: arXiv DOI routes to arxiv.org, not a DOI resolver" {
+    run "$LIT" download 10.48550/arXiv.2510.24941 --url-only
+    [ "$status" -eq 0 ]
+    [ "$output" = "https://arxiv.org/pdf/2510.24941" ]
+}
+
+@test "download: bare arXiv ID routes to arxiv.org" {
+    run "$LIT" download arXiv:2510.24941v4 --url-only
+    [ "$status" -eq 0 ]
+    [ "$output" = "https://arxiv.org/pdf/2510.24941" ]
+}
+
 # ── Auto-detect ──────────────────────────────────────────────────────
 
 @test "auto-detect: arXiv ID" {
