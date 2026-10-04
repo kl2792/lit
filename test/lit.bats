@@ -138,7 +138,25 @@ setup() {
     [[ "$output" =~ "Causal" ]] || [[ "$output" =~ "Interpret" ]] || [[ "$output" != "" ]]
 }
 
+@test "refs: --json is a JSON array with ids and source" {
+    run "$LIT" refs 2408.01416 --json
+    [ "$status" -eq 0 ]
+    echo "$output" | python3 -c 'import sys, json; a = json.load(sys.stdin); assert len(a) > 50, len(a); assert all(r["source"] in ("s2", "openalex") for r in a); assert any("doi" in r or "arxiv_id" in r for r in a)'
+}
+
+@test "refs: a failed call exits nonzero, not an empty list" {
+    run "$LIT" refs CorpusId:999999999999
+    [ "$status" -ne 0 ]
+    [[ ! "$output" =~ "No references found" ]]
+}
+
 # ── Flags ────────────────────────────────────────────────────────────
+
+@test "version flag: --version names the git hash" {
+    run "$LIT" --version
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ ^lit\ [0-9]+\.[0-9]+\.[0-9]+\ \([0-9a-f]+\)$ ]]
+}
 
 @test "help flag: -h" {
     run "$LIT" -h

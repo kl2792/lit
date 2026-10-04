@@ -4,6 +4,7 @@ pub mod clean;
 pub mod clio;
 pub mod misc;
 pub mod cites;
+pub mod neighbors;
 pub mod download;
 pub mod open;
 pub mod path;
@@ -334,9 +335,9 @@ fn s2_api_id(p: &PaperResult) -> Option<String> {
 ///
 /// For refs (is_refs=true): source_id cites the new paper.
 /// For cites (is_refs=false): the new paper cites source_id.
-fn upsert_and_link(ctx: &Context, paper: &PaperResult, source_id: i64, is_refs: bool) -> Option<i64> {
+fn upsert_and_link(ctx: &Context, paper: &PaperResult, source: &str, source_id: i64, is_refs: bool) -> Option<i64> {
     let row = PaperRow::from(paper);
-    match ctx.db.upsert_paper(&row, Some("s2")) {
+    match ctx.db.upsert_paper(&row, Some(source)) {
         Ok(target_id) => {
             let (s, t) = if is_refs {
                 (source_id, target_id)
@@ -355,144 +356,140 @@ fn upsert_and_link(ctx: &Context, paper: &PaperResult, source_id: i64, is_refs: 
     }
 }
 
-/// Fetch related papers (references or citations) and return them as structured data.
+/// Result of a refs/cites BFS: the papers found, each tagged with the service
+/// that supplied it, and one message per failed neighbor call below the seed.
+pub struct Related {
+    pub papers: Vec<(PaperResult, neighbors::Source)>,
+    pub failures: Vec<String>,
+}
+
+/// BFS over references or citations from `paper_id`, `hops` deep, stopping at
+/// `max_papers` (with a warning).
 ///
-/// Same BFS logic as `fetch_related` but returns `Vec<PaperResult>` instead of printing.
+/// A failed call on the seed is an error. A failed call deeper in the graph is
+/// recorded in `Related::failures`; callers must surface it. Cost: one neighbor
+/// call (one or more pages) per expanded node.
 pub async fn fetch_related_data(
     ctx: &Context,
     paper_id: &str,
-    direction: &str,
-    cache_prefix: &str,
-    url_fn: fn(&str) -> String,
-    parse_fn: fn(&str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>>,
+    dir: neighbors::Direction,
     hops: usize,
     max_papers: usize,
-) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
+) -> Result<Related, Box<dyn std::error::Error>> {
     use std::collections::HashSet;
 
     let client = ctx.client();
-    let is_refs = direction == "references";
+    let is_refs = dir == neighbors::Direction::Refs;
 
     if ctx.verbose {
         crate::format::info(&format!(
             "Getting {} for: {} (hops={}, max={})",
-            direction, paper_id, hops, max_papers
+            dir.noun(), paper_id, hops, max_papers
         ));
     }
 
-    let mut visited: HashSet<String> = HashSet::new();
-    visited.insert(paper_id.to_string());
+    let seed = neighbors::seed_paper(paper_id);
+    let mut visited: HashSet<String> = s2_api_id(&seed).into_iter().collect();
+    let mut frontier: Vec<(PaperResult, Option<i64>)> = vec![(seed, None)];
+    let mut related = Related { papers: Vec::new(), failures: Vec::new() };
+    let mut hit_cap = false;
 
-    let mut frontier: Vec<(String, Option<i64>)> = vec![(paper_id.to_string(), None)];
-    let mut collected: Vec<PaperResult> = Vec::new();
+    'hops: for hop in 0..hops {
+        let mut next_frontier: Vec<(PaperResult, Option<i64>)> = Vec::new();
 
-    for _hop in 0..hops {
-        if frontier.is_empty() || collected.len() >= max_papers {
-            break;
-        }
-
-        let mut next_frontier: Vec<(String, Option<i64>)> = Vec::new();
-
-        for (api_id, source_db_id) in &frontier {
-            if collected.len() >= max_papers {
-                break;
-            }
-
-            let key = crate::db::Db::cache_key(cache_prefix, api_id);
-            let url = url_fn(api_id);
-
-            let body = match client.get_cached(&key, &url, crate::db::TTL_SEARCH).await {
-                Ok(b) => b,
+        for (node, source_db_id) in &frontier {
+            let found = match neighbors::fetch(&client, node, dir).await {
+                Ok(n) => n,
+                Err(e) if hop == 0 => return Err(e.into()),
                 Err(e) => {
-                    if ctx.verbose {
-                        crate::format::warn(&format!(
-                            "Failed to fetch {} for {}: {}",
-                            direction, api_id, e
-                        ));
-                    }
+                    let id = s2_api_id(node).unwrap_or_else(|| node.title.clone());
+                    related.failures.push(format!("{} of {}: {}", dir.noun(), id, e));
                     continue;
                 }
             };
-            let results = match parse_fn(&body) {
-                Ok(r) => r,
-                Err(e) => {
-                    if ctx.verbose {
-                        crate::format::warn(&format!(
-                            "Failed to parse {} for {}: {}",
-                            direction, api_id, e
-                        ));
-                    }
-                    continue;
+            let source = found.source.as_str();
+
+            for p in found.papers {
+                if related.papers.len() >= max_papers {
+                    hit_cap = true;
+                    break 'hops;
                 }
-            };
-
-            for p in &results {
-                if collected.len() >= max_papers {
-                    break;
-                }
-
-                let child_api_id = s2_api_id(p);
-
+                let child_api_id = s2_api_id(&p);
                 if let Some(ref cid) = child_api_id {
-                    if visited.contains(cid) {
+                    if !visited.insert(cid.clone()) {
                         continue;
                     }
-                    visited.insert(cid.clone());
                 }
-
-                // Upsert and store citation edge
-                let child_db_id = if let Some(src_id) = source_db_id {
-                    upsert_and_link(ctx, p, *src_id, is_refs)
-                } else {
-                    let row = PaperRow::from(p);
-                    ctx.db.upsert_paper(&row, Some("s2")).ok()
+                let child_db_id = match source_db_id {
+                    Some(src_id) => upsert_and_link(ctx, &p, source, *src_id, is_refs),
+                    None => ctx.db.upsert_paper(&PaperRow::from(&p), Some(source)).ok(),
                 };
-
-                collected.push(p.clone());
-
-                if let Some(cid) = child_api_id {
-                    next_frontier.push((cid, child_db_id));
+                if child_api_id.is_some() {
+                    next_frontier.push((p.clone(), child_db_id));
                 }
+                related.papers.push((p, found.source));
             }
         }
 
         frontier = next_frontier;
     }
 
-    Ok(collected)
+    if hit_cap {
+        crate::format::warn(&format!(
+            "stopped at --max-papers={}; raise it to fetch the rest",
+            max_papers
+        ));
+    }
+    Ok(related)
 }
 
-/// Fetch and display related papers (references or citations) from Semantic Scholar.
+/// Fetch and print related papers (references or citations): a JSON array
+/// under `--json`, a numbered list otherwise.
 ///
-/// `direction` is "references" or "citations" (for display messages).
-/// `cache_prefix` is the cache key prefix (e.g. "refs" or "cites").
-/// `url_fn` builds the API URL from a paper ID.
-/// `parse_fn` parses the API response body.
-/// `hops` controls BFS depth (1 = direct only).
-/// `max_papers` caps total papers fetched across all hops.
+/// Failed calls below the seed are printed to stderr after the results and make
+/// the command fail, so a partial graph never passes for a complete one.
 pub(crate) async fn fetch_related(
     ctx: &Context,
     paper_id: &str,
-    direction: &str,
-    cache_prefix: &str,
-    url_fn: fn(&str) -> String,
-    parse_fn: fn(&str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>>,
+    dir: neighbors::Direction,
     hops: usize,
     max_papers: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let results = fetch_related_data(ctx, paper_id, direction, cache_prefix, url_fn, parse_fn, hops, max_papers).await?;
+    let related = fetch_related_data(ctx, paper_id, dir, hops, max_papers).await?;
 
-    if results.is_empty() {
-        println!("No {} found", direction);
+    if ctx.json {
+        let arr: Vec<serde_json::Value> = related
+            .papers
+            .iter()
+            .map(|(p, source)| related_to_json(p, *source))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&arr)?);
+    } else if related.papers.is_empty() {
+        println!("No {} found", dir.noun());
     } else {
-        for (i, p) in results.iter().enumerate() {
-            let rank = i + 1;
+        for (i, (p, _)) in related.papers.iter().enumerate() {
             let author = p.authors.first().map(|s| s.as_str()).unwrap_or("Unknown");
-            println!("{rank}. {} ({}) - {}", p.title, p.year, author);
+            println!("{}. {} ({}) - {}", i + 1, p.title, p.year, author);
         }
     }
 
-    Ok(())
+    if related.failures.is_empty() {
+        return Ok(());
+    }
+    for f in &related.failures {
+        crate::format::warn(f);
+    }
+    Err(format!("{} neighbor call(s) failed; results above are incomplete", related.failures.len()).into())
+}
+
+/// JSON for one refs/cites result: `paper_to_json` plus `s2_id` and `source`.
+fn related_to_json(p: &PaperResult, source: neighbors::Source) -> serde_json::Value {
+    let mut json = paper_to_json(p);
+    if let Some(ref id) = p.s2_id {
+        json["s2_id"] = serde_json::Value::String(id.clone());
+    }
+    json["source"] = serde_json::Value::String(source.as_str().into());
+    json
 }
 
 // -- Lookup functions ---------------------------------------------------------
@@ -816,6 +813,20 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(s2_api_id(&p), None);
+    }
+
+    #[test]
+    fn test_related_to_json_carries_ids_and_source() {
+        let p = PaperResult {
+            title: "T".into(),
+            s2_id: Some("abc".into()),
+            doi: Some("10.1/x".into()),
+            ..Default::default()
+        };
+        let j = related_to_json(&p, neighbors::Source::OpenAlex);
+        assert_eq!(j["s2_id"], "abc");
+        assert_eq!(j["doi"], "10.1/x");
+        assert_eq!(j["source"], "openalex");
     }
 
     #[test]

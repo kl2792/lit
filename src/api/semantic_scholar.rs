@@ -50,26 +50,32 @@ pub fn search_url(query: &str, limit: usize) -> String {
     )
 }
 
-/// Build URL for a paper's references.
+/// Largest page the references/citations endpoints return per request.
+/// Longer neighbor lists are fetched by following the response's `next` offset.
+pub const S2_PAGE_MAX: usize = 1000;
+
+/// Build URL for one page of a paper's references, starting at `offset`.
 ///
 /// `paper_id` can be an arXiv ID, Semantic Scholar ID, or DOI.
 /// Bare DOIs (matching `10.\d{4,}/`) must be prefixed with `DOI:`.
-pub fn refs_url(paper_id: &str) -> String {
-    let id = normalize_paper_id(paper_id);
-    format!(
-        "https://api.semanticscholar.org/graph/v1/paper/{}/references?fields=title,authors,year,externalIds&limit=50",
-        id
-    )
+pub fn refs_url(paper_id: &str, offset: usize) -> String {
+    related_url(paper_id, "references", offset)
 }
 
-/// Build URL for papers citing a given paper.
+/// Build URL for one page of papers citing a given paper, starting at `offset`.
 ///
 /// Same DOI-prefix convention as `refs_url`.
-pub fn cites_url(paper_id: &str) -> String {
-    let id = normalize_paper_id(paper_id);
+pub fn cites_url(paper_id: &str, offset: usize) -> String {
+    related_url(paper_id, "citations", offset)
+}
+
+fn related_url(paper_id: &str, endpoint: &str, offset: usize) -> String {
     format!(
-        "https://api.semanticscholar.org/graph/v1/paper/{}/citations?fields=title,authors,year,externalIds&limit=50",
-        id
+        "https://api.semanticscholar.org/graph/v1/paper/{}/{}?fields=title,authors,year,venue,externalIds&limit={}&offset={}",
+        normalize_paper_id(paper_id),
+        endpoint,
+        S2_PAGE_MAX,
+        offset
     )
 }
 
@@ -128,13 +134,23 @@ pub fn parse_search(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::
 ///
 /// Each item in `data[]` has a `citedPaper` object.
 pub fn parse_refs(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
-    parse_related(body, "citedPaper")
+    Ok(parse_refs_page(body)?.0)
 }
 
 /// Parse response from the citations endpoint.
 ///
 /// Each item in `data[]` has a `citingPaper` object.
 pub fn parse_cites(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
+    Ok(parse_cites_page(body)?.0)
+}
+
+/// One page of references and the offset of the next page, if any.
+pub fn parse_refs_page(body: &str) -> Result<(Vec<PaperResult>, Option<usize>), Box<dyn std::error::Error>> {
+    parse_related(body, "citedPaper")
+}
+
+/// One page of citations and the offset of the next page, if any.
+pub fn parse_cites_page(body: &str) -> Result<(Vec<PaperResult>, Option<usize>), Box<dyn std::error::Error>> {
     parse_related(body, "citingPaper")
 }
 
@@ -142,8 +158,9 @@ pub fn parse_cites(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::E
 fn parse_related(
     body: &str,
     paper_key: &str,
-) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
+) -> Result<(Vec<PaperResult>, Option<usize>), Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(body)?;
+    let next = data["next"].as_u64().map(|n| n as usize);
     let items = data
         .get("data")
         .and_then(|v| v.as_array())
@@ -173,6 +190,10 @@ fn parse_related(
         let ext = &paper["externalIds"];
         let arxiv_id = ext["ArXiv"].as_str().map(|s| s.to_string());
         let doi = ext["DOI"].as_str().map(|s| s.to_string());
+        let venue = paper["venue"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
 
         results.push(PaperResult {
             title,
@@ -181,11 +202,12 @@ fn parse_related(
             s2_id,
             arxiv_id,
             doi,
+            venue,
             ..Default::default()
         });
     }
 
-    Ok(results)
+    Ok((results, next))
 }
 
 /// Prepend `ARXIV:` or `DOI:` for bare arXiv IDs / DOIs so S2 can resolve them.
@@ -240,6 +262,37 @@ fn rest_is_digits(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_refs_url_requests_a_full_page_at_offset() {
+        let url = refs_url("ARXIV:2501.16496", 400);
+        assert!(url.contains("/references?"), "url: {}", url);
+        assert!(url.contains(&format!("limit={}", S2_PAGE_MAX)), "url: {}", url);
+        assert!(url.contains("offset=400"), "url: {}", url);
+    }
+
+    #[test]
+    fn test_cites_url_requests_a_full_page_at_offset() {
+        let url = cites_url("2501.16496", 0);
+        assert!(url.contains("ARXIV:2501.16496/citations?"), "url: {}", url);
+        assert!(url.contains("offset=0"), "url: {}", url);
+    }
+
+    #[test]
+    fn test_parse_refs_page_reads_next_offset() {
+        let body = r#"{"offset": 0, "next": 1000, "data": [{"citedPaper": {"title": "A"}}]}"#;
+        let (papers, next) = parse_refs_page(body).unwrap();
+        assert_eq!(papers.len(), 1);
+        assert_eq!(next, Some(1000));
+    }
+
+    #[test]
+    fn test_parse_cites_page_last_page_has_no_next() {
+        let body = r#"{"offset": 1000, "data": [{"citingPaper": {"title": "B"}}]}"#;
+        let (papers, next) = parse_cites_page(body).unwrap();
+        assert_eq!(papers[0].title, "B");
+        assert_eq!(next, None);
+    }
 
     #[test]
     fn test_normalize_paper_id_bare_doi() {

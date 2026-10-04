@@ -149,6 +149,11 @@ lit refs 2006.11239 --json   # what this paper builds on
 lit cites 2006.11239 --json  # what built on this paper
 ```
 
+Each lists every neighbor: Semantic Scholar is paged to the end.
+If any Semantic Scholar call fails (a 429, say), the list comes from OpenAlex instead, which needs a DOI or arXiv id.
+Each `--json` record carries `doi`, `arxiv_id`, `s2_id` where known and `source` (`s2` or `openalex`).
+A failed call exits nonzero; on a deeper hop the partial results print first and the failures go to stderr.
+
 Both are slow (one to ten seconds, depending on source). When chaining several
 or scanning a graph neighbourhood, invoke via Bash with `run_in_background: true`,
 or hand off to a background subagent so raw API output stays out of the main

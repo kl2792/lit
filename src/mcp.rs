@@ -396,10 +396,10 @@ pub async fn handle_refs(ctx: &cmd::Context, args: &Value) -> Result<String, Str
     let offset = args["offset"].as_u64().unwrap_or(0) as usize;
     // Fetch enough to cover offset + page_size
     let fetch_limit = offset + page_size;
-    let results = cmd::refs::run_data(ctx, paper_id, hops, fetch_limit)
+    let related = cmd::refs::run_data(ctx, paper_id, hops, fetch_limit)
         .await
         .map_err(|e| e.to_string())?;
-    paginated_response(&results, offset, page_size, fetch_limit)
+    related_response(related, offset, page_size, fetch_limit)
 }
 
 pub async fn handle_cites(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
@@ -408,10 +408,25 @@ pub async fn handle_cites(ctx: &cmd::Context, args: &Value) -> Result<String, St
     let page_size = args["max_papers"].as_u64().unwrap_or(20) as usize;
     let offset = args["offset"].as_u64().unwrap_or(0) as usize;
     let fetch_limit = offset + page_size;
-    let results = cmd::cites::run_data(ctx, paper_id, hops, fetch_limit)
+    let related = cmd::cites::run_data(ctx, paper_id, hops, fetch_limit)
         .await
         .map_err(|e| e.to_string())?;
-    paginated_response(&results, offset, page_size, fetch_limit)
+    related_response(related, offset, page_size, fetch_limit)
+}
+
+/// Page a refs/cites result; any failed neighbor call fails the request, since
+/// a partial graph would otherwise pass for a complete one.
+fn related_response(
+    related: cmd::Related,
+    offset: usize,
+    page_size: usize,
+    fetch_limit: usize,
+) -> Result<String, String> {
+    if !related.failures.is_empty() {
+        return Err(related.failures.join("; "));
+    }
+    let papers: Vec<crate::PaperResult> = related.papers.into_iter().map(|(p, _)| p).collect();
+    paginated_response(&papers, offset, page_size, fetch_limit)
 }
 
 /// Wrap refs/cites results with pagination info.

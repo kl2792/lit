@@ -4,7 +4,11 @@ use std::path::PathBuf;
 use lit::api::clio as clio_api;
 
 #[derive(Parser)]
-#[command(name = "lit", about = "Literature search tool for academic papers")]
+#[command(
+    name = "lit",
+    about = "Literature search tool for academic papers",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("LIT_GIT_HASH"), ")")
+)]
 pub struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -689,6 +693,13 @@ fn run_attach(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn version_names_crate_version_and_git_hash() {
+        let v = Cli::command().get_version().unwrap().to_string();
+        assert!(v.starts_with(env!("CARGO_PKG_VERSION")), "version: {}", v);
+        assert!(v.contains(env!("LIT_GIT_HASH")), "version: {}", v);
+    }
 
     #[test]
     fn search_rejects_local_together_with_source() {
