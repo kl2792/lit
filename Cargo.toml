@@ -28,6 +28,8 @@ regex = "1"
 anyhow = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 flate2 = "1"
+# Bounded concurrent fan-out in `lit closure`; already in the tree via reqwest.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3"

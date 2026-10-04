@@ -7,7 +7,7 @@ use lit::api::clio as clio_api;
 #[command(
     name = "lit",
     about = "Literature search tool for academic papers",
-    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("LIT_GIT_HASH"), ")")
+    version = lit::VERSION
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -96,6 +96,8 @@ enum Commands {
         #[arg(long, default_value = "1000")]
         max_papers: usize,
     },
+    /// Citation-graph closure from seeds, deduplicated, as JSONL
+    Closure(cmd::closure::Args),
     /// Find shortest citation path between two papers
     Path {
         /// First paper (arXiv ID, DOI, or S2 paper ID)
@@ -361,6 +363,7 @@ async fn main() {
             hops,
             max_papers,
         }) => cmd::cites::run(&ctx, &paper_id, hops, max_papers).await,
+        Some(Commands::Closure(args)) => cmd::closure::run(&ctx, args).await,
         Some(Commands::Path {
             paper_a,
             paper_b,

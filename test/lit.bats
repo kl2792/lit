@@ -150,6 +150,34 @@ setup() {
     [[ ! "$output" =~ "No references found" ]]
 }
 
+# ── Closure ─────────────────────────────────────────────────────────
+
+@test "closure: JSONL with run header first, summary last, every line typed" {
+    run "$LIT" closure 2408.01416 --hops 1 --direction refs --json
+    [ "$status" -eq 0 ]
+    echo "$output" | python3 -c '
+import sys, json
+rows = [json.loads(l) for l in sys.stdin if l.strip()]
+assert rows[0]["type"] == "run" and rows[0]["direction"] == "refs", rows[0]
+assert rows[-1]["type"] == "summary", rows[-1]
+papers = [r for r in rows if r["type"] == "paper"]
+assert len(papers) > 50, len(papers)
+assert rows[-1]["papers"] == len(papers)
+assert len({p["id_key"] for p in papers}) == len(papers), "id_key repeats"
+assert papers[0]["hop"] == 0 and papers[0]["id_key"] == "arxiv:2408.01416", papers[0]
+'
+}
+
+@test "closure: a seed without DOI or arXiv id is an error" {
+    run "$LIT" closure CorpusId:1
+    [ "$status" -ne 0 ]
+}
+
+@test "closure: --hops 0 is rejected" {
+    run "$LIT" closure 2408.01416 --hops 0
+    [ "$status" -ne 0 ]
+}
+
 # ── Flags ────────────────────────────────────────────────────────────
 
 @test "version flag: --version names the git hash" {

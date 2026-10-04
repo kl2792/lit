@@ -165,6 +165,30 @@ For deeper exploration, increase `--hops`:
 lit refs 2006.11239 --hops 2 --max-papers 200
 ```
 
+### Closure over several seeds: `lit closure`
+
+```bash
+lit closure 2408.01416 10.1234/x --hops 1 --direction both \
+    --exclude-bib refs.bib --expand-only expand.txt --json
+```
+
+`lit closure` runs the whole BFS in one call, with its neighbor calls made concurrently inside the binary, so do not chain `lit refs` / `lit cites` by hand.
+Seeds are DOIs or arXiv ids, given as arguments or in `--seeds-file` (one per line, `#` starts a comment).
+Seeds are always expanded; a paper at hop 1 or deeper is expanded only if `--expand-only` is absent or lists its `id_key`.
+Each paper appears once, under `id_key` = `doi:<lowercased DOI>`, else `arxiv:<id without version>`, else `title:<lowercase alphanumerics and single spaces>`.
+Records sharing a DOI or arXiv id merge, so a record carrying both joins records keyed by either; a shared title merges only when no DOI or arXiv id contradicts it.
+`--exclude-bib` (repeatable) marks a paper `known` with the matching citekey and file when a .bib entry shares its DOI, `eprint` arXiv id, or normalized title; known papers stay in the output.
+`--max-papers` stops adding papers, with a warning on stderr; by default there is no cap.
+
+Output is JSONL in this order, with or without `--json`:
+1. `{"type":"run","lit_version","timestamp","argv","seeds","hops","direction"}`.
+2. One `{"type":"paper","id_key","doi","arxiv_id","s2_id","title","authors","year","venue","hop","edges":[{"kind","from"}],"known","source"}` per paper, by hop. Seeds are hop-0 records. An edge `{"kind":"refs","from":X}` means the paper is in X's references; `"cites"` means it cites X.
+3. One `{"type":"error","call","id","message"}` per neighbor call that failed on both Semantic Scholar and OpenAlex. A call that succeeds through the OpenAlex fallback is not an error; its papers carry `"source":"openalex"`.
+4. `{"type":"summary","papers","known","errors"}`.
+
+The exit status is 0 if at least one neighbor call succeeded.
+Papers with no DOI, arXiv id, or title are dropped and counted on stderr.
+
 ---
 
 ## 5. Connect two papers through the citation graph

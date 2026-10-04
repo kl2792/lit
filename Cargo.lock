@@ -772,6 +772,7 @@ dependencies = [
  "anyhow",
  "clap",
  "flate2",
+ "futures-util",
  "md-5",
  "quick-xml",
  "regex",

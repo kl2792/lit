@@ -4,6 +4,7 @@ pub mod clean;
 pub mod clio;
 pub mod misc;
 pub mod cites;
+pub mod closure;
 pub mod neighbors;
 pub mod download;
 pub mod open;
@@ -63,13 +64,24 @@ impl Context {
 /// Note: download.rs carries a private copy of this helper; consolidate there
 /// once its pending local changes land.
 pub(crate) fn today_string() -> String {
-    let since_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let days = since_epoch / 86400;
-    let (year, month, day) = days_to_ymd(days);
-    format!("{:04}-{:02}-{:02}", year, month, day)
+    utc_timestamp()[..10].to_string()
+}
+
+/// Now as ISO 8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`.
+pub(crate) fn utc_timestamp() -> String {
+    format_utc(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+}
+
+/// ISO 8601 UTC for `secs` since the Unix epoch.
+fn format_utc(secs: u64) -> String {
+    let (year, month, day) = days_to_ymd(secs / 86400);
+    let s = secs % 86400;
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, s / 3600, s / 60 % 60, s % 60)
 }
 
 /// Civil-date conversion (Howard Hinnant's algorithm), days since 1970-01-01.
@@ -813,6 +825,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(s2_api_id(&p), None);
+    }
+
+    #[test]
+    fn format_utc_is_iso8601() {
+        assert_eq!(format_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(format_utc(20513 * 86400 + 3661), "2026-03-01T01:01:01Z");
     }
 
     #[test]
