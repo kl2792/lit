@@ -44,7 +44,7 @@ pub fn parse_paper(body: &str) -> Result<PaperResult, Box<dyn std::error::Error>
 /// Build URL for paper search.
 pub fn search_url(query: &str, limit: usize) -> String {
     format!(
-        "https://api.semanticscholar.org/graph/v1/paper/search?query={}&limit={}&fields=title,authors,year,citationCount,externalIds",
+        "https://api.semanticscholar.org/graph/v1/paper/search?query={}&limit={}&fields=title,authors,year,citationCount,externalIds,abstract",
         urlencode(query),
         limit
     )
@@ -71,7 +71,7 @@ pub fn cites_url(paper_id: &str, offset: usize) -> String {
 
 fn related_url(paper_id: &str, endpoint: &str, offset: usize) -> String {
     format!(
-        "https://api.semanticscholar.org/graph/v1/paper/{}/{}?fields=title,authors,year,venue,externalIds&limit={}&offset={}",
+        "https://api.semanticscholar.org/graph/v1/paper/{}/{}?fields=title,authors,year,venue,externalIds,abstract&limit={}&offset={}",
         normalize_paper_id(paper_id),
         endpoint,
         S2_PAGE_MAX,
@@ -123,6 +123,7 @@ pub fn parse_search(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::
             doi,
             arxiv_id,
             citations,
+            abstract_text: abstract_of(p),
             ..Default::default()
         });
     }
@@ -203,11 +204,17 @@ fn parse_related(
             arxiv_id,
             doi,
             venue,
+            abstract_text: abstract_of(paper),
             ..Default::default()
         });
     }
 
     Ok((results, next))
+}
+
+/// A paper's `abstract`, untruncated; S2 sends null (or rarely "") when it has none.
+fn abstract_of(paper: &Value) -> Option<String> {
+    paper["abstract"].as_str().filter(|s| !s.trim().is_empty()).map(String::from)
 }
 
 /// Prepend `ARXIV:` or `DOI:` for bare arXiv IDs / DOIs so S2 can resolve them.
@@ -276,6 +283,27 @@ mod tests {
         let url = cites_url("2501.16496", 0);
         assert!(url.contains("ARXIV:2501.16496/citations?"), "url: {}", url);
         assert!(url.contains("offset=0"), "url: {}", url);
+    }
+
+    #[test]
+    fn test_search_and_neighbor_urls_request_the_abstract() {
+        for url in [search_url("q", 5), refs_url("ARXIV:2408.01416", 0), cites_url("2408.01416", 0)] {
+            let fields = url.split("fields=").nth(1).unwrap().split('&').next().unwrap();
+            assert!(fields.split(',').any(|f| f == "abstract"), "url: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_parse_search_and_related_read_the_full_abstract() {
+        let long = "word ".repeat(400);
+        let search = format!(r#"{{"data": [{{"title": "A", "abstract": "{}"}}, {{"title": "B", "abstract": null}}]}}"#, long);
+        let papers = parse_search(&search).unwrap();
+        assert_eq!(papers[0].abstract_text.as_deref(), Some(long.as_str()), "not truncated");
+        assert_eq!(papers[1].abstract_text, None);
+        let refs = r#"{"data": [{"citedPaper": {"title": "A", "abstract": "Refs abstract."}}]}"#;
+        assert_eq!(parse_refs(refs).unwrap()[0].abstract_text.as_deref(), Some("Refs abstract."));
+        let cites = r#"{"data": [{"citingPaper": {"title": "B", "abstract": ""}}]}"#;
+        assert_eq!(parse_cites(cites).unwrap()[0].abstract_text, None, "empty is absent");
     }
 
     #[test]

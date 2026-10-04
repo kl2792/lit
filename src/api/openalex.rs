@@ -111,6 +111,27 @@ pub fn parse_search(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::
     Ok(results)
 }
 
+/// Abstract text from OpenAlex's `abstract_inverted_index` (word -> positions):
+/// each word placed at each of its positions, joined with single spaces.
+/// `None` when the index is absent or empty. Cost: O(n log n) in the word count.
+pub fn abstract_from_inverted_index(index: &Value) -> Option<String> {
+    let mut placed: Vec<(u64, &str)> = index
+        .as_object()?
+        .iter()
+        .flat_map(|(word, positions)| {
+            positions
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+                .map(move |pos| (pos, word.as_str()))
+        })
+        .collect();
+    placed.sort_unstable_by_key(|&(pos, _)| pos);
+    let text = placed.iter().map(|&(_, w)| w).collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then_some(text)
+}
+
 /// Shared parser for the `results` array of OpenAlex works responses.
 fn parse_works(data: &Value) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
     let works = data
@@ -158,6 +179,7 @@ fn parse_works(data: &Value) -> Result<Vec<PaperResult>, Box<dyn std::error::Err
             arxiv_id,
             venue,
             citations,
+            abstract_text: abstract_from_inverted_index(&w["abstract_inverted_index"]),
             ..Default::default()
         });
     }
@@ -298,6 +320,35 @@ mod tests {
         assert_eq!(p.venue.as_deref(), Some("arXiv"));
         assert_eq!(p.arxiv_id.as_deref(), Some("2408.01416"));
         assert_eq!(p.year, "2024");
+    }
+
+    #[test]
+    fn test_abstract_from_inverted_index_places_each_word_at_its_positions() {
+        let index: Value = serde_json::from_str(
+            r#"{"field": [5], "the": [1, 4], "Despite": [0], "of": [3], "growth": [2], "grows.": [6]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            abstract_from_inverted_index(&index).as_deref(),
+            Some("Despite the growth of the field grows.")
+        );
+    }
+
+    #[test]
+    fn test_abstract_from_inverted_index_absent_or_empty_is_none() {
+        assert_eq!(abstract_from_inverted_index(&Value::Null), None);
+        assert_eq!(abstract_from_inverted_index(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn test_parse_works_page_rebuilds_abstract() {
+        let body = r#"{"results": [
+            {"title": "A", "abstract_inverted_index": {"world": [1], "Hello": [0]}},
+            {"title": "B", "abstract_inverted_index": null}
+        ]}"#;
+        let (papers, _) = parse_works_page(body).unwrap();
+        assert_eq!(papers[0].abstract_text.as_deref(), Some("Hello world"));
+        assert_eq!(papers[1].abstract_text, None);
     }
 
     #[test]

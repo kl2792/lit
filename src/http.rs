@@ -106,10 +106,8 @@ impl Client {
             .unwrap_or(4);
         for attempt in 0..max_attempts {
             let mut req = self.inner.get(url);
-            if url.contains("semanticscholar.org") {
-                if let Ok(key) = std::env::var("S2_API_KEY") {
-                    req = req.header("x-api-key", key);
-                }
+            if let Some(key) = s2_api_key(url, std::env::var("S2_API_KEY").ok()) {
+                req = req.header("x-api-key", key);
             }
             let resp = match req.send().await {
                 Ok(r) => r,
@@ -140,7 +138,8 @@ impl Client {
                     tokio::time::sleep(Duration::from_secs(wait)).await;
                     continue;
                 }
-                return Err(format!("HTTP 429 Too Many Requests for {} after {} attempts", url, max_attempts).into());
+                let has_key = std::env::var("S2_API_KEY").is_ok_and(|k| !k.is_empty());
+                return Err(rate_limit_message(url, max_attempts, has_key).into());
             }
             if resp.status().is_server_error() && attempt < max_attempts - 1 {
                 let wait = 1u64 << attempt.min(2);
@@ -177,6 +176,27 @@ impl Client {
     }
 }
 
+fn is_s2_api(url: &str) -> bool {
+    url.contains("api.semanticscholar.org")
+}
+
+/// The `x-api-key` value for `url`: the S2 key (`$S2_API_KEY`, passed in as
+/// `key`) on Semantic Scholar API URLs, nothing elsewhere or when unset/empty.
+fn s2_api_key(url: &str, key: Option<String>) -> Option<String> {
+    key.filter(|k| is_s2_api(url) && !k.is_empty())
+}
+
+/// Error text for a request still rate-limited after `attempts` tries; for
+/// Semantic Scholar without a key, names the missing `S2_API_KEY`.
+fn rate_limit_message(url: &str, attempts: usize, has_key: bool) -> String {
+    let hint = if is_s2_api(url) && !has_key {
+        " (S2_API_KEY is not set; requests share the anonymous rate limit)"
+    } else {
+        ""
+    };
+    format!("HTTP 429 Too Many Requests for {} after {} attempts{}", url, attempts, hint)
+}
+
 /// Check if a response body looks like valid content worth caching.
 ///
 /// Rejects empty bodies and bodies that don't start with a JSON or XML marker.
@@ -190,6 +210,30 @@ fn looks_valid(body: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::{rate_limit_message, s2_api_key};
+
+    #[test]
+    fn s2_key_goes_on_every_semantic_scholar_api_url_only() {
+        let key = Some("k".to_string());
+        for url in [
+            "https://api.semanticscholar.org/graph/v1/paper/search?query=x",
+            "https://api.semanticscholar.org/graph/v1/paper/ARXIV:2408.01416/references?offset=0",
+            "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1/x/citations?offset=1000",
+        ] {
+            assert_eq!(s2_api_key(url, key.clone()).as_deref(), Some("k"), "url: {}", url);
+        }
+        assert_eq!(s2_api_key("https://api.openalex.org/works?search=x", key), None);
+        assert_eq!(s2_api_key("https://api.semanticscholar.org/graph/v1/paper/search", None), None);
+    }
+
+    #[test]
+    fn s2_rate_limit_without_a_key_says_so() {
+        let url = "https://api.semanticscholar.org/graph/v1/paper/search";
+        assert!(rate_limit_message(url, 4, false).contains("S2_API_KEY is not set"));
+        assert!(!rate_limit_message(url, 4, true).contains("S2_API_KEY"));
+        assert!(!rate_limit_message("https://api.openalex.org/works", 4, false).contains("S2_API_KEY"));
+    }
+
     #[test]
     fn test_rustls_client_builds() {
         // Guards the sandbox fix: TLS must come from rustls with bundled webpki

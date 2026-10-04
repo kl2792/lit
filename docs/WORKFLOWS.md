@@ -151,7 +151,7 @@ lit cites 2006.11239 --json  # what built on this paper
 
 Each lists every neighbor: Semantic Scholar is paged to the end.
 If any Semantic Scholar call fails (a 429, say), the list comes from OpenAlex instead, which needs a DOI or arXiv id.
-Each `--json` record carries `doi`, `arxiv_id`, `s2_id` where known and `source` (`s2` or `openalex`).
+Each `--json` record carries `doi`, `arxiv_id`, `s2_id` where known, `source` (`s2` or `openalex`), and `abstract` (full text or null; `lit search --json` records carry it too).
 A failed call exits nonzero; on a deeper hop the partial results print first and the failures go to stderr.
 
 Both are slow (one to ten seconds, depending on source). When chaining several
@@ -178,11 +178,12 @@ Seeds are always expanded; a paper at hop 1 or deeper is expanded only if `--exp
 Each paper appears once, under `id_key` = `doi:<lowercased DOI>`, else `arxiv:<id without version>`, else `title:<lowercase alphanumerics and single spaces>`.
 Records sharing a DOI or arXiv id merge, so a record carrying both joins records keyed by either; a shared title merges only when no DOI or arXiv id contradicts it.
 `--exclude-bib` (repeatable) marks a paper `known` with the matching citekey and file when a .bib entry shares its DOI, `eprint` arXiv id, or normalized title; known papers stay in the output.
+For a paper with no DOI or arXiv id, a .bib title also matches when its words appear in order inside the paper's title, or the reverse, provided the shorter title has at least 4 words and at least half as many as the longer; this catches reference-string titles such as "2023 Towards Monosemanticity: ...".
 `--max-papers` stops adding papers, with a warning on stderr; by default there is no cap.
 
 Output is JSONL in this order, with or without `--json`:
 1. `{"type":"run","lit_version","timestamp","argv","seeds","hops","direction"}`.
-2. One `{"type":"paper","id_key","doi","arxiv_id","s2_id","title","authors","year","venue","hop","edges":[{"kind","from"}],"known","source"}` per paper, by hop. Seeds are hop-0 records. An edge `{"kind":"refs","from":X}` means the paper is in X's references; `"cites"` means it cites X.
+2. One `{"type":"paper","id_key","doi","arxiv_id","s2_id","title","authors","year","venue","abstract","hop","edges":[{"kind","from"}],"known","source"}` per paper, by hop. `abstract` is the full text or null. Seeds are hop-0 records; a seed has a title and abstract only if another seed's neighbor list reaches it. An edge `{"kind":"refs","from":X}` means the paper is in X's references; `"cites"` means it cites X.
 3. One `{"type":"error","call","id","message"}` per neighbor call that failed on both Semantic Scholar and OpenAlex. A call that succeeds through the OpenAlex fallback is not an error; its papers carry `"source":"openalex"`.
 4. `{"type":"summary","papers","known","errors"}`.
 

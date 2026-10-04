@@ -249,9 +249,8 @@ pub fn paper_to_json(paper: &PaperResult) -> serde_json::Value {
     if let Some(ref url) = paper.pdf_url {
         map.insert("pdf_url".into(), serde_json::Value::String(url.clone()));
     }
-    if let Some(ref abs) = paper.abstract_text {
-        map.insert("abstract".into(), serde_json::Value::String(abs.clone()));
-    }
+    // Always present (null when unknown) so screening consumers can rely on the key.
+    map.insert("abstract".into(), paper.abstract_text.clone().into());
     if let Some(cites) = paper.citations {
         map.insert(
             "citations".into(),
@@ -845,6 +844,16 @@ mod tests {
         assert_eq!(j["s2_id"], "abc");
         assert_eq!(j["doi"], "10.1/x");
         assert_eq!(j["source"], "openalex");
+    }
+
+    /// Search, refs and cites records always carry `abstract`: the full text or null.
+    #[test]
+    fn test_paper_to_json_abstract_is_full_text_or_null() {
+        let none = paper_to_json(&PaperResult { title: "T".into(), ..Default::default() });
+        assert_eq!(none.get("abstract"), Some(&serde_json::Value::Null));
+        let long = "x".repeat(2000);
+        let some = paper_to_json(&PaperResult { abstract_text: Some(long.clone()), ..Default::default() });
+        assert_eq!(some["abstract"], long.as_str());
     }
 
     #[test]

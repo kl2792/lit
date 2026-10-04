@@ -124,6 +124,30 @@ pub struct Closure {
 #[derive(Default)]
 pub struct KnownIndex {
     by_key: HashMap<String, (String, String)>,
+    /// Normalized title tokens of every titled entry, for `title_embeds`.
+    titles: Vec<(Vec<String>, (String, String))>,
+}
+
+/// Fewest tokens the shorter title needs before `title_embeds` trusts it; at
+/// three, "concept bottleneck models" matched an unrelated paper in the
+/// 2026-10-04 mech closure run.
+const EMBED_MIN_TOKENS: usize = 4;
+
+/// Whether one normalized title's tokens appear, in order, inside the other's
+/// (the shorter has at least `EMBED_MIN_TOKENS` tokens and at least half as
+/// many as the longer).
+///
+/// Catches the title noise of unresolved reference strings: a year prefix
+/// ("2023 Towards Monosemanticity ..."), a venue suffix ("... - AI Alignment
+/// Forum"), and inserted words ("... Interpretability for NLP Through ...").
+/// Cost: O(len(a) + len(b)).
+fn title_embeds(a: &[String], b: &[String]) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    if short.len() < EMBED_MIN_TOKENS || 2 * short.len() < long.len() {
+        return false;
+    }
+    let mut rest = long.iter();
+    short.iter().all(|w| rest.any(|x| x == w))
 }
 
 /// Lowercase, alphanumerics separated by single spaces.
@@ -133,6 +157,10 @@ pub fn normalize_title(title: &str) -> String {
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })
         .collect();
     spaced.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+fn title_tokens(title: &str) -> Vec<String> {
+    normalize_title(title).split(' ').filter(|w| !w.is_empty()).map(String::from).collect()
 }
 
 /// arXiv id without version, from the field or from an arXiv DOI.
@@ -193,6 +221,7 @@ fn fill_missing(into: &mut PaperResult, from: PaperResult) {
     into.arxiv_id = into.arxiv_id.take().or(from.arxiv_id);
     into.s2_id = into.s2_id.take().or(from.s2_id);
     into.venue = into.venue.take().or(from.venue);
+    into.abstract_text = into.abstract_text.take().or(from.abstract_text);
 }
 
 impl Graph {
@@ -298,15 +327,33 @@ impl KnownIndex {
                 arxiv_id: e.get_field("eprint").filter(|_| arxiv_eprint).map(|a| a.trim().to_string()),
                 ..Default::default()
             };
+            let hit = (e.key.clone(), file.to_string());
             for k in keys(&p) {
-                self.by_key.entry(k).or_insert_with(|| (e.key.clone(), file.to_string()));
+                self.by_key.entry(k).or_insert_with(|| hit.clone());
+            }
+            let tokens = title_tokens(&p.title);
+            if !tokens.is_empty() {
+                self.titles.push((tokens, hit));
             }
         }
     }
 
-    /// The (citekey, bib file) of the first entry matching `p` by DOI, arXiv id, or title.
+    /// The (citekey, bib file) of the first entry matching `p` by DOI, arXiv
+    /// id, or exact normalized title; failing those, for a record with no DOI
+    /// or arXiv id, the first entry whose title `title_embeds` it.
+    ///
+    /// The fallback is limited to id-less records because S2 builds those from
+    /// reference strings, whose titles carry the noise; a record with an id
+    /// that missed is a different paper or a version the bib lacks. Cost: O(1) map lookups,
+    /// plus O(entries x title tokens) for an id-less miss.
     pub fn lookup(&self, p: &PaperResult) -> Option<(String, String)> {
-        keys(p).iter().find_map(|k| self.by_key.get(k).cloned())
+        keys(p).iter().find_map(|k| self.by_key.get(k).cloned()).or_else(|| {
+            if p.doi.is_some() || arxiv_of(p).is_some() {
+                return None;
+            }
+            let t = title_tokens(&p.title);
+            self.titles.iter().find(|(e, _)| title_embeds(&t, e)).map(|(_, hit)| hit.clone())
+        })
     }
 }
 
@@ -467,6 +514,7 @@ pub fn render(c: &Closure, known: &KnownIndex) -> Vec<Value> {
             "authors": p.authors,
             "year": p.year.trim().parse::<i64>().ok(),
             "venue": p.venue,
+            "abstract": p.abstract_text,
             "hop": r.hop,
             "edges": edges.iter().map(|(kind, from)| json!({"kind": kind, "from": from})).collect::<Vec<_>>(),
             "known": k.map(|(citekey, bib)| json!({"citekey": citekey, "bib": bib})),
@@ -708,11 +756,66 @@ mod tests {
         assert_eq!((seed["id_key"].as_str(), seed["hop"].as_u64()), (Some("arxiv:2408.01416"), Some(0)));
         let mut keys: Vec<&str> = lines[1].as_object().unwrap().keys().map(|k| k.as_str()).collect();
         keys.sort();
-        assert_eq!(keys, vec!["arxiv_id", "authors", "doi", "edges", "hop", "id_key", "known", "s2_id", "source", "title", "type", "venue", "year"]);
+        assert_eq!(keys, vec!["abstract", "arxiv_id", "authors", "doi", "edges", "hop", "id_key", "known", "s2_id", "source", "title", "type", "venue", "year"]);
+        assert_eq!(lines[1]["abstract"], Value::Null);
         assert_eq!(lines[1]["known"], Value::Null);
         assert_eq!(lines[2]["known"], json!({"citekey": "known1", "bib": "a.bib"}));
         assert_eq!(lines[1]["edges"], json!([{"kind": "refs", "from": "arxiv:2408.01416"}]));
         assert_eq!(lines[3], json!({"type": "summary", "papers": 3, "known": 1, "errors": 0}));
+    }
+
+    /// Mueller et al. 2024 (`mueller2024quest`, eprint 2408.01416) reached the
+    /// 2026-10-04 run a second time as an S2 duplicate with no DOI or arXiv id
+    /// and a mangled earlier title, so the exact title key missed it.
+    #[test]
+    fn exclude_bib_matches_an_id_less_record_whose_title_embeds_the_bib_title() {
+        let mut k = KnownIndex::default();
+        k.add_bib(
+            "@inproceedings{mueller2024quest,
+              title = {The Quest for the Right Mediator: Surveying Mechanistic Interpretability Through the Lens of Causal Mediation Analysis},
+              eprint = {2408.01416}, archivePrefix = {arXiv}}",
+            "mech/references.bib",
+        );
+        let orphan = paper(
+            "Survey The Quest for the Right Mediator: Surveying Mechanistic Interpretability for NLP Through the Lens of Causal Mediation Analysis",
+            None,
+            None,
+        );
+        assert_eq!(k.lookup(&orphan), Some(("mueller2024quest".into(), "mech/references.bib".into())));
+        // A reference string's year prefix and a blog's venue suffix are the common forms.
+        k.add_bib("@misc{bricken2023, title = {Towards Monosemanticity: Decomposing Language Models With Dictionary Learning}}", "b.bib");
+        assert_eq!(k.lookup(&paper("2023 Towards monosemanticity: Decomposing language models with dictionary learning", None, None)).unwrap().0, "bricken2023");
+        k.add_bib("@misc{nostalgebraist2020, title = {interpreting GPT: the logit lens - AI Alignment Forum}}", "b.bib");
+        assert_eq!(k.lookup(&paper("Interpreting GPT: the logit lens", None, None)).unwrap().0, "nostalgebraist2020");
+    }
+
+    #[test]
+    fn exclude_bib_title_fallback_refuses_short_sparse_or_id_bearing_matches() {
+        let mut k = KnownIndex::default();
+        k.add_bib("@inproceedings{koh2020, title = {Concept Bottleneck Models}}", "b.bib");
+        k.add_bib("@article{long2020, title = {Attention Is All You Need}}", "b.bib");
+        // Three tokens is too short to trust as a subsequence.
+        assert_eq!(k.lookup(&paper("Post-hoc Concept Bottleneck Models", None, None)), None);
+        // Five tokens inside an eleven-token title cover under half of it.
+        assert_eq!(k.lookup(&paper("Attention is not all you need: pure attention loses rank doubly exponentially", None, None)), None);
+        // Words out of order are not a subsequence.
+        assert_eq!(k.lookup(&paper("You Need All Attention Is", None, None)), None);
+        // A record with its own DOI or arXiv id matches by id or exact title only.
+        k.add_bib("@misc{mono, title = {Towards Monosemanticity: Decomposing Language Models With Dictionary Learning}}", "b.bib");
+        assert_eq!(k.lookup(&paper("2023 Towards Monosemanticity: Decomposing Language Models With Dictionary Learning", Some("10.1/other"), None)), None);
+        assert_eq!(k.lookup(&paper("2023 Towards Monosemanticity: Decomposing Language Models With Dictionary Learning", None, Some("2401.00001"))), None);
+    }
+
+    #[test]
+    fn merge_fills_a_missing_abstract() {
+        let mut g = Graph::new(None);
+        let i = g.add(paper("A", Some("10.1/a"), None), 0, None, None).unwrap();
+        let mut with = paper("A", Some("10.1/a"), None);
+        with.abstract_text = Some("Found later.".into());
+        g.add(with, 1, None, Some(Source::S2));
+        assert_eq!(g.records[i].paper.abstract_text.as_deref(), Some("Found later."));
+        let c = Closure { graph: g, errors: vec![], calls_ok: 1 };
+        assert_eq!(render(&c, &KnownIndex::default())[0]["abstract"], "Found later.");
     }
 
     #[test]
