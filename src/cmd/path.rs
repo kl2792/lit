@@ -5,11 +5,11 @@
 /// both refs and cites at each hop) since two papers may be connected through
 /// a shared reference even if neither cites the other.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 
 use super::Context;
 use crate::api::semantic_scholar;
-use crate::db;
+use super::neighbors::Fetch;
 
 /// Maximum hops to search in each direction before giving up.
 const MAX_HOPS: usize = 5;
@@ -54,7 +54,7 @@ pub async fn run_data(
             if api_calls >= MAX_API_CALLS {
                 break;
             }
-            let neighbors = fetch_neighbors(&client, ctx, id, &mut api_calls).await;
+            let neighbors = fetch_neighbors(&client, id, &mut api_calls).await;
             for (nid, ntitle) in neighbors {
                 titles.insert(nid.clone(), ntitle.clone());
                 if !parent_a.contains_key(&nid) {
@@ -74,7 +74,7 @@ pub async fn run_data(
             if api_calls >= MAX_API_CALLS {
                 break;
             }
-            let neighbors = fetch_neighbors(&client, ctx, id, &mut api_calls).await;
+            let neighbors = fetch_neighbors(&client, id, &mut api_calls).await;
             for (nid, ntitle) in neighbors {
                 titles.insert(nid.clone(), ntitle.clone());
                 if !parent_b.contains_key(&nid) {
@@ -123,18 +123,16 @@ pub async fn run(
 /// Fetch both refs and cites for a paper, returning (id, title) pairs.
 async fn fetch_neighbors(
     client: &crate::http::Client,
-    ctx: &Context,
     paper_id: &str,
     api_calls: &mut usize,
 ) -> Vec<(String, String)> {
     let mut neighbors = Vec::new();
 
-    // Fetch refs
+    // First page of each list only: path search is a bounded heuristic.
     if *api_calls < MAX_API_CALLS {
         *api_calls += 1;
-        let key = db::Db::cache_key("refs", paper_id);
-        let url = semantic_scholar::refs_url(paper_id);
-        if let Ok(body) = client.get_cached(&key, &url, db::TTL_SEARCH).await {
+        let url = semantic_scholar::refs_url(paper_id, 0);
+        if let Ok(body) = Fetch::get(client, &url).await {
             if let Ok(results) = semantic_scholar::parse_refs(&body) {
                 for p in &results {
                     if let Some(id) = super::s2_api_id(p) {
@@ -148,9 +146,8 @@ async fn fetch_neighbors(
     // Fetch cites
     if *api_calls < MAX_API_CALLS {
         *api_calls += 1;
-        let key = db::Db::cache_key("cites", paper_id);
-        let url = semantic_scholar::cites_url(paper_id);
-        if let Ok(body) = client.get_cached(&key, &url, db::TTL_SEARCH).await {
+        let url = semantic_scholar::cites_url(paper_id, 0);
+        if let Ok(body) = Fetch::get(client, &url).await {
             if let Ok(results) = semantic_scholar::parse_cites(&body) {
                 for p in &results {
                     if let Some(id) = super::s2_api_id(p) {

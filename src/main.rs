@@ -1,10 +1,14 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use lit::{api, bibtex, cmd, db, format};
+use lit::{api, bibtex, cmd, db, format, paths};
 use std::path::PathBuf;
 use lit::api::clio as clio_api;
 
 #[derive(Parser)]
-#[command(name = "lit", about = "Literature search tool for academic papers")]
+#[command(
+    name = "lit",
+    about = "Literature search tool for academic papers",
+    version = lit::VERSION
+)]
 pub struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -69,7 +73,7 @@ enum Commands {
         #[arg(short, long)]
         source: Option<SearchSource>,
         /// Search local DB only (only papers you have downloaded)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "source")]
         local: bool,
     },
     /// Get references of a paper
@@ -92,6 +96,8 @@ enum Commands {
         #[arg(long, default_value = "1000")]
         max_papers: usize,
     },
+    /// Citation-graph closure from seeds, deduplicated, as JSONL
+    Closure(cmd::closure::Args),
     /// Find shortest citation path between two papers
     Path {
         /// First paper (arXiv ID, DOI, or S2 paper ID)
@@ -118,19 +124,26 @@ enum Commands {
         #[arg(long)]
         citekey: Option<String>,
     },
-    /// Fetch BibTeX and append to .bib file
+    /// Fetch BibTeX and append to .bib file (arXiv ID, DOI, ISBN, query, or
+    /// a page URL on a `lit read` web host)
     Add {
         input: String,
         bib_file: PathBuf,
         /// Override the auto-generated citekey
         #[arg(long)]
         key: Option<String>,
+        /// Overwrite on citekey collision with a materially different entry
+        #[arg(long)]
+        force: bool,
     },
-    /// Verify all entries in a .bib file
+    /// Verify the entries in a .bib file (all, or those named by --key)
     Verify {
         bib_file: PathBuf,
         #[arg(short = 'j', long, default_value = "4")]
         jobs: usize,
+        /// Verify only this citekey (repeatable); an unknown key is an error
+        #[arg(long = "key", value_name = "KEY")]
+        keys: Vec<String>,
     },
     /// Scan a .bib file for malformed entries, duplicates, and orphans
     Clean {
@@ -153,17 +166,24 @@ enum Commands {
         /// Report cross-source field conflicts for papers with multiple sources
         #[arg(long)]
         conflicts: bool,
+        /// Bibliography used to recover metadata for unindexed artifacts
+        #[arg(long = "bib-file")]
+        bib_file: Option<PathBuf>,
     },
     /// Database operations
     Db {
         #[command(subcommand)]
         action: DbAction,
     },
-    /// Locate (and if needed extract) the text of a paper. Prints file path.
+    /// Locate (and if needed extract) the text of one or more papers.
+    /// Prints one file path per id, in argument order.
     Read {
-        /// Paper identifier (arXiv ID, DOI, or local cite-key).
-        /// Auto-downloads arXiv PDFs if not cached.
-        id: String,
+        /// Paper identifiers (arXiv ID, DOI, local cite-key, or a page URL on
+        /// distill.pub, transformer-circuits.pub, alignmentforum.org,
+        /// lesswrong.com or greaterwrong.com).
+        /// Auto-downloads arXiv PDFs and web pages if not cached.
+        #[arg(required = true, value_name = "ID")]
+        ids: Vec<String>,
     },
     /// Remove an entry from a .bib file by citekey.
     Remove {
@@ -200,6 +220,23 @@ enum Commands {
         /// Optional note field.
         #[arg(long)]
         note: Option<String>,
+        /// PDF artifact (local path or URL): create etc/pdf/<citekey>/ with
+        /// paper.pdf, source.yaml, and paper.txt before writing the bib entry.
+        #[arg(long)]
+        pdf: Option<String>,
+        /// Overwrite on citekey collision with a materially different entry,
+        /// and on an existing etc/pdf/<citekey>/ directory with --pdf
+        #[arg(long)]
+        force: bool,
+    },
+    /// Attach a PDF to an existing bibliography entry without changing BibTeX.
+    Attach {
+        citekey: String,
+        bib_file: PathBuf,
+        pdf: String,
+        /// Overwrite an existing artifact directory.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -209,6 +246,8 @@ enum DbAction {
     Stats,
     /// Rebuild database from etc/pdf/**/source.yaml files
     Rebuild,
+    /// Print every resolved state path and the source that set it
+    Path,
     /// Rollback database to a previous state (not yet implemented)
     Rollback {
         /// Timestamp to roll back to (ISO 8601)
@@ -248,16 +287,7 @@ async fn main() {
     };
 
     // Resolve DB path (used by rebuild and normal open)
-    let db_path = std::env::var("LIT_DB_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let exe = std::env::current_exe().unwrap_or_default();
-            exe.parent()
-                .unwrap_or(std::path::Path::new("."))
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join("etc/lit/lit.db")
-        });
+    let (db_path, db_path_source) = paths::db_path();
 
     // Handle `lit db rebuild` before opening the DB — rebuild creates a fresh DB
     // and doesn't need the old one (which may have a stale schema version).
@@ -266,6 +296,13 @@ async fn main() {
             format::error(&e.to_string());
             std::process::exit(1);
         }
+        std::process::exit(0);
+    }
+
+    // `db path` diagnoses a misconfiguration, so it must run even when the
+    // configured database cannot be opened.
+    if let Some(Commands::Db { action: DbAction::Path }) = &cli.command {
+        run_db_path(&db_path, db_path_source);
         std::process::exit(0);
     }
 
@@ -308,8 +345,7 @@ async fn main() {
             local,
         }) => {
             let q = query.join(" ");
-            let use_remote = !local || source.is_some();
-            if use_remote {
+            if !local {
                 let src = source.map(|s| match s {
                     SearchSource::Oa => cmd::search::Source::Oa,
                     SearchSource::Ss => cmd::search::Source::Ss,
@@ -335,6 +371,7 @@ async fn main() {
             hops,
             max_papers,
         }) => cmd::cites::run(&ctx, &paper_id, hops, max_papers).await,
+        Some(Commands::Closure(args)) => cmd::closure::run(&ctx, args).await,
         Some(Commands::Path {
             paper_a,
             paper_b,
@@ -347,8 +384,8 @@ async fn main() {
             dir,
             citekey,
         }) => cmd::download::run(&ctx, &id, source, url_only, dir.as_deref(), citekey.as_deref()).await,
-        Some(Commands::Add { input, bib_file, key }) => cmd::add::run(&ctx, &input, &bib_file, key.as_deref()).await,
-        Some(Commands::Verify { bib_file, jobs }) => cmd::verify::run(&ctx, &bib_file, jobs).await,
+        Some(Commands::Add { input, bib_file, key, force }) => cmd::add::run(&ctx, &input, &bib_file, key.as_deref(), force).await,
+        Some(Commands::Verify { bib_file, jobs, keys }) => cmd::verify::run(&ctx, &bib_file, jobs, &keys).await,
         Some(Commands::Clean { bib_file, apply, prune, tex_dirs }) => {
             let tex_refs: Vec<&std::path::Path> = tex_dirs.iter().map(|p| p.as_path()).collect();
             match cmd::clean::run(&bib_file, apply, prune, &tex_refs) {
@@ -359,14 +396,14 @@ async fn main() {
                 Err(e) => Err(e),
             }
         }
-        Some(Commands::Check { fix, conflicts }) => {
+        Some(Commands::Check { fix, conflicts, bib_file }) => {
             if conflicts {
                 cmd::check::run_conflicts(&ctx)
             } else {
-                cmd::check::run(&ctx, fix).await
+                cmd::check::run(&ctx, fix, bib_file.as_deref()).await
             }
         }
-        Some(Commands::Read { id }) => run_read(&ctx, &id).await,
+        Some(Commands::Read { ids }) => run_read(&ctx, &ids).await,
         Some(Commands::Remove { citekey, bib_file }) => run_remove(&ctx, &citekey, &bib_file),
         Some(Commands::Misc {
             citekey,
@@ -376,12 +413,19 @@ async fn main() {
             authors,
             howpublished,
             note,
-        }) => run_misc(&ctx, citekey, &bib_file, title, year, authors, howpublished, note),
+            pdf,
+            force,
+        }) => run_misc(&ctx, citekey, &bib_file, title, year, authors, howpublished, note, pdf, force),
+        Some(Commands::Attach { citekey, bib_file, pdf, force }) => {
+            run_attach(&ctx, &citekey, &bib_file, &pdf, force)
+        }
         Some(Commands::Db { action }) => match action {
             DbAction::Stats => run_db_stats(&ctx),
             DbAction::Rebuild => {
                 cmd::check::rebuild(&db_path).map_err(|e| e.into())
             }
+            // Handled before the database is opened.
+            DbAction::Path => Ok(()),
             DbAction::Rollback { timestamp } => {
                 eprintln!("rollback to {}: not yet implemented", timestamp);
                 Ok(())
@@ -459,6 +503,29 @@ fn run_local_search(
     Ok(())
 }
 
+/// Print every resolved state path with the source that set it.
+fn run_db_path(db_path: &std::path::Path, db_path_source: &str) {
+    println!("database    {}  [{}]", db_path.display(), db_path_source);
+
+    let clio_source = match std::env::var_os("LIT_CLIO_DB_PATH") {
+        Some(_) => "LIT_CLIO_DB_PATH",
+        None => "default, etc/lit/ found from the working directory",
+    };
+    println!(
+        "clio index  {}  [{}]",
+        clio_api::default_clio_db_path().display(),
+        clio_source
+    );
+
+    match cmd::read::find_pdf_base() {
+        Ok(p) => println!(
+            "pdf store   {}  [default, found from the working directory]",
+            p.display()
+        ),
+        Err(e) => println!("pdf store   unresolved: {}", e),
+    }
+}
+
 /// Print database statistics.
 fn run_db_stats(ctx: &cmd::Context) -> Result<(), Box<dyn std::error::Error>> {
     let stats = ctx.db.db_stats()?;
@@ -478,11 +545,65 @@ fn run_db_stats(ctx: &cmd::Context) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Run `lit read`: locate paper text, auto-downloading from arXiv if needed.
-async fn run_read(ctx: &cmd::Context, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// Run `lit read <ID>...`: print each id's text path in argument order.
+///
+/// Ids are read sequentially, so each arXiv auto-download goes through the
+/// shared HTTP retry budget one at a time. With one id the output and errors
+/// are the single-id form. With several, a failing id is reported on stderr
+/// as `<id>: <error>` and the rest still run; `--json` prints one array of the
+/// successful per-id objects; the exit code is 1 if any id failed.
+async fn run_read(ctx: &cmd::Context, ids: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if let [id] = ids {
+        let result = read_one(ctx, id).await?;
+        if ctx.json {
+            println!("{}", serde_json::to_string_pretty(&read_result_json(&result))?);
+        } else {
+            println!("{}", result.path.display());
+        }
+        return Ok(());
+    }
+
+    let mut objects = Vec::new();
+    let mut failed = false;
+    for id in ids {
+        match read_one(ctx, id).await {
+            Ok(result) if ctx.json => objects.push(read_result_json(&result)),
+            Ok(result) => println!("{}", result.path.display()),
+            Err(e) => {
+                format::error(&format!("{}: {}", id, e));
+                failed = true;
+            }
+        }
+    }
+    if ctx.json {
+        println!("{}", serde_json::to_string_pretty(&objects)?);
+    }
+    if failed {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// The `--json` object for one read result.
+fn read_result_json(result: &cmd::read::ReadResult) -> serde_json::Value {
+    serde_json::json!({
+        "path": result.path.to_string_lossy(),
+        "format": result.format,
+        "extra_files": result.extra_files,
+    })
+}
+
+/// Locate one paper's text, auto-downloading from arXiv if needed.
+async fn read_one(
+    ctx: &cmd::Context,
+    id: &str,
+) -> Result<cmd::read::ReadResult, Box<dyn std::error::Error>> {
+    if cmd::web::is_page_url(id) {
+        return cmd::web::read(ctx, id).await;
+    }
     let result = match cmd::read::run_data(ctx, id) {
         Ok(r) => r,
-        Err(_) => {
+        Err(cmd::read::ReadError::NotFound(_)) => {
             let normalized = id.trim();
             let looks_like_arxiv = normalized
                 .chars()
@@ -499,19 +620,11 @@ async fn run_read(ctx: &cmd::Context, id: &str) -> Result<(), Box<dyn std::error
             cmd::download::run(ctx, normalized, true, false, None, None).await?;
             cmd::read::run_data(ctx, id)?
         }
+        // Local source exists but is unreadable (or other failure): surface the
+        // real cause instead of the misleading "not found locally" message.
+        Err(e) => return Err(e.into()),
     };
-
-    if ctx.json {
-        let json = serde_json::json!({
-            "path": result.path.to_string_lossy(),
-            "format": result.format,
-            "extra_files": result.extra_files,
-        });
-        println!("{}", serde_json::to_string_pretty(&json)?);
-    } else {
-        println!("{}", result.path.display());
-    }
-    Ok(())
+    Ok(result)
 }
 
 /// Run `lit remove`: delete an entry from a .bib file by citekey.
@@ -571,6 +684,8 @@ fn run_misc(
     authors: Vec<String>,
     howpublished: Option<String>,
     note: Option<String>,
+    pdf: Option<String>,
+    force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let params = cmd::misc::MiscParams {
         citekey,
@@ -579,16 +694,77 @@ fn run_misc(
         year,
         howpublished,
         note,
+        url: None,
     };
-    let result = cmd::misc::run_data(&params, bib_file)?;
+    let pdf_root = match pdf {
+        Some(_) => Some(cmd::read::find_pdf_base()?),
+        None => None,
+    };
+    let result = match (&pdf, &pdf_root) {
+        (Some(p), Some(root)) => cmd::misc::run_pdf_data(&params, bib_file, p, force, root)?,
+        _ => cmd::misc::run_data(&params, bib_file, force)?,
+    };
+    let artifact_dir = pdf_root.map(|root| root.join(&result.entry_key));
     if ctx.json {
-        let json = serde_json::json!({
-            "entry_key": result.entry_key,
-            "bib_file": bib_file.display().to_string(),
-        });
+        let mut json = result.to_json(bib_file);
+        if let Some(ref dir) = artifact_dir {
+            json["dir"] = serde_json::Value::String(dir.display().to_string());
+        }
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else {
+        if let Some(ref dir) = artifact_dir {
+            println!("Saved: {}", dir.display());
+        }
         println!("Added @misc{{{}}} to {}", result.entry_key, bib_file.display());
     }
     Ok(())
+}
+
+fn run_attach(
+    ctx: &cmd::Context,
+    citekey: &str,
+    bib_file: &std::path::Path,
+    pdf: &str,
+    force: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pdf_root = cmd::read::find_pdf_base()?;
+    let dir = cmd::misc::attach_pdf_data(citekey, bib_file, pdf, force, &pdf_root)?;
+    if ctx.json {
+        println!("{}", serde_json::json!({
+            "citekey": citekey,
+            "bib_file": bib_file.display().to_string(),
+            "dir": dir.display().to_string(),
+        }));
+    } else {
+        println!("Attached: {}", dir.display());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn version_names_crate_version_and_git_hash() {
+        let v = Cli::command().get_version().unwrap().to_string();
+        assert!(v.starts_with(env!("CARGO_PKG_VERSION")), "version: {}", v);
+        assert!(v.contains(env!("LIT_GIT_HASH")), "version: {}", v);
+    }
+
+    #[test]
+    fn search_rejects_local_together_with_source() {
+        let err = Cli::command()
+            .try_get_matches_from(["lit", "search", "--local", "-s", "clio", "q"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn search_accepts_local_and_source_separately() {
+        let cmd = Cli::command();
+        assert!(cmd.clone().try_get_matches_from(["lit", "search", "--local", "q"]).is_ok());
+        assert!(cmd.try_get_matches_from(["lit", "search", "-s", "clio", "q"]).is_ok());
+    }
 }

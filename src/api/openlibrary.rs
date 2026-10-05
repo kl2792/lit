@@ -79,6 +79,7 @@ pub struct EditionResult {
     pub publisher: Option<String>,
     pub year: String,
     pub author_keys: Vec<String>,
+    pub isbn: Option<String>,
 }
 
 /// Parse a works JSON response.
@@ -117,7 +118,13 @@ pub fn parse_edition(body: &str) -> Result<EditionResult, Box<dyn std::error::Er
                 .collect()
         })
         .unwrap_or_default();
-    Ok(EditionResult { title, publisher, year, author_keys })
+    let isbn = data["isbn_13"]
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .or_else(|| data["isbn_10"].as_array().and_then(|arr| arr.first()).and_then(|v| v.as_str()))
+        .map(str::to_string);
+    Ok(EditionResult { title, publisher, year, author_keys, isbn })
 }
 
 /// Parse the editions list JSON response, returning editions sorted by year ascending.
@@ -145,7 +152,12 @@ pub fn parse_editions_list(body: &str) -> Result<Vec<EditionResult>, Box<dyn std
                         .collect()
                 })
                 .unwrap_or_default();
-            Some(EditionResult { title, publisher, year, author_keys })
+            let isbn = e["isbn"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            Some(EditionResult { title, publisher, year, author_keys, isbn })
         })
         .collect();
     editions.sort_by(|a, b| a.year.cmp(&b.year));
@@ -686,4 +698,3 @@ mod tests {
         assert!(parse_author(body).is_err());
     }
 }
-

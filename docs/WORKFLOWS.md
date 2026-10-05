@@ -11,19 +11,20 @@ For *why* the API is shaped this way, see [`DESIGN.md`](DESIGN.md).
 You just read a paper and want to `\cite{}` it in a LaTeX section.
 
 ```bash
-lit "denoising diffusion probabilistic models"     # search local DB
+lit "denoising diffusion probabilistic models"     # search (remote APIs by default)
 lit 2006.11239                                     # confirm metadata + abstract
 lit add 2006.11239 ext/Improving-Causal-Explanations/references.bib --json
-# → {"entry_key": "ho2020denoising", "bib_file": ".../references.bib"}
+# → {"entry_key": "ho2020denoising", "bib_file": ".../references.bib", "added": true}
 ```
 
 Use `ho2020denoising` in `\cite{}`. Never invent the key — the canonical form
 may disambiguate with a different word than you'd guess.
 
-If the local search miss is a true miss (not just an index gap), try `--remote`:
+To restrict the search to papers you have already downloaded (instant, no API
+calls), use `--local`:
 
 ```bash
-lit search --remote "denoising diffusion probabilistic models" --limit 5
+lit search --local "denoising diffusion probabilistic models" --limit 5
 ```
 
 ---
@@ -44,6 +45,72 @@ lit misc halpern2016actual \
 
 Repeat `-a` per author. `--howpublished` is the free-text venue; `--note` adds
 an arbitrary annotation field.
+
+For tech reports and working papers where you also have the PDF (a local file
+or a URL), add `--pdf`: it creates `etc/pdf/<citekey>/` with `paper.pdf`,
+`source.yaml`, and extracted `paper.txt`, then writes the bib entry. This is
+the documented ingestion path for identifier-less artifacts.
+
+```bash
+lit misc maiti2026tier refs.bib \
+  -t "Counterfactual Tiers Tech Report" \
+  -y 2026 \
+  -a "Aurghya Maiti" \
+  --howpublished "Tech report R-125" \
+  --pdf ~/Downloads/r125.pdf        # or --pdf https://causalai.net/r125.pdf
+```
+
+On download or validation failure nothing is written (no directory, no bib
+entry) and the command exits nonzero with a hint — for sandbox-blocked hosts,
+download in a browser and rerun with the local path. An existing
+`etc/pdf/<citekey>/` directory is an error unless you pass `--force`.
+
+---
+
+## 2b. Attach a PDF to an entry you already have
+
+The bibliography entry is already correct and you have just obtained the PDF.
+`lit misc --pdf` is the wrong tool here: it would write a second entry.
+Use `attach`, which never creates or modifies BibTeX.
+
+```bash
+lit attach halpern2016actual refs.bib ~/Downloads/actual-causality.pdf
+lit attach halpern2016actual refs.bib https://example.org/actual-causality.pdf
+```
+
+It fails if `refs.bib` has no entry under that citekey, and if the bytes do not
+begin with `%PDF`, so a login page saved as a `.pdf` is caught rather than
+filed. On success it writes `etc/pdf/<citekey>/` with `paper.pdf`,
+`source.yaml`, and extracted `paper.txt`, recording the citekey and the source
+in `source.yaml` so `lit check --fix` can reconcile the artifact into the
+database later. An existing directory is an error unless you pass `--force`.
+
+---
+
+## 2c. Read and cite a web-published paper
+
+Alignment Forum and LessWrong posts, Distill articles and Transformer Circuits Thread articles have no arXiv id.
+Pass the page URL to `read` or `add`:
+
+```bash
+lit read https://transformer-circuits.pub/2021/framework/index.html
+# → /abs/path/to/etc/pdf/elhage2021mathematical/paper.txt
+lit add https://www.alignmentforum.org/posts/JvZhhzycHu2Yd57RN/causal-scrubbing-a-method-for-rigorously-testing refs.bib --json
+# → {"entry_key": "lawrencec2022causal", "bib_file": "refs.bib", "added": true}
+lit add https://distill.pub/2020/circuits/zoom-in/ refs.bib
+# → the DOI entry for 10.23915/distill.00024.001, keyed olah2020zoom
+```
+
+The first call stores the page text as `etc/pdf/<citekey>/paper.txt`, with `source.yaml` recording the URL, host, fetch time and extraction method.
+Later calls for the same page read that artifact with no request, whatever the URL spelling, and a forum post is one artifact whether the URL is on alignmentforum.org, lesswrong.com or greaterwrong.com.
+`--no-cache` refetches it.
+
+A Distill page with a DOI is added through the DOI path, under the artifact's citekey.
+Any other page becomes `@misc` with the site name as `howpublished` and the canonical URL as `url`.
+Forum authors are display names, often usernames, so check the generated key and pass `--key` for a better one; `--key` also names the artifact directory when the page is new.
+
+Only these hosts are supported: alignmentforum.org, lesswrong.com, greaterwrong.com, distill.pub and transformer-circuits.pub.
+Any other URL is an error naming them (ADR-005); for other pages, save the text yourself and use `lit misc`.
 
 ---
 
@@ -87,12 +154,32 @@ lit add 2006.11239 references.bib --json   # canonical key returned in entry_key
 
 ---
 
+## 3c. Citekey collisions
+
+Two different papers can canonicalize to the same citekey (same first-author
+surname, year, and leading title word). `lit add` and `lit misc` abort instead
+of silently overwriting when an upsert would replace an entry whose title
+differs materially, showing both titles. Disambiguate with `--key` on `add`
+(pick a different citekey for `misc`), or pass `--force` to overwrite
+deliberately:
+
+```bash
+lit add 10.1609/aaai.v39i25.34888 refs.bib --key maiti2025aaai --json
+```
+
+---
+
 ## 4. Find related work via the citation graph
 
 ```bash
 lit refs 2006.11239 --json   # what this paper builds on
 lit cites 2006.11239 --json  # what built on this paper
 ```
+
+Each lists every neighbor: Semantic Scholar is paged to the end.
+If any Semantic Scholar call fails (a 429, say), the list comes from OpenAlex instead, which needs a DOI or arXiv id.
+Each `--json` record carries `doi`, `arxiv_id`, `s2_id` where known, `source` (`s2` or `openalex`), and `abstract` (full text or null; `lit search --json` records carry it too).
+A failed call exits nonzero; on a deeper hop the partial results print first and the failures go to stderr.
 
 Both are slow (one to ten seconds, depending on source). When chaining several
 or scanning a graph neighbourhood, invoke via Bash with `run_in_background: true`,
@@ -104,6 +191,31 @@ For deeper exploration, increase `--hops`:
 ```bash
 lit refs 2006.11239 --hops 2 --max-papers 200
 ```
+
+### Closure over several seeds: `lit closure`
+
+```bash
+lit closure 2408.01416 10.1234/x --hops 1 --direction both \
+    --exclude-bib refs.bib --expand-only expand.txt --json
+```
+
+`lit closure` runs the whole BFS in one call, with its neighbor calls made concurrently inside the binary, so do not chain `lit refs` / `lit cites` by hand.
+Seeds are DOIs or arXiv ids, given as arguments or in `--seeds-file` (one per line, `#` starts a comment).
+Seeds are always expanded; a paper at hop 1 or deeper is expanded only if `--expand-only` is absent or lists its `id_key`.
+Each paper appears once, under `id_key` = `doi:<lowercased DOI>`, else `arxiv:<id without version>`, else `title:<lowercase alphanumerics and single spaces>`.
+Records sharing a DOI or arXiv id merge, so a record carrying both joins records keyed by either; a shared title merges only when no DOI or arXiv id contradicts it.
+`--exclude-bib` (repeatable) marks a paper `known` with the matching citekey and file when a .bib entry shares its DOI, `eprint` arXiv id, or normalized title; known papers stay in the output.
+For a paper with no DOI or arXiv id, a .bib title also matches when its words appear in order inside the paper's title, or the reverse, provided the shorter title has at least 4 words and at least half as many as the longer; this catches reference-string titles such as "2023 Towards Monosemanticity: ...".
+`--max-papers` stops adding papers, with a warning on stderr; by default there is no cap.
+
+Output is JSONL in this order, with or without `--json`:
+1. `{"type":"run","lit_version","timestamp","argv","seeds","hops","direction"}`.
+2. One `{"type":"paper","id_key","doi","arxiv_id","s2_id","title","authors","year","venue","abstract","hop","edges":[{"kind","from"}],"known","source"}` per paper, by hop. `abstract` is the full text or null. Seeds are hop-0 records; a seed has a title and abstract only if another seed's neighbor list reaches it. An edge `{"kind":"refs","from":X}` means the paper is in X's references; `"cites"` means it cites X.
+3. One `{"type":"error","call","id","message"}` per neighbor call that failed on both Semantic Scholar and OpenAlex. A call that succeeds through the OpenAlex fallback is not an error; its papers carry `"source":"openalex"`.
+4. `{"type":"summary","papers","known","errors"}`.
+
+The exit status is 0 if at least one neighbor call succeeded.
+Papers with no DOI, arXiv id, or title are dropped and counted on stderr.
 
 ---
 
@@ -142,13 +254,24 @@ lit verify ext/Improving-Causal-Explanations/references.bib -j 8
 
 `clean` runs on every commit; `verify` runs monthly or before submission.
 
+To check only the entries a draft cites, name them; this keeps a large bib file within the API rate limits:
+
+```bash
+lit verify references.bib --key ho2020denoising --key pearl2009causality --json
+# → [{"key": "ho2020denoising", "status": "ok", "detail": "[DOI]"},
+#    {"key": "pearl2009causality", "status": "rate_limited", "detail": "...; lookup errors: HTTP 429 ..."}]
+```
+
+An unknown key, or one marked `% lit:skip`, is an error before any request.
+`status` is `ok`, `mismatch`, `book`, `rate_limited` or `not_found`; `rate_limited` means a source was still answering HTTP 429 after its retries, so rerun those keys later rather than treating them as missing (ADR-006).
+
 ---
 
 ## 7. Read a cached paper's text
 
 ```bash
 lit read 2006.11239
-# → /abs/path/to/etc/pdf/2006.11239/text.md
+# → /abs/path/to/etc/pdf/2006.11239/paper.txt
 ```
 
 The output is a path — use shell substitution to feed it into another command:
@@ -161,30 +284,48 @@ grep -i "diffusion" "$(lit read 2006.11239)"
 If the paper isn't cached and the ID looks like arXiv, `lit read` auto-downloads
 the PDF, extracts text, then returns the path. Behaviour mirrors the historical
 MCP handler.
+When the arXiv API is rate-limiting, metadata comes from Semantic Scholar or OpenAlex (a one-line note names which), and if none answers the download still proceeds into `etc/pdf/<arxiv id>/` (ADR-004).
 
 For JSON output (e.g. when calling from an agent):
 
 ```bash
 lit read 2006.11239 --json
-# → {"path": "...", "format": "markdown", "extra_files": [...]}
+# → {"path": "...", "format": "txt (generated from PDF)", "extra_files": []}
 ```
+
+Pass several ids to read them in one command instead of a shell loop:
+
+```bash
+lit read 2006.11239 pearl2009causality halpern2016actual
+# → one path line per id, in argument order
+lit read 2006.11239 pearl2009causality --json
+# → [{"path": ...}, {"path": ...}]
+```
+
+Ids run sequentially, so arXiv auto-downloads run one at a time under the usual HTTP retry budget.
+A failed id prints `<id>: <error>` to stderr and the remaining ids still run; the exit code is 1 if any id failed, and `--json` prints the array of the successful objects.
+With a single id, output and errors are exactly the single-id form above, including a bare object under `--json`.
 
 ---
 
 ## 8. Survey a topic: local vs. remote search
 
-Local DB search is instant (full-text search over previously-fetched metadata):
+Remote search is the default and hits APIs (slow, but fresh + comprehensive):
 
 ```bash
-lit search "shapley xai"
+lit search "shapley xai" --source ss --limit 20
+lit search "shapley xai" --source all --limit 50   # merge all sources
 ```
 
-Remote search hits APIs (slow, but fresh + comprehensive):
+Local DB search is instant (full-text search over previously-fetched
+metadata) but only covers papers you have already downloaded:
 
 ```bash
-lit search --remote "shapley xai" --source ss --limit 20
-lit search --remote "shapley xai" --source all --limit 50   # merge all sources
+lit search --local "shapley xai"
 ```
+
+`--local` and `--source` are mutually exclusive: `--source` names a remote
+backend, so the pair has no meaning and `lit` rejects it rather than picking one.
 
 `--source` is the lever for recall vs. precision vs. latency:
 - `oa` (default) — broad, fast.
@@ -192,6 +333,7 @@ lit search --remote "shapley xai" --source all --limit 50   # merge all sources
 - `cr` — DOI-authoritative; canonical for journals.
 - `dblp` — CS conferences OA tends to miss.
 - `philpapers` — philosophy coverage.
+- `clio` — Columbia catalog (local index, requires `lit clio sync`).
 - `all` — merge across sources.
 
 For **more than three** remote searches in one task, delegate to a background
@@ -210,6 +352,16 @@ and the same paper can end up under different citekeys in each
 (canonicalisation is deterministic but depends on local collisions).
 
 Patterns that work:
+
+```bash
+# Blessed multi-add idiom: loop the adds, verify once at the end.
+# add is upsert-idempotent, so retries are safe; the collision guard makes
+# the loop fail loudly if two papers canonicalize to the same citekey.
+for id in 2006.11239 1810.04805 10.1145/3442188.3445899; do
+  lit add "$id" refs.bib --json
+done
+lit verify refs.bib -j 8
+```
 
 ```bash
 # Add a paper to multiple bibs in one go
@@ -250,16 +402,20 @@ lit --no-cache <id>
 # Inspect what's there
 lit db stats
 
+# Show every resolved state path and what set it
+lit db path
+
 # Rebuild DB from filesystem (etc/pdf/**/source.yaml)
 lit db rebuild
-
-# Nuclear option (rare): delete the cache directory entirely
-rm -rf "${LIT_CACHE_DIR:-etc/lit/cache}"
 ```
 
-`lit db rebuild` is the right first move — it reconstructs the SQLite database
-from on-disk source-of-truth files. Only delete the cache dir if `rebuild` also
-fails to recover.
+`lit db path` first: a "missing" paper is usually a database in a different
+place from the one you expect, which `LIT_DB_PATH` sets and the executable's
+location otherwise determines.
+`LIT_PROJECT_ROOT` sets the artifact library that `check` scans, which is
+otherwise the nearest directory above you holding a non-empty `etc/pdf/`.
+`lit db rebuild` reconstructs the SQLite database, cache included, from the
+on-disk source-of-truth files, so there is no separate cache to delete.
 
 ---
 

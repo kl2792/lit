@@ -20,6 +20,11 @@ static PHILPAPERS_URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://philpapers\.org/rec/").unwrap());
 static OL_URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://openlibrary\.org/(works|books)/").unwrap());
+static CAUSALAI_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^https?://(www\.)?causalai\.net/r[0-9]+(\.pdf)?/?$").unwrap()
+});
+static CAUSALAI_SCHEME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^causalai:r?[0-9]+$").unwrap());
 static ARXIV_NEW_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(arXiv:|arxiv:)?[0-9]{4}\.[0-9]{4,5}(v[0-9]+)?$").unwrap());
 static ARXIV_OLD_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -41,6 +46,8 @@ pub enum InputType {
     SemanticScholarUrl,
     PhilPapersUrl,
     OpenLibraryUrl,
+    /// CausalAI Lab technical report (causalai.net/rNNN or `causalai:rNNN`).
+    Causalai,
     Url,
     Search,
 }
@@ -79,6 +86,13 @@ pub fn detect_type(input: &str) -> InputType {
 
     if OL_URL_RE.is_match(input) {
         return InputType::OpenLibraryUrl;
+    }
+
+    // CausalAI tech report: causalai.net URL or `causalai:rNNN` scheme.
+    // Checked before the generic URL fallback so the report PDF is ingested
+    // rather than scraped as an HTML title.
+    if CAUSALAI_URL_RE.is_match(input) || CAUSALAI_SCHEME_RE.is_match(input) {
+        return InputType::Causalai;
     }
 
     // Any remaining https/http URL not matched above
@@ -161,9 +175,40 @@ pub fn normalize_doi(input: &str) -> String {
     input.to_string()
 }
 
+/// The arXiv identifier an arXiv-registered DOI (`10.48550/arXiv.<id>`) names,
+/// normalized as `normalize_arxiv` would, or `None` for any other DOI.
+pub fn arxiv_id_from_doi(doi: &str) -> Option<String> {
+    const PREFIX: &str = "10.48550/arxiv.";
+    let head = doi.get(..PREFIX.len())?;
+    if !head.eq_ignore_ascii_case(PREFIX) {
+        return None;
+    }
+    let id = &doi[PREFIX.len()..];
+    (ARXIV_NEW_RE.is_match(id) || ARXIV_OLD_RE.is_match(id)).then(|| normalize_arxiv(id))
+}
+
 /// Strip hyphens and spaces from an ISBN string.
 pub fn normalize_isbn(input: &str) -> String {
     input.chars().filter(|c| *c != '-' && *c != ' ').collect()
+}
+
+/// Extract the canonical report id (e.g. `r145`) from any accepted CausalAI
+/// input: a `causalai.net/rNNN[.pdf]` URL or a `causalai:rNNN` / `causalai:NNN`
+/// scheme. Returns `None` if no report number is present.
+pub fn normalize_causalai(input: &str) -> Option<String> {
+    // Take the final path/scheme segment ("r145.pdf", "r145", or "145"),
+    // then keep only its digits.
+    let segment = input
+        .trim_end_matches('/')
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or("");
+    let digits: String = segment.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        Some(format!("r{}", digits))
+    }
 }
 
 #[cfg(test)]
@@ -373,6 +418,42 @@ mod tests {
     }
 
     #[test]
+    fn detect_causalai_pdf_url() {
+        assert_eq!(detect_type("https://causalai.net/r145.pdf"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_url_no_pdf() {
+        assert_eq!(detect_type("https://causalai.net/r125"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_www_http() {
+        assert_eq!(detect_type("http://www.causalai.net/r152.pdf"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_scheme() {
+        assert_eq!(detect_type("causalai:r145"), InputType::Causalai);
+        assert_eq!(detect_type("causalai:152"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_other_path_is_plain_url() {
+        // Non-report causalai.net pages fall through to the generic URL handler.
+        assert_eq!(detect_type("https://causalai.net/publications"), InputType::Url);
+    }
+
+    #[test]
+    fn normalize_causalai_variants() {
+        assert_eq!(normalize_causalai("https://causalai.net/r145.pdf").as_deref(), Some("r145"));
+        assert_eq!(normalize_causalai("https://www.causalai.net/r125/").as_deref(), Some("r125"));
+        assert_eq!(normalize_causalai("causalai:r152").as_deref(), Some("r152"));
+        assert_eq!(normalize_causalai("causalai:152").as_deref(), Some("r152"));
+        assert_eq!(normalize_causalai("causalai:rabbit").as_deref(), None);
+    }
+
+    #[test]
     fn detect_search_free_text() {
         assert_eq!(
             detect_type("attention is all you need"),
@@ -433,6 +514,34 @@ mod tests {
             normalize_arxiv("https://arxiv.org/pdf/2006.11239.pdf"),
             "2006.11239"
         );
+    }
+
+    // ── arxiv_id_from_doi ──
+
+    #[test]
+    fn arxiv_id_from_doi_new_style() {
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv.2510.24941"), Some("2510.24941".to_string()));
+    }
+
+    #[test]
+    fn arxiv_id_from_doi_is_case_insensitive_in_the_prefix() {
+        // DOIs are case-insensitive, and DataCite lowercases them in some records.
+        assert_eq!(arxiv_id_from_doi("10.48550/ARXIV.2510.24941"), Some("2510.24941".to_string()));
+        assert_eq!(arxiv_id_from_doi("10.48550/arxiv.2510.24941"), Some("2510.24941".to_string()));
+    }
+
+    #[test]
+    fn arxiv_id_from_doi_old_style() {
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv.hep-th/9901001"), Some("hep-th/9901001".to_string()));
+    }
+
+    #[test]
+    fn arxiv_id_from_doi_rejects_other_dois() {
+        assert_eq!(arxiv_id_from_doi("10.1145/3442188.3445899"), None);
+        // Same registrant, but the suffix is not an arXiv identifier.
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv.notanid"), None);
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv."), None);
+        assert_eq!(arxiv_id_from_doi(""), None);
     }
 
     // ── normalize_doi ──

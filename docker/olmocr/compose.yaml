@@ -1,0 +1,41 @@
+services:
+  olmocr:
+    build:
+      context: .
+    image: lit-olmocr:0.1
+    command: ${OLMOCR_PDF:?set OLMOCR_PDF to a PDF basename}
+    network_mode: none
+    user: "65532:65532"
+    read_only: true
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 1024
+    mem_limit: ${OLMOCR_MEMORY_LIMIT:-64g}
+    cpus: ${OLMOCR_CPUS:-16}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16g,uid=65532,gid=65532,mode=0700
+      - /dev/shm:rw,nosuid,nodev,size=16g,uid=65532,gid=65532,mode=0700
+    volumes:
+      - type: bind
+        source: ${OLMOCR_INPUT_DIR:?set OLMOCR_INPUT_DIR}
+        target: /input
+        read_only: true
+      - type: bind
+        source: ${OLMOCR_OUTPUT_DIR:?set OLMOCR_OUTPUT_DIR}
+        target: /output
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids:
+                - ${OLMOCR_GPU:-0}
+              capabilities:
+                - gpu

@@ -1,11 +1,8 @@
-/// `lit refs <paper_id>` -- Get references of a paper via Semantic Scholar.
-///
-/// If the paper_id matches a bare DOI pattern, the API module handles
-/// prepending `DOI:`. Prints first 20 references in `{rank}. {title} ({year}) - {author}` format.
-/// With `--hops N`, performs BFS traversal up to N hops deep.
+/// `lit refs <paper_id>` -- every reference of a paper (Semantic Scholar,
+/// OpenAlex fallback). With `--hops N`, BFS up to N hops deep.
 
-use super::Context;
-use crate::api::{semantic_scholar, PaperResult};
+use super::neighbors::Direction;
+use super::{Context, Related};
 
 /// Get references and return as structured data.
 pub async fn run_data(
@@ -13,18 +10,8 @@ pub async fn run_data(
     paper_id: &str,
     hops: usize,
     max_papers: usize,
-) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
-    super::fetch_related_data(
-        ctx,
-        paper_id,
-        "references",
-        "refs",
-        semantic_scholar::refs_url,
-        semantic_scholar::parse_refs,
-        hops,
-        max_papers,
-    )
-    .await
+) -> Result<Related, Box<dyn std::error::Error>> {
+    super::fetch_related_data(ctx, paper_id, Direction::Refs, hops, max_papers).await
 }
 
 pub async fn run(
@@ -33,15 +20,5 @@ pub async fn run(
     hops: usize,
     max_papers: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    super::fetch_related(
-        ctx,
-        paper_id,
-        "references",
-        "refs",
-        semantic_scholar::refs_url,
-        semantic_scholar::parse_refs,
-        hops,
-        max_papers,
-    )
-    .await
+    super::fetch_related(ctx, paper_id, Direction::Refs, hops, max_papers).await
 }

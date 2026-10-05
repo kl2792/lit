@@ -14,6 +14,7 @@ use std::path::Path;
 
 use crate::bibtex;
 use crate::format;
+use crate::sanitize;
 
 /// Report from a clean scan.
 pub struct CleanReport {
@@ -25,6 +26,10 @@ pub struct CleanReport {
     pub orphans: Vec<String>,
     /// Citekeys that were actually removed (if apply=true).
     pub removed: Vec<String>,
+    /// Sanitize-lint findings: (citekey, finding description).
+    pub lint: Vec<(String, String)>,
+    /// Citekeys rewritten by the sanitize pass (if apply=true).
+    pub lint_fixed: Vec<String>,
 }
 
 /// Run the clean command: parse, detect issues, optionally rewrite.
@@ -82,6 +87,16 @@ pub fn run(
         }
     }
 
+    // --- Detect sanitize-lint findings (ADR-001): `&amp;`, Unicode
+    // punctuation, non-macro month values ---
+    let lint: Vec<(String, String)> = entries
+        .iter()
+        .flat_map(|e| {
+            let key = e.key.clone();
+            lint_findings(e).into_iter().map(move |f| (key.clone(), f))
+        })
+        .collect();
+
     // --- Detect orphans (only if tex_dirs provided) ---
     let orphans = if tex_dirs.is_empty() {
         Vec::new()
@@ -95,7 +110,7 @@ pub fn run(
     };
 
     // --- Apply: rewrite bib file if requested ---
-    let removed = if apply {
+    let (removed, lint_fixed) = if apply {
         let duplicate_removed: HashSet<&str> =
             duplicates.iter().map(|(_, r)| r.as_str()).collect();
 
@@ -112,9 +127,9 @@ pub fn run(
 
         let removed_keys: Vec<String> = to_remove.iter().map(|s| s.to_string()).collect();
         rewrite_bib(&content, bib_file, &to_remove)?;
-        removed_keys
+        (removed_keys, apply_lint_fixes(bib_file, &entries, &lint, &to_remove)?)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     Ok(CleanReport {
@@ -122,13 +137,17 @@ pub fn run(
         duplicates,
         orphans,
         removed,
+        lint,
+        lint_fixed,
     })
 }
 
 /// Print a human-readable summary of the clean report.
 pub fn print_report(report: &CleanReport, apply: bool) {
-    let total_issues =
-        report.malformed.len() + report.duplicates.len() + report.orphans.len();
+    let total_issues = report.malformed.len()
+        + report.duplicates.len()
+        + report.orphans.len()
+        + report.lint.len();
 
     if total_issues == 0 {
         format::info("No issues found.");
@@ -159,7 +178,25 @@ pub fn print_report(report: &CleanReport, apply: bool) {
         println!();
     }
 
+    if !report.lint.is_empty() {
+        println!("Sanitize ({}):", report.lint.len());
+        for (key, finding) in &report.lint {
+            println!("  {}: {}", key, finding);
+        }
+        println!();
+    }
+
     if apply {
+        if !report.lint_fixed.is_empty() {
+            println!(
+                "Sanitized {} entr{}:",
+                report.lint_fixed.len(),
+                if report.lint_fixed.len() == 1 { "y" } else { "ies" }
+            );
+            for key in &report.lint_fixed {
+                println!("  {}", key);
+            }
+        }
         if report.removed.is_empty() {
             println!("No entries removed.");
         } else {
@@ -170,7 +207,7 @@ pub fn print_report(report: &CleanReport, apply: bool) {
         }
     } else {
         println!(
-            "Dry run: {} issue{} found. Pass --apply to remove malformed + duplicate entries.",
+            "Dry run: {} issue{} found. Pass --apply to remove malformed + duplicate entries and rewrite sanitize findings.",
             total_issues,
             if total_issues == 1 { "" } else { "s" }
         );
@@ -178,6 +215,53 @@ pub fn print_report(report: &CleanReport, apply: bool) {
 }
 
 // -- Helpers ------------------------------------------------------------------
+
+/// Sanitize-lint findings for one entry (ADR-001).
+///
+/// The rules live in `sanitize::field_findings` rather than here, so a finding
+/// is reported exactly when `--apply` would change the field. Duplicating them
+/// is what previously let `lit clean` flag text the pass preserves on purpose
+/// and report the same issue on every run.
+fn lint_findings(entry: &bibtex::BibEntry) -> Vec<String> {
+    entry
+        .fields
+        .iter()
+        .flat_map(|(name, value)| sanitize::field_findings(name, value))
+        .collect()
+}
+
+/// Rewrite lint-flagged entries through the sanitize pass (skipping removed
+/// entries), returning the keys actually rewritten.
+fn apply_lint_fixes(
+    bib_file: &Path,
+    entries: &[bibtex::BibEntry],
+    lint: &[(String, String)],
+    removed: &HashSet<&str>,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let flagged: HashSet<&str> = lint.iter().map(|(k, _)| k.as_str()).collect();
+    let mut content = std::fs::read_to_string(bib_file)?;
+    let mut fixed = Vec::new();
+    for entry in entries {
+        if !flagged.contains(entry.key.as_str()) || removed.contains(entry.key.as_str()) {
+            continue;
+        }
+        let outcome = sanitize::sanitize_bibtex(&entry.to_string());
+        for warning in &outcome.warnings {
+            format::warn(warning);
+        }
+        // Report only entries whose bytes moved. `replace_entry_block` succeeds
+        // for any key present in the file, so reporting on that alone claimed a
+        // fix whenever the pass had decided to leave the entry alone.
+        if let Some(new_content) = bibtex::replace_entry_block(&content, &entry.key, &outcome.text)
+            && new_content != content
+        {
+            content = new_content;
+            fixed.push(entry.key.clone());
+        }
+    }
+    std::fs::write(bib_file, &content)?;
+    Ok(fixed)
+}
 
 /// Returns true if a BibEntry is malformed.
 ///

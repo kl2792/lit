@@ -15,7 +15,12 @@ path = "src/bin/lit-mcp.rs"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json"] }
+# reqwest carries metadata API traffic only: PDF fetches shell out to `curl`
+# (src/cmd/download.rs, src/cmd/misc.rs) and text extraction to `pdftotext`.
+# rustls with bundled webpki roots, not default native-tls: macOS SecureTransport
+# needs keychain access and fails (OSStatus -26276) under seatbelt sandboxes
+# such as Claude Code's, where the proxy itself is reachable.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-webpki-roots", "charset", "http2", "system-proxy"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "process"] }
 quick-xml = "0.37"
 md-5 = "0.10"
@@ -23,6 +28,8 @@ regex = "1"
 anyhow = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 flate2 = "1"
+# Bounded concurrent fan-out in `lit closure`; already in the tree via reqwest.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tempfile = "3"

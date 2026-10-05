@@ -1,7 +1,11 @@
 #!/usr/bin/env bats
 # lit -- bats test suite
-# Uses cached API responses in test/cache/ for offline reproducibility.
+# Runs against an isolated database at test/fixture/lit.db.
+# Tests that query a metadata provider still reach the network and can fail on
+# a provider outage; they are not offline-reproducible yet.
 # Run: bats test/lit.bats  OR  make test
+
+bats_require_minimum_version 1.5.0
 
 setup() {
     # Use pre-set LIT or default to Rust binary
@@ -12,8 +16,26 @@ setup() {
             export LIT="$BATS_TEST_DIRNAME/../target/debug/lit"
         fi
     fi
-    export LIT_CACHE_DIR="$BATS_TEST_DIRNAME/cache"
-    mkdir -p "$LIT_CACHE_DIR"
+    # Isolation is via LIT_DB_PATH because the response cache is a table inside
+    # the database, not a directory. The previous LIT_CACHE_DIR export named a
+    # variable no source file reads, so it isolated nothing and the suite ran
+    # against the real database and the live network.
+    export LIT_DB_PATH="$BATS_TEST_DIRNAME/fixture/lit.db"
+    mkdir -p "$(dirname "$LIT_DB_PATH")"
+}
+
+# ── Download routing ─────────────────────────────────────────────────
+
+@test "download: arXiv DOI routes to arxiv.org, not a DOI resolver" {
+    run "$LIT" download 10.48550/arXiv.2510.24941 --url-only
+    [ "$status" -eq 0 ]
+    [ "$output" = "https://arxiv.org/pdf/2510.24941" ]
+}
+
+@test "download: bare arXiv ID routes to arxiv.org" {
+    run "$LIT" download arXiv:2510.24941v4 --url-only
+    [ "$status" -eq 0 ]
+    [ "$output" = "https://arxiv.org/pdf/2510.24941" ]
 }
 
 # ── Auto-detect ──────────────────────────────────────────────────────
@@ -118,7 +140,53 @@ setup() {
     [[ "$output" =~ "Causal" ]] || [[ "$output" =~ "Interpret" ]] || [[ "$output" != "" ]]
 }
 
+@test "refs: --json is a JSON array with ids and source" {
+    run "$LIT" refs 2408.01416 --json
+    [ "$status" -eq 0 ]
+    echo "$output" | python3 -c 'import sys, json; a = json.load(sys.stdin); assert len(a) > 50, len(a); assert all(r["source"] in ("s2", "openalex") for r in a); assert any("doi" in r or "arxiv_id" in r for r in a)'
+}
+
+@test "refs: a failed call exits nonzero, not an empty list" {
+    run "$LIT" refs CorpusId:999999999999
+    [ "$status" -ne 0 ]
+    [[ ! "$output" =~ "No references found" ]]
+}
+
+# ── Closure ─────────────────────────────────────────────────────────
+
+@test "closure: JSONL with run header first, summary last, every line typed" {
+    run "$LIT" closure 2408.01416 --hops 1 --direction refs --json
+    [ "$status" -eq 0 ]
+    echo "$output" | python3 -c '
+import sys, json
+rows = [json.loads(l) for l in sys.stdin if l.strip()]
+assert rows[0]["type"] == "run" and rows[0]["direction"] == "refs", rows[0]
+assert rows[-1]["type"] == "summary", rows[-1]
+papers = [r for r in rows if r["type"] == "paper"]
+assert len(papers) > 50, len(papers)
+assert rows[-1]["papers"] == len(papers)
+assert len({p["id_key"] for p in papers}) == len(papers), "id_key repeats"
+assert papers[0]["hop"] == 0 and papers[0]["id_key"] == "arxiv:2408.01416", papers[0]
+'
+}
+
+@test "closure: a seed without DOI or arXiv id is an error" {
+    run "$LIT" closure CorpusId:1
+    [ "$status" -ne 0 ]
+}
+
+@test "closure: --hops 0 is rejected" {
+    run "$LIT" closure 2408.01416 --hops 0
+    [ "$status" -ne 0 ]
+}
+
 # ── Flags ────────────────────────────────────────────────────────────
+
+@test "version flag: --version names the git hash" {
+    run "$LIT" --version
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ ^lit\ [0-9]+\.[0-9]+\.[0-9]+\ \([0-9a-f]+\)$ ]]
+}
 
 @test "help flag: -h" {
     run "$LIT" -h
@@ -195,4 +263,112 @@ setup() {
         echo "Found ANSI escape codes with NO_COLOR=1"
         false
     fi
+}
+
+# ── Read (offline artifact fixture) ─────────────────────────────────
+
+# Two readable artifacts: alpha2020 resolves to a tex main file, beta2021 to
+# paper.txt. Ids that do not look like arXiv ids never reach the network.
+read_fixture() {
+    export LIT_PROJECT_ROOT="$BATS_TEST_TMPDIR/project"
+    PDF="$LIT_PROJECT_ROOT/etc/pdf"
+    mkdir -p "$PDF/alpha2020" "$PDF/beta2021"
+    printf '\\documentclass{article}\n' > "$PDF/alpha2020/main.tex"
+    printf 'beta text\n' > "$PDF/beta2021/paper.txt"
+    ALPHA="$PDF/alpha2020/main.tex"
+    BETA="$PDF/beta2021/paper.txt"
+}
+
+@test "read: single id prints the path line" {
+    read_fixture
+    run --separate-stderr "$LIT" read alpha2020
+    [ "$status" -eq 0 ]
+    [ "$output" = "$ALPHA" ]
+    [ -z "$stderr" ]
+}
+
+@test "read: single id with --json prints one object, not an array" {
+    read_fixture
+    run --separate-stderr "$LIT" --json read alpha2020
+    [ "$status" -eq 0 ]
+    expected="{
+  \"extra_files\": [
+    \"$ALPHA\"
+  ],
+  \"format\": \"tex\",
+  \"path\": \"$ALPHA\"
+}"
+    [ "$output" = "$expected" ]
+}
+
+@test "read: single missing id keeps the unprefixed error and exit 1" {
+    read_fixture
+    run --separate-stderr "$LIT" read nosuchpaper
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [ "$stderr" = "paper 'nosuchpaper' not found locally. Download it first with an arXiv ID." ]
+}
+
+@test "read: several ids print one path line each, in argument order" {
+    read_fixture
+    run --separate-stderr "$LIT" read beta2021 alpha2020
+    [ "$status" -eq 0 ]
+    [ "$output" = "$BETA
+$ALPHA" ]
+    [ -z "$stderr" ]
+}
+
+@test "read: a failing id among several is named on stderr, the rest still print, exit nonzero" {
+    read_fixture
+    run --separate-stderr "$LIT" read alpha2020 nosuchpaper beta2021
+    [ "$status" -ne 0 ]
+    [ "$output" = "$ALPHA
+$BETA" ]
+    [ "$stderr" = "nosuchpaper: paper 'nosuchpaper' not found locally. Download it first with an arXiv ID." ]
+}
+
+@test "read: several ids with --json print one array of the per-id objects" {
+    read_fixture
+    run --separate-stderr "$LIT" --json read alpha2020 beta2021
+    [ "$status" -eq 0 ]
+    expected="[
+  {
+    \"extra_files\": [
+      \"$ALPHA\"
+    ],
+    \"format\": \"tex\",
+    \"path\": \"$ALPHA\"
+  },
+  {
+    \"extra_files\": [],
+    \"format\": \"txt\",
+    \"path\": \"$BETA\"
+  }
+]"
+    [ "$output" = "$expected" ]
+}
+
+@test "read: --json with a failing id prints the array of successes and exits nonzero" {
+    read_fixture
+    run --separate-stderr "$LIT" --json read nosuchpaper beta2021
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == "nosuchpaper: "* ]]
+    [ "$(printf '%s' "$output" | python3 -c 'import json,sys; print([o["path"] for o in json.load(sys.stdin)])')" = "['$BETA']" ]
+}
+
+@test "read: every id failing prints nothing on stdout, names each on stderr, exits 1" {
+    read_fixture
+    run --separate-stderr "$LIT" read nosuchpaper otherpaper
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [ "$stderr" = "nosuchpaper: paper 'nosuchpaper' not found locally. Download it first with an arXiv ID.
+otherpaper: paper 'otherpaper' not found locally. Download it first with an arXiv ID." ]
+    run --separate-stderr "$LIT" --json read nosuchpaper otherpaper
+    [ "$status" -eq 1 ]
+    [ "$output" = "[]" ]
+}
+
+@test "read: no id is a usage error" {
+    run --separate-stderr "$LIT" read
+    [ "$status" -ne 0 ]
 }

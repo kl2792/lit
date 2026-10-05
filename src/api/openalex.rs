@@ -1,10 +1,26 @@
 use super::{extract_last_name, urlencode, PaperResult};
 use regex::Regex;
 use serde_json::Value;
+use crate::sanitize::decode_html_entities;
 
 /// Build URL for looking up a single work by DOI.
 pub fn work_by_doi_url(doi: &str) -> String {
     format!("https://api.openalex.org/works/doi:{}", doi)
+}
+
+/// Build URL for looking up an arXiv preprint by its DataCite DOI (`10.48550/arXiv.<id>`).
+pub fn work_by_arxiv_url(arxiv_id: &str) -> String {
+    work_by_doi_url(&format!("10.48550/arXiv.{}", arxiv_id))
+}
+
+/// Parse a single-work response into a full bibliographic record (full author names).
+/// A work without a non-blank title is an error, not a placeholder record.
+pub fn parse_work_paper(body: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
+    let data: Value = serde_json::from_str(body)?;
+    if data["title"].as_str().is_none_or(|t| t.trim().is_empty()) {
+        return Err("OpenAlex work has no title".into());
+    }
+    Ok(work_to_paper(&data, &Regex::new(r"<[^>]+>")?))
 }
 
 /// Parse response from the single-work endpoint.
@@ -54,76 +70,134 @@ pub fn title_search_url(title: &str, limit: usize) -> String {
     )
 }
 
-/// Parse response from the general search endpoint.
-pub fn parse_search(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
-    parse_works_response(body, "results")
+/// Short OpenAlex id (`W123`) from the URL form (`https://openalex.org/W123`).
+fn short_id(id: &str) -> String {
+    id.rsplit('/').next().unwrap_or(id).to_string()
 }
 
-/// Shared parser for OpenAlex works responses.
-fn parse_works_response(
-    body: &str,
-    array_key: &str,
-) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
+/// A work's own short id and the short ids of the works it references.
+pub fn parse_work_graph(body: &str) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(body)?;
+    let id = data["id"].as_str().map(short_id).ok_or("OpenAlex work has no id")?;
+    let refs = data["referenced_works"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(short_id).collect())
+        .unwrap_or_default();
+    Ok((id, refs))
+}
+
+/// Maximum ids per `openalex:` OR-filter (OpenAlex caps OR filters at 100 values).
+pub const IDS_PER_REQUEST: usize = 100;
+
+/// Build URL fetching the works with the given short ids (at most `IDS_PER_REQUEST`).
+pub fn works_by_ids_url(ids: &[String]) -> String {
+    format!(
+        "https://api.openalex.org/works?filter=openalex:{}&per-page={}",
+        ids.join("|"),
+        IDS_PER_REQUEST
+    )
+}
+
+/// Build URL for one cursor page of the works citing `work_id`.
+pub fn cited_by_url(work_id: &str, cursor: &str) -> String {
+    format!(
+        "https://api.openalex.org/works?filter=cites:{}&per-page=200&cursor={}",
+        work_id,
+        urlencode(cursor)
+    )
+}
+
+/// One page of works (full author names) and the cursor of the next page, if any.
+pub fn parse_works_page(body: &str) -> Result<(Vec<PaperResult>, Option<String>), Box<dyn std::error::Error>> {
+    let data: Value = serde_json::from_str(body)?;
+    let cursor = data["meta"]["next_cursor"].as_str().map(|s| s.to_string());
+    Ok((parse_works(&data)?, cursor))
+}
+
+/// Parse response from the general search endpoint (authors as last names).
+pub fn parse_search(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
+    let data: Value = serde_json::from_str(body)?;
+    let mut results = parse_works(&data)?;
+    for p in &mut results {
+        for a in &mut p.authors {
+            *a = extract_last_name(a).to_string();
+        }
+    }
+    Ok(results)
+}
+
+/// Abstract text from OpenAlex's `abstract_inverted_index` (word -> positions):
+/// each word placed at each of its positions, joined with single spaces.
+/// `None` when the index is absent or empty. Cost: O(n log n) in the word count.
+pub fn abstract_from_inverted_index(index: &Value) -> Option<String> {
+    let mut placed: Vec<(u64, &str)> = index
+        .as_object()?
+        .iter()
+        .flat_map(|(word, positions)| {
+            positions
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+                .map(move |pos| (pos, word.as_str()))
+        })
+        .collect();
+    placed.sort_unstable_by_key(|&(pos, _)| pos);
+    let text = placed.iter().map(|&(_, w)| w).collect::<Vec<_>>().join(" ");
+    (!text.is_empty()).then_some(text)
+}
+
+/// Shared parser for the `results` array of OpenAlex works responses.
+fn parse_works(data: &Value) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
     let works = data
-        .get(array_key)
+        .get("results")
         .and_then(|v| v.as_array())
         .ok_or("missing results array")?;
 
     let html_re = Regex::new(r"<[^>]+>")?;
-    let mut results = Vec::with_capacity(works.len());
-
-    for w in works {
-        let raw_title = w["title"].as_str().unwrap_or("N/A");
-        let title = decode_html_entities(&html_re.replace_all(raw_title, ""));
-
-        let year = match w["publication_year"].as_u64() {
-            Some(y) => y.to_string(),
-            None => "?".to_string(),
-        };
-
-        let authors: Vec<String> = w["authorships"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|a| {
-                        a["author"]["display_name"]
-                            .as_str()
-                            .map(|name| extract_last_name(name).to_string())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let citations = w["cited_by_count"].as_u64();
-
-        let doi = w["doi"]
-            .as_str()
-            .map(|d| d.trim_start_matches("https://doi.org/").to_string())
-            .filter(|d| !d.is_empty());
-
-        results.push(PaperResult {
-            title,
-            authors,
-            year,
-            doi,
-            citations,
-            ..Default::default()
-        });
-    }
-
-    Ok(results)
+    Ok(works.iter().map(|w| work_to_paper(w, &html_re)).collect())
 }
 
-/// Decode common HTML entities to their plain-text equivalents.
-fn decode_html_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&#x27;", "'")
-        .replace("&apos;", "'")
+/// One OpenAlex work object as a `PaperResult` (full author names).
+/// `html_re` strips markup from the title.
+fn work_to_paper(w: &Value, html_re: &Regex) -> PaperResult {
+    let raw_title = w["title"].as_str().unwrap_or("N/A");
+    let title = decode_html_entities(&html_re.replace_all(raw_title, ""));
+
+    let year = match w["publication_year"].as_u64() {
+        Some(y) => y.to_string(),
+        None => "?".to_string(),
+    };
+
+    let authors: Vec<String> = w["authorships"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| a["author"]["display_name"].as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let doi = w["doi"]
+        .as_str()
+        .map(|d| d.trim_start_matches("https://doi.org/").to_string())
+        .filter(|d| !d.is_empty());
+    let arxiv_id = doi.as_deref().and_then(crate::detect::arxiv_id_from_doi);
+    let venue = w["primary_location"]["source"]["display_name"]
+        .as_str()
+        .map(|s| s.to_string());
+
+    PaperResult {
+        title,
+        authors,
+        year,
+        doi,
+        arxiv_id,
+        venue,
+        citations: w["cited_by_count"].as_u64(),
+        abstract_text: abstract_from_inverted_index(&w["abstract_inverted_index"]),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]
@@ -212,9 +286,128 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_work_graph_shortens_ids() {
+        let body = r#"{
+            "id": "https://openalex.org/W9",
+            "referenced_works": ["https://openalex.org/W1", "https://openalex.org/W2"]
+        }"#;
+        let (id, refs) = parse_work_graph(body).unwrap();
+        assert_eq!(id, "W9");
+        assert_eq!(refs, vec!["W1", "W2"]);
+    }
+
+    #[test]
+    fn test_parse_work_graph_requires_id() {
+        assert!(parse_work_graph(r#"{"referenced_works": []}"#).is_err());
+    }
+
+    #[test]
+    fn test_works_by_ids_url_joins_with_or() {
+        let url = works_by_ids_url(&["W1".to_string(), "W2".to_string()]);
+        assert!(url.contains("filter=openalex:W1|W2"), "url: {}", url);
+    }
+
+    #[test]
+    fn test_cited_by_url_carries_cursor() {
+        let url = cited_by_url("W9", "*");
+        assert!(url.contains("filter=cites:W9"), "url: {}", url);
+        assert!(url.contains("cursor=%2A") || url.contains("cursor=*"), "url: {}", url);
+    }
+
+    #[test]
+    fn test_parse_works_page_keeps_full_names_venue_and_arxiv() {
+        let body = r#"{
+            "meta": {"next_cursor": "abc"},
+            "results": [{
+                "title": "Paper",
+                "publication_year": 2024,
+                "authorships": [{"author": {"display_name": "Ada Lovelace"}}],
+                "doi": "https://doi.org/10.48550/arXiv.2408.01416",
+                "primary_location": {"source": {"display_name": "arXiv"}}
+            }]
+        }"#;
+        let (papers, cursor) = parse_works_page(body).unwrap();
+        assert_eq!(cursor.as_deref(), Some("abc"));
+        let p = &papers[0];
+        assert_eq!(p.authors, vec!["Ada Lovelace"]);
+        assert_eq!(p.venue.as_deref(), Some("arXiv"));
+        assert_eq!(p.arxiv_id.as_deref(), Some("2408.01416"));
+        assert_eq!(p.year, "2024");
+    }
+
+    #[test]
+    fn test_abstract_from_inverted_index_places_each_word_at_its_positions() {
+        let index: Value = serde_json::from_str(
+            r#"{"field": [5], "the": [1, 4], "Despite": [0], "of": [3], "growth": [2], "grows.": [6]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            abstract_from_inverted_index(&index).as_deref(),
+            Some("Despite the growth of the field grows.")
+        );
+    }
+
+    #[test]
+    fn test_abstract_from_inverted_index_absent_or_empty_is_none() {
+        assert_eq!(abstract_from_inverted_index(&Value::Null), None);
+        assert_eq!(abstract_from_inverted_index(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn test_parse_works_page_rebuilds_abstract() {
+        let body = r#"{"results": [
+            {"title": "A", "abstract_inverted_index": {"world": [1], "Hello": [0]}},
+            {"title": "B", "abstract_inverted_index": null}
+        ]}"#;
+        let (papers, _) = parse_works_page(body).unwrap();
+        assert_eq!(papers[0].abstract_text.as_deref(), Some("Hello world"));
+        assert_eq!(papers[1].abstract_text, None);
+    }
+
+    #[test]
+    fn test_parse_works_page_last_page_has_no_cursor() {
+        let (papers, cursor) = parse_works_page(r#"{"meta": {"next_cursor": null}, "results": []}"#).unwrap();
+        assert!(papers.is_empty());
+        assert!(cursor.is_none());
+    }
+
+    #[test]
     fn test_work_by_doi_url() {
         let url = work_by_doi_url("10.1234/test");
         assert_eq!(url, "https://api.openalex.org/works/doi:10.1234/test");
+    }
+
+    #[test]
+    fn work_by_arxiv_url_uses_the_arxiv_doi() {
+        assert_eq!(
+            work_by_arxiv_url("2609.39243"),
+            "https://api.openalex.org/works/doi:10.48550/arXiv.2609.39243"
+        );
+    }
+
+    #[test]
+    fn parse_work_paper_reads_one_work_with_full_names() {
+        let body = r#"{
+            "title": "A Paper",
+            "publication_year": 2026,
+            "authorships": [{"author": {"display_name": "Jane Doe"}}],
+            "doi": "https://doi.org/10.48550/arXiv.2609.39243",
+            "abstract_inverted_index": {"Hello": [0], "world": [1]}
+        }"#;
+        let p = parse_work_paper(body).unwrap();
+        assert_eq!(p.title, "A Paper");
+        assert_eq!(p.authors, vec!["Jane Doe"]);
+        assert_eq!(p.year, "2026");
+        assert_eq!(p.arxiv_id.as_deref(), Some("2609.39243"));
+        assert_eq!(p.abstract_text.as_deref(), Some("Hello world"));
+    }
+
+    #[test]
+    fn parse_work_paper_rejects_a_work_without_a_title() {
+        // The list parser's "N/A" placeholder must not pass as a real record.
+        for body in [r#"{}"#, r#"{"title": null}"#, r#"{"title": "  "}"#, r#"{"error": "x"}"#] {
+            assert!(parse_work_paper(body).is_err(), "{}", body);
+        }
     }
 
     #[test]
@@ -239,16 +432,6 @@ mod tests {
         assert!(r.openalex_id.is_none());
         assert!(r.citations.is_none());
         assert!(r.oa_url.is_none());
-    }
-
-    #[test]
-    fn test_decode_html_entities() {
-        assert_eq!(decode_html_entities("A &amp; B"), "A & B");
-        assert_eq!(decode_html_entities("&lt;tag&gt;"), "<tag>");
-        assert_eq!(decode_html_entities("it&#39;s"), "it's");
-        assert_eq!(decode_html_entities("it&#x27;s"), "it's");
-        assert_eq!(decode_html_entities("it&apos;s"), "it's");
-        assert_eq!(decode_html_entities("&quot;hi&quot;"), "\"hi\"");
     }
 }
 
