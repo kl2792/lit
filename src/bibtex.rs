@@ -263,8 +263,9 @@ pub fn parse_bib_file(content: &str) -> Vec<BibEntry> {
 /// (preserving surrounding content). Otherwise the entry is appended.
 ///
 /// Returns the sanitized entry text exactly as written, so callers display
-/// and emit the same string that landed in the file.
-pub fn upsert_to_file(path: &Path, entry: &str, force: bool) -> Result<String, Box<dyn std::error::Error>> {
+/// and emit the same string that landed in the file, and whether the citekey
+/// was new.
+pub fn upsert_to_file(path: &Path, entry: &str, force: bool) -> Result<Upserted, Box<dyn std::error::Error>> {
     let entry = sanitize_for_write(entry);
     let new_key = extract_entry_key(&entry).ok_or("could not parse citekey from BibTeX entry")?;
 
@@ -272,18 +273,33 @@ pub fn upsert_to_file(path: &Path, entry: &str, force: bool) -> Result<String, B
         Ok(s) if !s.is_empty() => s,
         _ => {
             append_raw(path, &entry)?;
-            return Ok(entry);
+            return Ok(Upserted { text: entry, added: true });
         }
     };
     if !force {
         check_collision(&content, &new_key, &entry)?;
     }
-    if let Some(new_content) = replace_entry_block(&content, &new_key, &entry) {
-        fs::write(path, new_content)?;
-    } else {
-        append_raw(path, &entry)?;
-    }
-    Ok(entry)
+    let added = match replace_entry_block(&content, &new_key, &entry) {
+        Some(new_content) => {
+            fs::write(path, new_content)?;
+            false
+        }
+        None => {
+            append_raw(path, &entry)?;
+            true
+        }
+    };
+    Ok(Upserted { text: entry, added })
+}
+
+/// What `upsert_to_file` wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upserted {
+    /// The sanitized entry exactly as written.
+    pub text: String,
+    /// True when the citekey was new to the file; false when an existing
+    /// entry with that citekey was replaced.
+    pub added: bool,
 }
 
 /// Abort an upsert that would replace an existing same-key entry whose title
@@ -661,12 +677,25 @@ mod tests {
         let path = dir.join("test.bib");
 
         let entry = "@article{amp2020,\n  title = {Tom &amp; Jerry},\n  year = {2020}\n}";
-        let written = upsert_to_file(&path, entry, false).unwrap();
+        let written = upsert_to_file(&path, entry, false).unwrap().text;
         assert!(written.contains(r"Tom \& Jerry"), "got: {}", written);
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content.trim(), written);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upsert_reports_a_new_key_as_added_and_a_known_key_as_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("refs.bib");
+        let first = "@misc{a2020x,\n  title = {X},\n  year = {2020}\n}";
+        let other = "@misc{b2021y,\n  title = {Y},\n  year = {2021}\n}";
+        assert!(upsert_to_file(&path, first, false).unwrap().added, "empty file");
+        assert!(upsert_to_file(&path, other, false).unwrap().added, "new key appended");
+        let refreshed = "@misc{a2020x,\n  title = {X},\n  year = {2021}\n}";
+        assert!(!upsert_to_file(&path, refreshed, false).unwrap().added, "known key replaced");
+        assert_eq!(parse_bib_file(&std::fs::read_to_string(&path).unwrap()).len(), 2);
     }
 
     #[test]

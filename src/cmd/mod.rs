@@ -14,6 +14,7 @@ pub mod read;
 pub mod refs;
 pub mod search;
 pub mod verify;
+pub mod web;
 
 use std::path::PathBuf;
 use std::sync::Arc;

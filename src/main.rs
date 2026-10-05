@@ -124,7 +124,8 @@ enum Commands {
         #[arg(long)]
         citekey: Option<String>,
     },
-    /// Fetch BibTeX and append to .bib file
+    /// Fetch BibTeX and append to .bib file (arXiv ID, DOI, ISBN, query, or
+    /// a page URL on a `lit read` web host)
     Add {
         input: String,
         bib_file: PathBuf,
@@ -135,11 +136,14 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Verify all entries in a .bib file
+    /// Verify the entries in a .bib file (all, or those named by --key)
     Verify {
         bib_file: PathBuf,
         #[arg(short = 'j', long, default_value = "4")]
         jobs: usize,
+        /// Verify only this citekey (repeatable); an unknown key is an error
+        #[arg(long = "key", value_name = "KEY")]
+        keys: Vec<String>,
     },
     /// Scan a .bib file for malformed entries, duplicates, and orphans
     Clean {
@@ -174,8 +178,10 @@ enum Commands {
     /// Locate (and if needed extract) the text of one or more papers.
     /// Prints one file path per id, in argument order.
     Read {
-        /// Paper identifiers (arXiv ID, DOI, or local cite-key).
-        /// Auto-downloads arXiv PDFs if not cached.
+        /// Paper identifiers (arXiv ID, DOI, local cite-key, or a page URL on
+        /// distill.pub, transformer-circuits.pub, alignmentforum.org,
+        /// lesswrong.com or greaterwrong.com).
+        /// Auto-downloads arXiv PDFs and web pages if not cached.
         #[arg(required = true, value_name = "ID")]
         ids: Vec<String>,
     },
@@ -379,7 +385,7 @@ async fn main() {
             citekey,
         }) => cmd::download::run(&ctx, &id, source, url_only, dir.as_deref(), citekey.as_deref()).await,
         Some(Commands::Add { input, bib_file, key, force }) => cmd::add::run(&ctx, &input, &bib_file, key.as_deref(), force).await,
-        Some(Commands::Verify { bib_file, jobs }) => cmd::verify::run(&ctx, &bib_file, jobs).await,
+        Some(Commands::Verify { bib_file, jobs, keys }) => cmd::verify::run(&ctx, &bib_file, jobs, &keys).await,
         Some(Commands::Clean { bib_file, apply, prune, tex_dirs }) => {
             let tex_refs: Vec<&std::path::Path> = tex_dirs.iter().map(|p| p.as_path()).collect();
             match cmd::clean::run(&bib_file, apply, prune, &tex_refs) {
@@ -592,6 +598,9 @@ async fn read_one(
     ctx: &cmd::Context,
     id: &str,
 ) -> Result<cmd::read::ReadResult, Box<dyn std::error::Error>> {
+    if cmd::web::is_page_url(id) {
+        return cmd::web::read(ctx, id).await;
+    }
     let result = match cmd::read::run_data(ctx, id) {
         Ok(r) => r,
         Err(cmd::read::ReadError::NotFound(_)) => {
@@ -685,6 +694,7 @@ fn run_misc(
         year,
         howpublished,
         note,
+        url: None,
     };
     let pdf_root = match pdf {
         Some(_) => Some(cmd::read::find_pdf_base()?),
@@ -696,10 +706,7 @@ fn run_misc(
     };
     let artifact_dir = pdf_root.map(|root| root.join(&result.entry_key));
     if ctx.json {
-        let mut json = serde_json::json!({
-            "entry_key": result.entry_key,
-            "bib_file": bib_file.display().to_string(),
-        });
+        let mut json = result.to_json(bib_file);
         if let Some(ref dir) = artifact_dir {
             json["dir"] = serde_json::Value::String(dir.display().to_string());
         }

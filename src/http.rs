@@ -288,7 +288,15 @@ fn rate_limit_message(url: &str, attempts: usize, has_key: bool) -> String {
     } else {
         ""
     };
-    format!("HTTP 429 Too Many Requests for {} after {} attempts{}", url, attempts, hint)
+    format!("{} for {} after {} attempts{}", RATE_LIMITED, url, attempts, hint)
+}
+
+const RATE_LIMITED: &str = "HTTP 429 Too Many Requests";
+
+/// True when `err` is the error for a request still rate-limited after all
+/// retries, as opposed to an absent record or another failure.
+pub fn is_rate_limited(err: &str) -> bool {
+    err.starts_with(RATE_LIMITED)
 }
 
 /// Check if a response body looks like valid content worth caching.
@@ -304,7 +312,7 @@ fn looks_valid(body: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_retry_after, rate_limit_message, s2_api_key, with_retries, Attempt, RETRY_BUDGET};
+    use super::{is_rate_limited, parse_retry_after, rate_limit_message, s2_api_key, with_retries, Attempt, RETRY_BUDGET};
     use std::cell::RefCell;
     use std::time::Duration;
 
@@ -400,6 +408,13 @@ mod tests {
         assert!(rate_limit_message(url, 4, false).contains("S2_API_KEY is not set"));
         assert!(!rate_limit_message(url, 4, true).contains("S2_API_KEY"));
         assert!(!rate_limit_message("https://api.openalex.org/works", 4, false).contains("S2_API_KEY"));
+    }
+
+    #[test]
+    fn is_rate_limited_recognizes_exhausted_429_retries_only() {
+        assert!(is_rate_limited(&rate_limit_message("https://api.openalex.org/works", 4, false)));
+        assert!(!is_rate_limited("HTTP 503 for https://api.openalex.org/works"));
+        assert!(!is_rate_limited("error sending request"));
     }
 
     #[test]

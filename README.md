@@ -45,10 +45,11 @@ lit download <id> [--source] [--url-only] [--dir DIR] [--citekey KEY]
                                  EZProxy); --source for arXiv LaTeX source;
                                  --citekey names the output directory
 lit read <id>...                 Locate paper text, one path per id in order;
-                                 auto-downloads arXiv PDFs; a failed id is
-                                 named on stderr, the rest still run
+                                 auto-downloads arXiv PDFs and web pages; a
+                                 failed id is named on stderr, the rest still run
 lit add <id> <bib_file> [--key KEY] [--force]
-                                 Fetch BibTeX and upsert into file
+                                 Fetch BibTeX and upsert into file; --json
+                                 prints {entry_key, bib_file, added}
 lit misc <key> <bib_file> -t TITLE -y YEAR -a AUTHOR ... [--pdf PATH|URL] [--force]
                                  Append hand-rolled @misc entry; --pdf also
                                  ingests the artifact into etc/pdf/<key>/
@@ -56,7 +57,11 @@ lit attach <key> <bib_file> <pdf> [--force]
                                  Attach a PDF to an entry that already exists,
                                  leaving the BibTeX untouched
 lit remove <key> <bib_file>      Remove an entry by citekey
-lit verify <bib_file> [-j N]     Verify .bib entries against APIs
+lit verify <bib_file> [-j N] [--key KEY ...]
+                                 Verify .bib entries against APIs, or only the
+                                 named keys; --json prints [{key, status,
+                                 detail}], status ok|mismatch|book|
+                                 rate_limited|not_found
 lit clean <bib_file> [--apply] [--prune] [--tex DIR ...]
                                  Scan for malformed entries, dupes, orphans,
                                  and LaTeX-breaking artifacts (&amp;, Unicode
@@ -69,6 +74,13 @@ lit clio auth                    Report EZProxy cookie status
 lit clio sync [--check] [--force]
                                  Download and index the Columbia catalog
 ```
+
+### Web pages
+
+`lit read <URL>` and `lit add <URL> <bib_file>` accept page URLs on alignmentforum.org, lesswrong.com, greaterwrong.com, distill.pub and transformer-circuits.pub, and reject any other host (ADR-005).
+The page text is stored once as `etc/pdf/<citekey>/paper.txt` with its URL, host, fetch time and extraction method in `source.yaml`, and later calls read it with no request.
+`add` uses the page's DOI when it has one (Distill) and otherwise writes `@misc` with the site name as `howpublished` and the page `url`.
+See [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) section 2c.
 
 ### Flags
 
@@ -275,7 +287,9 @@ src/
   format.rs         Colored output, truncation
   bibtex.rs         BibTeX parsing and generation
   sanitize.rs       BibTeX value normalization; `lit clean` derives its findings from it
+  html.rs           Minimal HTML parser and plain-text renderer for web pages
   api/
+    web.rs          Allowlisted web hosts (ADR-005): URL canonicalization, page metadata and body
     openalex.rs     OpenAlex API
     semantic_scholar.rs  Semantic Scholar API
     crossref.rs     CrossRef API
@@ -298,10 +312,12 @@ src/
     misc.rs         Hand-rolled @misc entries and PDF attachment
     clean.rs        Offline .bib linting
     verify.rs       Parallel .bib verification
+    web.rs          Web-page artifacts for `read` and `add`
     check.rs        DB <-> filesystem reconciliation, rebuild
     clio.rs         Clio auth and sync
 tests/              Integration tests keyed to the ADRs
 test/
   lit.bats          Bats integration tests
   cache/            Cached API responses for offline testing
+  web/              Trimmed Distill, Transformer Circuits and LessWrong samples
 ```

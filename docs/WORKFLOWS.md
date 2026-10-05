@@ -14,7 +14,7 @@ You just read a paper and want to `\cite{}` it in a LaTeX section.
 lit "denoising diffusion probabilistic models"     # search (remote APIs by default)
 lit 2006.11239                                     # confirm metadata + abstract
 lit add 2006.11239 ext/Improving-Causal-Explanations/references.bib --json
-# → {"entry_key": "ho2020denoising", "bib_file": ".../references.bib"}
+# → {"entry_key": "ho2020denoising", "bib_file": ".../references.bib", "added": true}
 ```
 
 Use `ho2020denoising` in `\cite{}`. Never invent the key — the canonical form
@@ -84,6 +84,33 @@ filed. On success it writes `etc/pdf/<citekey>/` with `paper.pdf`,
 `source.yaml`, and extracted `paper.txt`, recording the citekey and the source
 in `source.yaml` so `lit check --fix` can reconcile the artifact into the
 database later. An existing directory is an error unless you pass `--force`.
+
+---
+
+## 2c. Read and cite a web-published paper
+
+Alignment Forum and LessWrong posts, Distill articles and Transformer Circuits Thread articles have no arXiv id.
+Pass the page URL to `read` or `add`:
+
+```bash
+lit read https://transformer-circuits.pub/2021/framework/index.html
+# → /abs/path/to/etc/pdf/elhage2021mathematical/paper.txt
+lit add https://www.alignmentforum.org/posts/JvZhhzycHu2Yd57RN/causal-scrubbing-a-method-for-rigorously-testing refs.bib --json
+# → {"entry_key": "lawrencec2022causal", "bib_file": "refs.bib", "added": true}
+lit add https://distill.pub/2020/circuits/zoom-in/ refs.bib
+# → the DOI entry for 10.23915/distill.00024.001, keyed olah2020zoom
+```
+
+The first call stores the page text as `etc/pdf/<citekey>/paper.txt`, with `source.yaml` recording the URL, host, fetch time and extraction method.
+Later calls for the same page read that artifact with no request, whatever the URL spelling, and a forum post is one artifact whether the URL is on alignmentforum.org, lesswrong.com or greaterwrong.com.
+`--no-cache` refetches it.
+
+A Distill page with a DOI is added through the DOI path, under the artifact's citekey.
+Any other page becomes `@misc` with the site name as `howpublished` and the canonical URL as `url`.
+Forum authors are display names, often usernames, so check the generated key and pass `--key` for a better one; `--key` also names the artifact directory when the page is new.
+
+Only these hosts are supported: alignmentforum.org, lesswrong.com, greaterwrong.com, distill.pub and transformer-circuits.pub.
+Any other URL is an error naming them (ADR-005); for other pages, save the text yourself and use `lit misc`.
 
 ---
 
@@ -226,6 +253,17 @@ lit verify ext/Improving-Causal-Explanations/references.bib -j 8
 ```
 
 `clean` runs on every commit; `verify` runs monthly or before submission.
+
+To check only the entries a draft cites, name them; this keeps a large bib file within the API rate limits:
+
+```bash
+lit verify references.bib --key ho2020denoising --key pearl2009causality --json
+# → [{"key": "ho2020denoising", "status": "ok", "detail": "[DOI]"},
+#    {"key": "pearl2009causality", "status": "rate_limited", "detail": "...; lookup errors: HTTP 429 ..."}]
+```
+
+An unknown key, or one marked `% lit:skip`, is an error before any request.
+`status` is `ok`, `mismatch`, `book`, `rate_limited` or `not_found`; `rate_limited` means a source was still answering HTTP 429 after its retries, so rerun those keys later rather than treating them as missing (ADR-006).
 
 ---
 

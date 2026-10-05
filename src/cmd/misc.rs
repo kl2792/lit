@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 pub use super::add::AddResult;
 
 /// Parameters for a `@misc` BibTeX entry.
+#[derive(Debug)]
 pub struct MiscParams {
     /// BibTeX citation key (e.g. "chan2022causal").
     pub citekey: String,
@@ -19,10 +20,12 @@ pub struct MiscParams {
     pub authors: Vec<String>,
     /// Publication year.
     pub year: String,
-    /// Where the work is published (e.g. `\url{https://...}`).
+    /// Where the work is published (e.g. `\url{https://...}` or a site name).
     pub howpublished: Option<String>,
     /// Optional note field.
     pub note: Option<String>,
+    /// The work's URL, written as the BibTeX `url` field.
+    pub url: Option<String>,
 }
 
 /// Generate a `@misc` BibTeX entry, upsert it to a .bib file, and return the result.
@@ -39,16 +42,20 @@ pub fn run_data(params: &MiscParams, bib_file: &Path, force: bool) -> Result<Add
     if let Some(ref note) = params.note {
         fields.push(format!("  note = {{{}}}", note));
     }
+    if let Some(ref url) = params.url {
+        fields.push(format!("  url = {{{}}}", url));
+    }
 
     let bib_text = format!("@misc{{{},\n{},\n}}", params.citekey, fields.join(",\n"));
 
     // upsert_to_file returns the sanitized text as written, so the printed
     // and JSON-emitted entry always matches the file.
-    let bib_text = crate::bibtex::upsert_to_file(bib_file, &bib_text, force)?;
+    let written = crate::bibtex::upsert_to_file(bib_file, &bib_text, force)?;
 
     Ok(AddResult {
         entry_key: params.citekey.clone(),
-        bib_text,
+        bib_text: written.text,
+        added: written.added,
     })
 }
 
@@ -167,6 +174,7 @@ pub fn attach_pdf_data(
         year,
         howpublished: entry.get_field("url").map(str::to_string),
         note: Some(format!("attached to existing bibliography entry {}", citekey)),
+        url: None,
     };
     let dir = pdf_root.join(citekey);
     if dir.exists() && !force {
@@ -216,7 +224,7 @@ fn write_artifact(
 
 /// Staging directory for `dir`, a dot-prefixed sibling so scans of `etc/pdf/`
 /// that look for `source.yaml` never pick a half-written artifact up.
-fn staging_path(dir: &Path) -> PathBuf {
+pub(crate) fn staging_path(dir: &Path) -> PathBuf {
     let name = dir.file_name().unwrap_or_default().to_string_lossy().to_string();
     let parent = dir.parent().unwrap_or(Path::new("."));
     parent.join(format!(".lit-staging-{}-{}", name, std::process::id()))
@@ -243,7 +251,7 @@ fn fill_staging(
 ///
 /// The previous artifact steps aside before the new one lands and is deleted
 /// only once the move succeeded, so a failed rename restores it.
-fn publish(staging: &Path, dir: &Path) -> std::io::Result<()> {
+pub(crate) fn publish(staging: &Path, dir: &Path) -> std::io::Result<()> {
     if !dir.exists() {
         if let Some(parent) = dir.parent() {
             std::fs::create_dir_all(parent)?;
@@ -270,8 +278,8 @@ fn publish(staging: &Path, dir: &Path) -> std::io::Result<()> {
 /// Identifier-less `source.yaml` builder, following the `download.rs`
 /// conventions (`build_doi_source_yaml`/`build_source_yaml`): quoted
 /// title/authors, bare year, quoted retrieved date; misc extras
-/// (howpublished, note) included when present.
-fn build_misc_source_yaml(params: &MiscParams, retrieved: &str) -> String {
+/// (howpublished, note, url) included when present.
+pub(crate) fn build_misc_source_yaml(params: &MiscParams, retrieved: &str) -> String {
     let title = params.title.replace('"', "\\\"");
     let authors = params.authors.join(" and ").replace('"', "\\\"");
     let mut yaml = String::new();
@@ -287,6 +295,9 @@ fn build_misc_source_yaml(params: &MiscParams, retrieved: &str) -> String {
     }
     if let Some(ref note) = params.note {
         yaml.push_str(&format!("note: \"{}\"\n", note.replace('"', "\\\"")));
+    }
+    if let Some(ref url) = params.url {
+        yaml.push_str(&format!("url: \"{}\"\n", url.replace('"', "\\\"")));
     }
     yaml.push_str(&format!("retrieved: \"{}\"\n", retrieved));
     yaml
@@ -336,6 +347,7 @@ mod tests {
             year: "2022".into(),
             howpublished: Some(r"\url{https://example.com}".into()),
             note: None,
+            url: None,
         };
         let result = run_data(&params, tmp.path(), false).unwrap();
         assert_eq!(result.entry_key, "chan2022causal");
@@ -358,6 +370,7 @@ mod tests {
             year: "2023".into(),
             howpublished: None,
             note: None,
+            url: None,
         };
         let result = run_data(&params, tmp.path(), false).unwrap();
         assert!(!result.bib_text.contains("howpublished"));
@@ -375,6 +388,7 @@ mod tests {
             year: "2024".into(),
             howpublished: None,
             note: None,
+            url: None,
         };
         run_data(&params, tmp.path(), false).unwrap();
         let contents = fs::read_to_string(tmp.path()).unwrap();
@@ -392,9 +406,51 @@ mod tests {
             year: "2021".into(),
             howpublished: None,
             note: Some("Accessed: 2024-01-01".into()),
+            url: None,
         };
         let result = run_data(&params, tmp.path(), false).unwrap();
         assert!(result.bib_text.contains("note = {Accessed: 2024-01-01}"));
+    }
+
+    #[test]
+    fn test_misc_writes_url_to_the_entry_and_source_yaml() {
+        let tmp = NamedTempFile::new().unwrap();
+        let params = MiscParams {
+            citekey: "olah2020zoom".into(),
+            title: "Zoom In".into(),
+            authors: vec!["Chris Olah".into()],
+            year: "2020".into(),
+            howpublished: Some("Distill".into()),
+            note: None,
+            url: Some("https://distill.pub/2020/circuits/zoom-in/".into()),
+        };
+        let result = run_data(&params, tmp.path(), false).unwrap();
+        assert!(result.added);
+        assert!(result.bib_text.contains("howpublished = {Distill}"), "got: {}", result.bib_text);
+        assert!(result.bib_text.contains("url = {https://distill.pub/2020/circuits/zoom-in/}"), "got: {}", result.bib_text);
+        let yaml = build_misc_source_yaml(&params, "2026-10-05T00:00:00Z");
+        assert!(yaml.contains("url: \"https://distill.pub/2020/circuits/zoom-in/\"\n"), "got: {}", yaml);
+    }
+
+    #[test]
+    fn add_json_reports_a_first_write_as_added_and_a_rewrite_as_not() {
+        let tmp = NamedTempFile::new().unwrap();
+        let params = MiscParams {
+            citekey: "test2024post".into(),
+            title: "Test Post".into(),
+            authors: vec!["Tester".into()],
+            year: "2024".into(),
+            howpublished: None,
+            note: None,
+            url: None,
+        };
+        let first = run_data(&params, tmp.path(), false).unwrap().to_json(tmp.path());
+        assert_eq!(
+            first,
+            serde_json::json!({"entry_key": "test2024post", "bib_file": tmp.path().display().to_string(), "added": true})
+        );
+        let again = run_data(&params, tmp.path(), false).unwrap().to_json(tmp.path());
+        assert_eq!(again["added"], false);
     }
 
     #[test]
@@ -409,6 +465,7 @@ mod tests {
             year: "2020".into(),
             howpublished: None,
             note: None,
+            url: None,
         };
         let result = run_data(&params, tmp.path(), false).unwrap();
         assert!(result.bib_text.contains(r"Tom \& Jerry"), "got: {}", result.bib_text);

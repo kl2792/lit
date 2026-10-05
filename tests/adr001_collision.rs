@@ -71,6 +71,7 @@ fn misc_collision_aborts_and_force_overrides() {
         year: "2025".into(),
         howpublished: None,
         note: None,
+        url: None,
     };
     let err = run_data(&params, &path, false).unwrap_err().to_string();
     assert!(err.contains("Counterfactual Reasoning Tech Report"), "err: {}", err);

@@ -1,0 +1,48 @@
+
+        <!doctype html>
+
+        <html lang="en">
+        <head>
+            <meta charset="utf-8">
+            <script>/*! loader */ var loader; if (a < b && c > d) { loader = "<p>not text</p>"; }</script>
+            <title>A Mathematical Framework for Transformer Circuits</title>
+        <d-front-matter>
+            <script type="text/json">
+                {
+                    "title": "A Mathematical Framework for Transformer Circuits",
+                    "description": "",
+                    "authors": []
+                }
+            </script>
+        </d-front-matter>
+        </head>
+        <body>
+        <div class="article-header">
+            <style>.article-header { width: 100%; }</style>
+            <a class="logo" href="https://anthropic.com"><svg width="36" height="25"><path d="M24.8304 0H19.5612Z"/></svg></a>
+            <a class="home-link" href="/">Transformer Circuits Thread</a>
+        </div>
+        <d-title>
+            <h1>A Mathematical Framework for Transformer Circuits</h1>
+        </d-title>
+<div><p></p></div>
+<style> d-byline { display: none; } </style> <div class='d-byline-container base-grid'> <div class='d-byline'> <div class='authors' style='grid-area: authors;'> <h3>Authors</h3> <div><span class='author'><a href='https://nelhage.com/'>Nelson Elhage<sup>&lowast;&dagger;</sup></a>,</span> <span class='author'><a href='https://www.neelnanda.io/'>Neel Nanda<sup>&lowast;</sup></a>,</span> <span class='author'>Catherine Olsson<sup>&lowast;</sup>,</span> <span class='author'>Amanda Askell,</span> <span class='author'><a href='https://colah.github.io/'>Chris Olah<sup>&Dagger;</sup></a></span> </div> </div> <div class='affiliations' style='grid-area: affiliations;'> <h3>Affiliation</h3> <div><a href='https://www.anthropic.com/'>Anthropic</a></div> </div> <div class='published' style='grid-area: published;'> <h3>Published</h3> <div>Dec 22, 2021</div> </div> </div> </div>
+<d-article>
+<figure class="l-body">
+
+<style>
+    h1 a:hover, h2 a:hover { text-decoration: none; }
+    .comment { background-color: hsl(54, 78%, 96%); }
+</style>
+</figure>
+<nav class="toc"><a href="#summary">Summary of Results</a></nav>
+<h2 id="summary">Summary of Results</h2>
+<p>Transformer<d-cite key="vaswani2017attention"></d-cite> language models are an emerging technology, for example in systems like GPT-3 <d-cite key="brown2020language"></d-cite>.&nbsp;However, as these models scale, their open-endedness rises.</p>
+<ul><li style='margin-left: 36pt;'>Key, query, and value vectors can be thought of as intermediate results in the computation of the low-rank matrices <d-math>W_Q^TW_K</d-math> and <d-math>W_OW_V</d-math>.</li></ul>
+<d-math block>h(x) = \sum_i W_O^i W_V^i x</d-math>
+<pre>def attn(x):
+    return softmax(x)</pre>
+</d-article>
+<d-appendix><h3 id="author-contributions">Author Contributions</h3><p>Everyone helped.</p></d-appendix>
+        </body>
+        </html>

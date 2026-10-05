@@ -5,6 +5,7 @@ pub mod cmd;
 pub mod db;
 pub mod detect;
 pub mod format;
+pub mod html;
 pub mod http;
 pub mod mcp;
 pub mod paths;

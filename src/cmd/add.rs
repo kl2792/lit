@@ -7,6 +7,10 @@
 /// When the input is a free-text search query (not a recognized identifier),
 /// searches for the paper, takes the top result, extracts the best available
 /// identifier (DOI > arXiv > ISBN), and uses that to fetch BibTeX.
+///
+/// A URL on an ADR-005 host (Distill, Transformer Circuits, Alignment Forum,
+/// LessWrong) stores the page text as an artifact, then writes the entry
+/// for the page's DOI when it has one, else a `@misc` entry.
 
 use std::path::Path;
 use std::process::Command;
@@ -28,6 +32,20 @@ pub struct AddResult {
     pub entry_key: String,
     /// The full BibTeX entry text.
     pub bib_text: String,
+    /// True when the citekey was new to the bib file; false when an existing
+    /// entry was replaced.
+    pub added: bool,
+}
+
+impl AddResult {
+    /// The `--json` document for a write to `bib_file`.
+    pub fn to_json(&self, bib_file: &Path) -> serde_json::Value {
+        serde_json::json!({
+            "entry_key": self.entry_key,
+            "bib_file": bib_file.display().to_string(),
+            "added": self.added,
+        })
+    }
 }
 
 /// Fetch BibTeX for a paper, append to a .bib file, and return structured result.
@@ -39,6 +57,9 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
     // it through the shared misc artifact pipeline (PDF + source.yaml + entry).
     if input_type == InputType::Causalai {
         return add_causalai(input, bib_file, key, force);
+    }
+    if input_type == InputType::Url && crate::api::web::is_supported(input) {
+        return add_web(ctx, input, bib_file, key, force).await;
     }
 
     let client = ctx.client();
@@ -112,7 +133,7 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
 
     // upsert_to_file returns the sanitized text as written, so the printed
     // and JSON-emitted entry always matches the file.
-    let bib_text = bibtex::upsert_to_file(bib_file, &bib_text, force)?;
+    let written = bibtex::upsert_to_file(bib_file, &bib_text, force)?;
 
     // Opportunistic index
     match input_type {
@@ -134,15 +155,21 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
         _ => {}
     }
 
-    let entry_key = bibtex::extract_entry_key(&bib_text).unwrap_or_else(|| "unknown".to_string());
+    let entry_key = bibtex::extract_entry_key(&written.text).unwrap_or_else(|| "unknown".to_string());
 
-    Ok(AddResult { entry_key, bib_text })
+    Ok(AddResult { entry_key, bib_text: written.text, added: written.added })
 }
 
+/// Run `lit add`: the human report, or with `--json` one document from
+/// `AddResult::to_json`.
 pub async fn run(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>, force: bool) -> Result<(), Box<dyn std::error::Error>> {
     let result = run_data(ctx, input, bib_file, key, force).await?;
-    println!("Added {} to {}", result.entry_key, bib_file.display());
-    println!("{}", result.bib_text);
+    if ctx.json {
+        println!("{}", serde_json::to_string_pretty(&result.to_json(bib_file))?);
+    } else {
+        println!("Added {} to {}", result.entry_key, bib_file.display());
+        println!("{}", result.bib_text);
+    }
     Ok(())
 }
 
@@ -170,6 +197,7 @@ fn add_causalai(input: &str, bib_file: &Path, key: Option<&str>, force: bool) ->
             "Technical Report {}, Causal Artificial Intelligence Lab, Columbia University",
             meta.number
         )),
+        url: None,
     };
 
     // Hand the already-downloaded bytes to the shared misc pipeline via a temp
@@ -181,6 +209,19 @@ fn add_causalai(input: &str, bib_file: &Path, key: Option<&str>, force: bool) ->
     let result = super::misc::run_pdf_data(&params, bib_file, &tmp_str, force, &pdf_root);
     let _ = std::fs::remove_file(&tmp);
     result
+}
+
+/// Add a page from an ADR-005 host: store or reuse its `etc/pdf/` artifact,
+/// then take the entry from the page's DOI when it has one (under the
+/// artifact's citekey unless `key` is given), else write `@misc`.
+async fn add_web(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>, force: bool) -> Result<AddResult, Box<dyn std::error::Error>> {
+    use super::web::BibSource;
+
+    let artifact = super::web::ensure(&ctx.client(), &super::read::find_pdf_base()?, input, key, ctx.no_cache).await?;
+    match artifact.bib_source(key) {
+        BibSource::Doi(doi) => Box::pin(run_data(ctx, &doi, bib_file, Some(key.unwrap_or(&artifact.citekey)), force)).await,
+        BibSource::Misc(params) => super::misc::run_data(&params, bib_file, force),
+    }
 }
 
 /// Normalize an OL author name to "First Last" display order for citekey generation.

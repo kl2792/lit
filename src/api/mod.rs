@@ -8,6 +8,7 @@ pub mod openlibrary;
 pub mod philpapers;
 pub mod semantic_scholar;
 pub mod unpaywall;
+pub mod web;
 
 /// Common paper result used across all APIs.
 #[derive(Debug, Clone, Default)]

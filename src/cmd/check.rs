@@ -10,7 +10,7 @@ use super::Context;
 use crate::db::PaperRow;
 use crate::format;
 
-fn yaml_field(content: &str, wanted: &str) -> Option<String> {
+pub(crate) fn yaml_field(content: &str, wanted: &str) -> Option<String> {
     content.lines().find_map(|line| {
         let (key, value) = line.trim().split_once(':')?;
         if key.trim() != wanted {

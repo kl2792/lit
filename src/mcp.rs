@@ -344,6 +344,12 @@ pub async fn handle_lookup(ctx: &cmd::Context, args: &Value) -> Result<String, S
 pub async fn handle_read(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
     let query = args["query"].as_str().ok_or("missing 'query'")?;
 
+    if cmd::web::is_page_url(query) {
+        let result = cmd::web::read(ctx, query).await.map_err(|e| e.to_string())?;
+        let json = serde_json::json!({ "path": result.path.to_string_lossy(), "format": result.format });
+        return serde_json::to_string(&json).map_err(|e| e.to_string());
+    }
+
     let initial = cmd::read::run_data(ctx, query);
 
     match initial {
@@ -550,13 +556,9 @@ pub fn handle_misc(args: &Value) -> Result<String, String> {
     let bib_raw = args["bib_file"].as_str().ok_or("missing 'bib_file'")?;
     let bib_path = validate_bib_file(bib_raw)?;
 
-    let params = cmd::misc::MiscParams { citekey, title, authors, year, howpublished, note };
+    let params = cmd::misc::MiscParams { citekey, title, authors, year, howpublished, note, url: None };
     let result = cmd::misc::run_data(&params, &bib_path, false).map_err(|e| e.to_string())?;
-    let json = json!({
-        "entry_key": result.entry_key,
-        "bib_file": bib_path.display().to_string(),
-    });
-    serde_json::to_string(&json).map_err(|e| e.to_string())
+    serde_json::to_string(&result.to_json(&bib_path)).map_err(|e| e.to_string())
 }
 
 pub async fn handle_add(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
@@ -566,11 +568,7 @@ pub async fn handle_add(ctx: &cmd::Context, args: &Value) -> Result<String, Stri
     let result = cmd::add::run_data(ctx, input, &bib_path, None, false)
         .await
         .map_err(|e| e.to_string())?;
-    let json = json!({
-        "entry_key": result.entry_key,
-        "bib_file": bib_path.display().to_string(),
-    });
-    serde_json::to_string(&json).map_err(|e| e.to_string())
+    serde_json::to_string(&result.to_json(&bib_path)).map_err(|e| e.to_string())
 }
 
 // -- Tool dispatch -----------------------------------------------------------
