@@ -44,7 +44,9 @@ lit download <id> [--source] [--url-only] [--dir DIR] [--citekey KEY]
                                  arXiv; other DOIs via open access, Clio,
                                  EZProxy); --source for arXiv LaTeX source;
                                  --citekey names the output directory
-lit read <id>                    Locate paper text; auto-downloads arXiv PDFs
+lit read <id>...                 Locate paper text, one path per id in order;
+                                 auto-downloads arXiv PDFs; a failed id is
+                                 named on stderr, the rest still run
 lit add <id> <bib_file> [--key KEY] [--force]
                                  Fetch BibTeX and upsert into file
 lit misc <key> <bib_file> -t TITLE -y YEAR -a AUTHOR ... [--pdf PATH|URL] [--force]
@@ -101,7 +103,7 @@ lit clio sync [--check] [--force]
 | `LIT_PROJECT_ROOT` | nearest directory above the working directory holding a non-empty `etc/pdf/` | Root of the artifact library that `check`, `download` and `read` operate on |
 | `LIT_CLIO_DB_PATH` | `etc/lit/clio.db` (nearest `etc/lit/` above the working directory) | Columbia catalog index |
 | `CURL_TIMEOUT` | `15` | HTTP timeout in seconds |
-| `LIT_MAX_ATTEMPTS` | `4` | HTTP attempts before giving up; backoff is 1s, 2s, 4s |
+| `LIT_MAX_ATTEMPTS` | `5` | HTTP attempts before giving up; waits are the server's Retry-After, else 2s, 4s, 8s, 16s plus up to 50% jitter, at most 60s in total (ADR-004) |
 | `NO_COLOR` | *(unset)* | Set to any non-empty value to disable color |
 | `LIT_EMAIL` | `lit-cli@users.noreply.github.com` | Email for Unpaywall API |
 | `S2_API_KEY` | *(unset)* | Semantic Scholar API key (free, avoids shared rate limits) |

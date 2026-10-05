@@ -246,6 +246,7 @@ grep -i "diffusion" "$(lit read 2006.11239)"
 If the paper isn't cached and the ID looks like arXiv, `lit read` auto-downloads
 the PDF, extracts text, then returns the path. Behaviour mirrors the historical
 MCP handler.
+When the arXiv API is rate-limiting, metadata comes from Semantic Scholar or OpenAlex (a one-line note names which), and if none answers the download still proceeds into `etc/pdf/<arxiv id>/` (ADR-004).
 
 For JSON output (e.g. when calling from an agent):
 
@@ -253,6 +254,19 @@ For JSON output (e.g. when calling from an agent):
 lit read 2006.11239 --json
 # → {"path": "...", "format": "txt (generated from PDF)", "extra_files": []}
 ```
+
+Pass several ids to read them in one command instead of a shell loop:
+
+```bash
+lit read 2006.11239 pearl2009causality halpern2016actual
+# → one path line per id, in argument order
+lit read 2006.11239 pearl2009causality --json
+# → [{"path": ...}, {"path": ...}]
+```
+
+Ids run sequentially, so arXiv auto-downloads run one at a time under the usual HTTP retry budget.
+A failed id prints `<id>: <error>` to stderr and the remaining ids still run; the exit code is 1 if any id failed, and `--json` prints the array of the successful objects.
+With a single id, output and errors are exactly the single-id form above, including a bare object under `--json`.
 
 ---
 

@@ -8,6 +8,21 @@ pub fn work_by_doi_url(doi: &str) -> String {
     format!("https://api.openalex.org/works/doi:{}", doi)
 }
 
+/// Build URL for looking up an arXiv preprint by its DataCite DOI (`10.48550/arXiv.<id>`).
+pub fn work_by_arxiv_url(arxiv_id: &str) -> String {
+    work_by_doi_url(&format!("10.48550/arXiv.{}", arxiv_id))
+}
+
+/// Parse a single-work response into a full bibliographic record (full author names).
+/// A work without a non-blank title is an error, not a placeholder record.
+pub fn parse_work_paper(body: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
+    let data: Value = serde_json::from_str(body)?;
+    if data["title"].as_str().is_none_or(|t| t.trim().is_empty()) {
+        return Err("OpenAlex work has no title".into());
+    }
+    Ok(work_to_paper(&data, &Regex::new(r"<[^>]+>")?))
+}
+
 /// Parse response from the single-work endpoint.
 ///
 /// Extracts openalex_id, citation count, and open-access URL.
@@ -140,51 +155,49 @@ fn parse_works(data: &Value) -> Result<Vec<PaperResult>, Box<dyn std::error::Err
         .ok_or("missing results array")?;
 
     let html_re = Regex::new(r"<[^>]+>")?;
-    let mut results = Vec::with_capacity(works.len());
+    Ok(works.iter().map(|w| work_to_paper(w, &html_re)).collect())
+}
 
-    for w in works {
-        let raw_title = w["title"].as_str().unwrap_or("N/A");
-        let title = decode_html_entities(&html_re.replace_all(raw_title, ""));
+/// One OpenAlex work object as a `PaperResult` (full author names).
+/// `html_re` strips markup from the title.
+fn work_to_paper(w: &Value, html_re: &Regex) -> PaperResult {
+    let raw_title = w["title"].as_str().unwrap_or("N/A");
+    let title = decode_html_entities(&html_re.replace_all(raw_title, ""));
 
-        let year = match w["publication_year"].as_u64() {
-            Some(y) => y.to_string(),
-            None => "?".to_string(),
-        };
+    let year = match w["publication_year"].as_u64() {
+        Some(y) => y.to_string(),
+        None => "?".to_string(),
+    };
 
-        let authors: Vec<String> = w["authorships"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|a| a["author"]["display_name"].as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
+    let authors: Vec<String> = w["authorships"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| a["author"]["display_name"].as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
 
-        let citations = w["cited_by_count"].as_u64();
+    let doi = w["doi"]
+        .as_str()
+        .map(|d| d.trim_start_matches("https://doi.org/").to_string())
+        .filter(|d| !d.is_empty());
+    let arxiv_id = doi.as_deref().and_then(crate::detect::arxiv_id_from_doi);
+    let venue = w["primary_location"]["source"]["display_name"]
+        .as_str()
+        .map(|s| s.to_string());
 
-        let doi = w["doi"]
-            .as_str()
-            .map(|d| d.trim_start_matches("https://doi.org/").to_string())
-            .filter(|d| !d.is_empty());
-        let arxiv_id = doi.as_deref().and_then(crate::detect::arxiv_id_from_doi);
-        let venue = w["primary_location"]["source"]["display_name"]
-            .as_str()
-            .map(|s| s.to_string());
-
-        results.push(PaperResult {
-            title,
-            authors,
-            year,
-            doi,
-            arxiv_id,
-            venue,
-            citations,
-            abstract_text: abstract_from_inverted_index(&w["abstract_inverted_index"]),
-            ..Default::default()
-        });
+    PaperResult {
+        title,
+        authors,
+        year,
+        doi,
+        arxiv_id,
+        venue,
+        citations: w["cited_by_count"].as_u64(),
+        abstract_text: abstract_from_inverted_index(&w["abstract_inverted_index"]),
+        ..Default::default()
     }
-
-    Ok(results)
 }
 
 #[cfg(test)]
@@ -362,6 +375,39 @@ mod tests {
     fn test_work_by_doi_url() {
         let url = work_by_doi_url("10.1234/test");
         assert_eq!(url, "https://api.openalex.org/works/doi:10.1234/test");
+    }
+
+    #[test]
+    fn work_by_arxiv_url_uses_the_arxiv_doi() {
+        assert_eq!(
+            work_by_arxiv_url("2609.39243"),
+            "https://api.openalex.org/works/doi:10.48550/arXiv.2609.39243"
+        );
+    }
+
+    #[test]
+    fn parse_work_paper_reads_one_work_with_full_names() {
+        let body = r#"{
+            "title": "A Paper",
+            "publication_year": 2026,
+            "authorships": [{"author": {"display_name": "Jane Doe"}}],
+            "doi": "https://doi.org/10.48550/arXiv.2609.39243",
+            "abstract_inverted_index": {"Hello": [0], "world": [1]}
+        }"#;
+        let p = parse_work_paper(body).unwrap();
+        assert_eq!(p.title, "A Paper");
+        assert_eq!(p.authors, vec!["Jane Doe"]);
+        assert_eq!(p.year, "2026");
+        assert_eq!(p.arxiv_id.as_deref(), Some("2609.39243"));
+        assert_eq!(p.abstract_text.as_deref(), Some("Hello world"));
+    }
+
+    #[test]
+    fn parse_work_paper_rejects_a_work_without_a_title() {
+        // The list parser's "N/A" placeholder must not pass as a real record.
+        for body in [r#"{}"#, r#"{"title": null}"#, r#"{"title": "  "}"#, r#"{"error": "x"}"#] {
+            assert!(parse_work_paper(body).is_err(), "{}", body);
+        }
     }
 
     #[test]

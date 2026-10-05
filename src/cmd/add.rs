@@ -12,6 +12,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use super::metadata::{arxiv_metadata, Metadata, MetadataSource};
 use super::Context;
 use crate::api::crossref;
 use crate::api::openlibrary;
@@ -41,35 +42,18 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
     }
 
     let client = ctx.client();
+    // The arXiv record behind an arXiv entry, indexed after the write.
+    let mut arxiv_record: Option<Metadata> = None;
 
     let bib_text = match input_type {
         InputType::Arxiv => {
             let id = normalize_arxiv(input);
-            let arxiv_key = db::Db::cache_key("arxiv", &id);
-            let arxiv_url = crate::api::arxiv::query_url(&id);
-            let s2_key = db::Db::cache_key("s2_paper", &id);
-            let s2_url = s2_api::paper_url(&format!("arXiv:{}", id));
-
-            let (arxiv_body, s2_body) = tokio::join!(
-                client.get_cached(&arxiv_key, &arxiv_url, db::TTL_DOI),
-                client.get_cached(&s2_key, &s2_url, db::TTL_DOI),
-            );
-
-            let arxiv_body = arxiv_body?;
-            let mut result = crate::api::arxiv::parse_entry(&arxiv_body)?;
-
-            if let Ok(body) = s2_body {
-                if let Ok(s2) = s2_api::parse_paper(&body) {
-                    if result.venue.is_none() {
-                        result.venue = s2.venue.filter(|v| !is_junk_venue(v));
-                    }
-                }
-            }
-
-            // S2 venue is now used by generate_arxiv_bibtex; no need to hit CrossRef.
+            let meta = arxiv_metadata_with_venue(ctx, &id).await?;
             // CrossRef has inconsistent author ordering vs arXiv, so we prefer our
             // generated entry (correct author order + S2 venue) over CrossRef BibTeX.
-            generate_arxiv_bibtex(&result, &id)
+            let bib = generate_arxiv_bibtex(&meta.paper, &id);
+            arxiv_record = Some(meta);
+            bib
         }
         InputType::Doi => {
             let doi = normalize_doi(input);
@@ -133,13 +117,8 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
     // Opportunistic index
     match input_type {
         InputType::Arxiv => {
-            let id = normalize_arxiv(input);
-            let key = db::Db::cache_key("arxiv", &id);
-            let url = crate::api::arxiv::query_url(&id);
-            if let Ok(body) = client.get_cached(&key, &url, db::TTL_DOI).await {
-                if let Ok(result) = crate::api::arxiv::parse_entry(&body) {
-                    super::try_upsert(ctx, &result, "arxiv");
-                }
+            if let Some(meta) = &arxiv_record {
+                super::try_upsert(ctx, &meta.paper, meta.source.id());
             }
         }
         InputType::Doi => {
@@ -340,6 +319,26 @@ pub async fn fetch_title_from_url(url: &str) -> Result<String, Box<dyn std::erro
     Ok(title)
 }
 
+/// Metadata for an arXiv paper (arXiv API or its fallbacks) with a publication
+/// venue: the fallback record's own, or Semantic Scholar's when the arXiv API
+/// answered. Preprint servers are dropped as venues.
+async fn arxiv_metadata_with_venue(ctx: &Context, id: &str) -> Result<Metadata, Box<dyn std::error::Error>> {
+    let client = ctx.client();
+    let mut meta = arxiv_metadata(&client, id).await?;
+    // Only the arXiv API lacks venues; after a fallback, S2 was already asked.
+    if meta.source == MetadataSource::Arxiv {
+        let s2_key = db::Db::cache_key("s2_paper", id);
+        let s2_url = s2_api::paper_url(&format!("arXiv:{}", id));
+        if let Ok(body) = client.get_cached(&s2_key, &s2_url, db::TTL_DOI).await {
+            if let Ok(s2) = s2_api::parse_paper(&body) {
+                meta.paper.venue = s2.venue;
+            }
+        }
+    }
+    meta.paper.venue = meta.paper.venue.filter(|v| !is_junk_venue(v));
+    Ok(meta)
+}
+
 /// Generate BibTeX for an arXiv paper from a PaperResult.
 ///
 /// If `result.venue` is set (from S2), generates `@inproceedings` with `booktitle`.
@@ -390,11 +389,8 @@ async fn resolve_bibtex_from_result(
     if let Some(ref arxiv_id) = result.arxiv_id {
         let truncated = crate::format::truncate(&result.title, 60);
         eprintln!("Resolved: {} (arXiv:{})", truncated, arxiv_id);
-        let key = db::Db::cache_key("arxiv", arxiv_id);
-        let url = crate::api::arxiv::query_url(arxiv_id);
-        let body = client.get_cached(&key, &url, db::TTL_DOI).await?;
-        let parsed = crate::api::arxiv::parse_entry(&body)?;
-        return Ok(generate_arxiv_bibtex(&parsed, arxiv_id));
+        let meta = arxiv_metadata(&client, arxiv_id).await?;
+        return Ok(generate_arxiv_bibtex(&meta.paper, arxiv_id));
     }
 
     if let Some(ref isbn) = result.isbn {
@@ -474,10 +470,8 @@ fn normalize_bibtex_key_from_content(bib: &str) -> String {
 /// S2 returns preprint servers as venue names (e.g. "arXiv.org"), which would
 /// cause `generate_arxiv_bibtex` to emit `@inproceedings` with a bogus booktitle.
 fn is_junk_venue(v: &str) -> bool {
-    matches!(
-        v.to_lowercase().as_str(),
-        "arxiv.org" | "arxiv" | "biorxiv.org" | "biorxiv"
-    )
+    let v = v.to_lowercase();
+    v.starts_with("arxiv") || v.starts_with("biorxiv")
 }
 
 /// Replace the first citekey in a BibTeX string with `new_key`.
@@ -491,4 +485,18 @@ fn replace_bib_key(bib: &str, new_key: &str) -> String {
         }
     }
     bib.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_junk_venue;
+
+    #[test]
+    fn preprint_servers_are_not_venues_under_any_provider_name() {
+        // S2 says "arXiv.org"; OpenAlex says "arXiv (Cornell University)".
+        for v in ["arXiv.org", "arxiv", "arXiv (Cornell University)", "bioRxiv"] {
+            assert!(is_junk_venue(v), "{}", v);
+        }
+        assert!(!is_junk_venue("NeurIPS"));
+    }
 }

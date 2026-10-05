@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use super::metadata::{arxiv_metadata, Metadata, MetadataFetch};
 use super::Context;
-use crate::api::arxiv;
 use crate::api::{extract_last_name, unpaywall, PaperResult};
 use crate::citekey::SKIP_WORDS;
 use crate::db;
@@ -42,7 +42,8 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&st
     }
 }
 
-/// Download an arXiv preprint's PDF from arXiv, with metadata from the arXiv API.
+/// Download an arXiv preprint's PDF from arXiv, with metadata from the arXiv
+/// API or its fallbacks. Missing metadata does not stop the download.
 async fn run_arxiv_pdf(ctx: &Context, arxiv_id: &str, url_only: bool, citekey: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     let tiers = arxiv_tiers(arxiv_id);
     if url_only {
@@ -52,13 +53,16 @@ async fn run_arxiv_pdf(ctx: &Context, arxiv_id: &str, url_only: bool, citekey: O
         return Ok(());
     }
 
-    let paper = fetch_metadata(ctx, arxiv_id).await?;
-    println!("Title: {}", paper.title);
+    let meta = fetch_metadata(&ctx.client(), arxiv_id).await;
+    if let Some(m) = &meta {
+        println!("Title: {}", m.paper.title);
+    }
 
     match fetch_tiers(&tiers).await {
         Ok((data, delivered_by)) => {
-            let yaml = build_source_yaml(&paper, arxiv_id, citekey, Some(&delivered_by), &today_string());
-            save_pdf(&paper, citekey, &data, &yaml)
+            let yaml = build_source_yaml(meta.as_ref(), arxiv_id, citekey, Some(&delivered_by), &today_string());
+            let slug = citekey.map(str::to_string).unwrap_or_else(|| arxiv_slug(meta.as_ref(), arxiv_id));
+            save_pdf(&slug, &data, &yaml)
         }
         Err(failures) => {
             for line in failure_report(&failures, Some(&tiers[0].url), None, None) {
@@ -151,7 +155,8 @@ async fn run_doi_pdf(ctx: &Context, doi: &str, url_only: bool, citekey: Option<&
             // Provenance is the tier that produced these bytes, not the first tier
             // that merely had a candidate URL.
             let yaml = build_doi_source_yaml(&meta, &doi, citekey, Some(delivered_by.as_str()), &today_string(), confirmed);
-            save_pdf(&meta, citekey, &data, &yaml)
+            let slug = citekey.map(str::to_string).unwrap_or_else(|| generate_dir_name(&meta));
+            save_pdf(&slug, &data, &yaml)
         }
         Err(failures) => {
             for line in failure_report(&failures, pdf_url.as_deref(), clio_url.as_deref(), ez_url.as_deref()) {
@@ -174,9 +179,8 @@ async fn fetch_tiers(tiers: &[Tier]) -> Result<(Vec<u8>, String), Vec<FetchError
 }
 
 /// Write `paper.pdf`, its `pdftotext` extraction, and `source.yaml` to
-/// etc/pdf/<citekey>/, naming the directory from `meta` when no citekey is given.
-fn save_pdf(meta: &PaperResult, citekey: Option<&str>, data: &[u8], yaml: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let slug = citekey.map(|k| k.to_string()).unwrap_or_else(|| generate_dir_name(meta));
+/// etc/pdf/<slug>/.
+fn save_pdf(slug: &str, data: &[u8], yaml: &str) -> Result<(), Box<dyn std::error::Error>> {
     let dir_name = crate::paths::artifact_dir()?.join(slug);
     std::fs::create_dir_all(&dir_name)?;
     let pdf_path = dir_name.join("paper.pdf");
@@ -491,17 +495,12 @@ async fn run_source(
     dir_override: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let arxiv_id = source_arxiv_id(input);
-    let url = format!("https://arxiv.org/e-print/{}", arxiv_id);
 
-    format::info(&format!("Looking up metadata for arXiv:{}", arxiv_id));
-    let paper = fetch_metadata(ctx, &arxiv_id).await?;
+    let (meta, bytes) = fetch_source(&ctx.client(), &arxiv_id, download_bytes).await?;
 
     let dir_name = match dir_override {
         Some(d) => d.to_path_buf(),
-        None => {
-            let slug = generate_dir_name(&paper);
-            crate::paths::artifact_dir()?.join(slug)
-        }
+        None => crate::paths::artifact_dir()?.join(arxiv_slug(meta.as_ref(), &arxiv_id)),
     };
 
     format::info(&format!("Output directory: {}", dir_name.display()));
@@ -509,19 +508,6 @@ async fn run_source(
 
     let safe_id = arxiv_id.replace('/', "_");
     let tarball = dir_name.join(format!("{}.tar.gz", safe_id));
-
-    format::info(&format!("Downloading arXiv source: {}", arxiv_id));
-    let download_client = reqwest::Client::builder()
-        .use_rustls_tls()
-        .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
-        .user_agent("lit/1.0")
-        .build()?;
-
-    let resp = download_client.get(&url).send().await?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {} for {}", resp.status(), url).into());
-    }
-    let bytes = resp.bytes().await?;
     std::fs::write(&tarball, &bytes)?;
 
     if !tarball.exists() {
@@ -554,8 +540,7 @@ async fn run_source(
         Err(e) => return Err(format!("failed to run tar: {}", e).into()),
     }
 
-    let today = today_string();
-    let yaml = build_source_yaml(&paper, &arxiv_id, None, None, &today);
+    let yaml = build_source_yaml(meta.as_ref(), &arxiv_id, None, Some(&eprint_url(&arxiv_id)), &today_string());
     let yaml_path = dir_name.join("source.yaml");
     std::fs::write(&yaml_path, &yaml)?;
     format::info(&format!("Wrote {}", yaml_path.display()));
@@ -565,10 +550,12 @@ async fn run_source(
         format::info("Cleaned up tarball");
     }
 
-    println!("Title: {}", paper.title);
-    let first_author = paper.authors.first().map(|s| s.as_str()).unwrap_or("?");
-    println!("Authors: {} et al.", first_author);
-    println!("Year: {}", paper.year);
+    if let Some(Metadata { paper, .. }) = &meta {
+        println!("Title: {}", paper.title);
+        let first_author = paper.authors.first().map(|s| s.as_str()).unwrap_or("?");
+        println!("Authors: {} et al.", first_author);
+        println!("Year: {}", paper.year);
+    }
     println!("Directory: {}", dir_name.display());
 
     Ok(())
@@ -576,14 +563,64 @@ async fn run_source(
 
 // -- Helpers (moved from source.rs) -------------------------------------------
 
-async fn fetch_metadata(ctx: &Context, arxiv_id: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
-    let url = arxiv::query_url(arxiv_id);
-    let client = ctx.client();
-    let cache_key = db::Db::cache_key("arxiv", arxiv_id);
-    let body = client.get_cached_deferred(&cache_key, &url, db::TTL_DOI).await?;
-    let result = arxiv::parse_entry(&body)?;
-    client.cache_set(&cache_key, &url, &body);
-    Ok(result)
+/// arXiv's LaTeX source endpoint for `arxiv_id`.
+fn eprint_url(arxiv_id: &str) -> String {
+    format!("https://arxiv.org/e-print/{}", arxiv_id)
+}
+
+/// Resolve metadata, then fetch the e-print with `get_bytes` whether or not
+/// metadata resolved: the e-print host is separate from the metadata APIs and
+/// often still serves while they rate-limit.
+async fn fetch_source<F, G, Fut>(
+    f: &F,
+    arxiv_id: &str,
+    get_bytes: G,
+) -> Result<(Option<Metadata>, Vec<u8>), Box<dyn std::error::Error>>
+where
+    F: MetadataFetch,
+    G: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, Box<dyn std::error::Error>>>,
+{
+    let meta = fetch_metadata(f, arxiv_id).await;
+    format::info(&format!("Downloading arXiv source: {}", arxiv_id));
+    let bytes = get_bytes(eprint_url(arxiv_id)).await?;
+    Ok((meta, bytes))
+}
+
+/// GET `url` and return its body bytes; non-2xx is an error.
+async fn download_bytes(url: String) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .timeout(Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))
+        .user_agent("lit/1.0")
+        .build()?;
+    let resp = client.get(&url).send().await?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {} for {}", resp.status(), url).into());
+    }
+    Ok(resp.bytes().await?.to_vec())
+}
+
+/// Metadata for `arxiv_id` from the arXiv API or its fallbacks, or `None`
+/// (with a warning) when every source fails, so the caller can still download.
+async fn fetch_metadata<F: MetadataFetch>(f: &F, arxiv_id: &str) -> Option<Metadata> {
+    format::info(&format!("Looking up metadata for arXiv:{}", arxiv_id));
+    match arxiv_metadata(f, arxiv_id).await {
+        Ok(m) => Some(m),
+        Err(e) => {
+            format::warn(&format!("warning: {}; downloading without metadata", e));
+            None
+        }
+    }
+}
+
+/// Artifact directory name: `<lastname><year><titleword>` from metadata, or
+/// the arXiv id (slashes replaced) when no metadata is available.
+fn arxiv_slug(meta: Option<&Metadata>, arxiv_id: &str) -> String {
+    match meta {
+        Some(m) => generate_dir_name(&m.paper),
+        None => arxiv_id.replace('/', "_"),
+    }
 }
 
 fn generate_dir_name(paper: &PaperResult) -> String {
@@ -615,26 +652,29 @@ fn extract_title_slug(title: &str) -> String {
 
 /// Build `source.yaml` for an arXiv download.
 ///
-/// The record is always the arXiv API's answer for `arxiv_id`, so the artifact
-/// is confirmed by construction.
+/// With `meta`, the record is a provider's answer for `arxiv_id`, so the
+/// artifact is confirmed and names that provider. Without it, only the id and
+/// provenance are written, so nothing bibliographic is invented and
+/// `lit check --fix` can fill the record later.
 fn build_source_yaml(
-    paper: &PaperResult,
+    meta: Option<&Metadata>,
     arxiv_id: &str,
     bibtex_key: Option<&str>,
     source_url: Option<&str>,
     retrieved: &str,
 ) -> String {
-    let authors_str = paper.authors.join(" and ");
-    let title = paper.title.replace('"', "\\\"");
-    let authors = authors_str.replace('"', "\\\"");
-
     let mut yaml = String::new();
-    yaml.push_str(&format!("title: \"{}\"\n", title));
-    yaml.push_str(&format!("authors: \"{}\"\n", authors));
-    yaml.push_str(&format!("year: {}\n", paper.year));
+    if let Some(Metadata { paper, .. }) = meta {
+        yaml.push_str(&format!("title: \"{}\"\n", paper.title.replace('"', "\\\"")));
+        yaml.push_str(&format!("authors: \"{}\"\n", paper.authors.join(" and ").replace('"', "\\\"")));
+        yaml.push_str(&format!("year: {}\n", paper.year));
+    }
     yaml.push_str(&format!("arxiv: \"{}\"\n", arxiv_id));
     push_provenance(&mut yaml, bibtex_key, source_url);
-    yaml.push_str("metadata_confirmed: true\n");
+    if let Some(m) = meta {
+        yaml.push_str("metadata_confirmed: true\n");
+        yaml.push_str(&format!("metadata_source: \"{}\"\n", m.source.id()));
+    }
     yaml.push_str(&format!("retrieved: \"{}\"\n", retrieved));
     yaml
 }
@@ -682,6 +722,9 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cmd::metadata::MetadataSource;
+    use crate::cmd::metadata::tests::MockMetadataFetch;
+    use std::cell::RefCell;
 
     #[test]
     fn test_extract_lastname_basic() {
@@ -757,22 +800,93 @@ mod tests {
             year: "2019".to_string(),
             ..Default::default()
         };
-        let yaml = build_source_yaml(&paper, "1912.02503", None, None, "2026-03-01");
+        let meta = Metadata { paper, source: MetadataSource::Arxiv };
+        let yaml = build_source_yaml(Some(&meta), "1912.02503", None, None, "2026-03-01");
         assert!(yaml.contains("title: \"Hindsight Credit Assignment\""));
         assert!(yaml.contains("authors: \"Anna Harutyunyan and Will Dabney\""));
         assert!(yaml.contains("year: 2019"));
         assert!(yaml.contains("arxiv: \"1912.02503\""));
         assert!(yaml.contains("retrieved: \"2026-03-01\""));
-        // The record came from the arXiv API, so `check` need never ask again.
+        // A provider's record for this id, so `check` need never ask again.
         assert!(yaml.contains("metadata_confirmed: true"));
+        assert!(yaml.contains("metadata_source: \"arxiv\""));
         assert!(!yaml.contains("bibtex_key") && !yaml.contains("source_url"));
+    }
+
+    #[test]
+    fn source_yaml_names_the_fallback_that_supplied_metadata() {
+        let paper = PaperResult { title: "A Paper".to_string(), year: "2026".to_string(), ..Default::default() };
+        let meta = Metadata { paper, source: MetadataSource::SemanticScholar };
+        let yaml = build_source_yaml(Some(&meta), "2609.39243", None, None, "2026-10-05");
+        assert!(yaml.contains("metadata_source: \"semantic_scholar\""));
+        assert!(yaml.contains("metadata_confirmed: true"));
+    }
+
+    #[test]
+    fn source_yaml_without_metadata_records_only_the_id() {
+        // No provider answered: nothing bibliographic may be written, and the
+        // artifact must not claim confirmation, so `check --fix` can fill it later.
+        let yaml = build_source_yaml(None, "2609.39243", None, Some("https://arxiv.org/e-print/2609.39243"), "2026-10-05");
+        assert!(yaml.contains("arxiv: \"2609.39243\""));
+        assert!(yaml.contains("source_url: \"https://arxiv.org/e-print/2609.39243\""));
+        for absent in ["title:", "authors:", "year:", "metadata_confirmed", "metadata_source"] {
+            assert!(!yaml.contains(absent), "unexpected {} in {}", absent, yaml);
+        }
+    }
+
+    #[test]
+    fn arxiv_slug_falls_back_to_the_id_without_metadata() {
+        assert_eq!(arxiv_slug(None, "2609.39243"), "2609.39243");
+        assert_eq!(arxiv_slug(None, "hep-th/9901001"), "hep-th_9901001");
+        let paper = PaperResult {
+            title: "Hindsight Credit Assignment".to_string(),
+            authors: vec!["Anna Harutyunyan".to_string()],
+            year: "2019".to_string(),
+            ..Default::default()
+        };
+        let meta = Metadata { paper, source: MetadataSource::OpenAlex };
+        assert_eq!(arxiv_slug(Some(&meta), "1912.02503"), "harutyunyan2019hindsight");
+    }
+
+    /// Byte fetcher that records each URL and returns a fixed tarball.
+    fn recording_bytes(urls: &RefCell<Vec<String>>) -> impl FnOnce(String) -> std::future::Ready<Result<Vec<u8>, Box<dyn std::error::Error>>> + '_ {
+        move |url| {
+            urls.borrow_mut().push(url);
+            std::future::ready(Ok(b"tarball".to_vec()))
+        }
+    }
+
+    const ARXIV_API: &str = "export.arxiv.org/api/query";
+    const S2_API: &str = "api.semanticscholar.org";
+
+    #[tokio::test]
+    async fn source_download_proceeds_after_fallback_metadata() {
+        let f = MockMetadataFetch::new(vec![
+            (ARXIV_API, Err("HTTP 429 Too Many Requests".to_string())),
+            (S2_API, Ok(r#"{"title": "From S2", "authors": [{"name": "Jane Doe"}], "year": 2026}"#.to_string())),
+        ]);
+        let urls = RefCell::new(Vec::new());
+        let (meta, bytes) = fetch_source(&f, "2609.39243", recording_bytes(&urls)).await.unwrap();
+        assert_eq!(meta.unwrap().source, MetadataSource::SemanticScholar);
+        assert_eq!(bytes, b"tarball");
+        assert_eq!(*urls.borrow(), vec!["https://arxiv.org/e-print/2609.39243"]);
+    }
+
+    #[tokio::test]
+    async fn source_download_proceeds_when_no_metadata_source_answers() {
+        let f = MockMetadataFetch::new(vec![]); // every lookup fails
+        let urls = RefCell::new(Vec::new());
+        let (meta, _) = fetch_source(&f, "2609.39243", recording_bytes(&urls)).await.unwrap();
+        assert!(meta.is_none());
+        assert_eq!(*urls.borrow(), vec!["https://arxiv.org/e-print/2609.39243"]);
     }
 
     #[test]
     fn test_build_source_yaml_records_citekey_and_delivering_url() {
         let paper = PaperResult { title: "A Paper".to_string(), year: "2025".to_string(), ..Default::default() };
+        let meta = Metadata { paper, source: MetadataSource::Arxiv };
         let yaml = build_source_yaml(
-            &paper,
+            Some(&meta),
             "2510.24941",
             Some("zhao2025can"),
             Some("https://arxiv.org/pdf/2510.24941"),

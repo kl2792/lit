@@ -6,16 +6,26 @@ use serde_json::Value;
 /// `id` can be an arXiv ID (use `arXiv:{id}`), DOI, or S2 paper ID.
 pub fn paper_url(id: &str) -> String {
     format!(
-        "https://api.semanticscholar.org/graph/v1/paper/{}?fields=paperId,externalIds,venue,citationCount,openAccessPdf",
+        "https://api.semanticscholar.org/graph/v1/paper/{}?fields=paperId,externalIds,title,authors,year,venue,abstract,publicationDate,citationCount,openAccessPdf",
         id
     )
 }
 
 /// Parse response from the single-paper endpoint.
 ///
-/// Extracts s2_id, DOI, venue, citation count, and open-access PDF URL.
+/// Extracts title, full author names, year, abstract, publication date, s2_id,
+/// DOI, venue, citation count, and open-access PDF URL. Absent fields stay
+/// empty, so a not-found reply parses to a record with an empty title.
 pub fn parse_paper(body: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(body)?;
+
+    let title = data["title"].as_str().unwrap_or_default().to_string();
+    let authors = data["authors"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|a| a["name"].as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let year = data["year"].as_u64().map(|y| y.to_string()).unwrap_or_default();
+    let published_date = data["publicationDate"].as_str().map(String::from);
 
     let s2_id = data["paperId"].as_str().map(|s| s.to_string());
     let ext = &data["externalIds"];
@@ -31,12 +41,17 @@ pub fn parse_paper(body: &str) -> Result<PaperResult, Box<dyn std::error::Error>
         .map(|s| s.to_string());
 
     Ok(PaperResult {
+        title,
+        authors,
+        year,
         s2_id,
         doi,
         arxiv_id,
         venue,
         citations,
         pdf_url,
+        abstract_text: abstract_of(&data),
+        published_date,
         ..Default::default()
     })
 }
@@ -494,6 +509,29 @@ mod tests {
         assert!(url.contains("paperId"));
         assert!(url.contains("citationCount"));
         assert!(url.contains("openAccessPdf"));
+        for field in ["title", "authors", "year", "venue", "abstract", "publicationDate"] {
+            assert!(url.contains(field), "missing field {}", field);
+        }
+    }
+
+    #[test]
+    fn parse_paper_reads_bibliographic_fields_with_full_author_names() {
+        let body = r#"{
+            "paperId": "abc",
+            "externalIds": {"ArXiv": "2609.39243"},
+            "title": "A Paper",
+            "authors": [{"name": "Jane Q. Doe"}, {"name": "John Roe"}],
+            "year": 2026,
+            "venue": "NeurIPS",
+            "abstract": "We show things.",
+            "publicationDate": "2026-09-30"
+        }"#;
+        let r = parse_paper(body).unwrap();
+        assert_eq!(r.title, "A Paper");
+        assert_eq!(r.authors, vec!["Jane Q. Doe", "John Roe"]);
+        assert_eq!(r.year, "2026");
+        assert_eq!(r.abstract_text.as_deref(), Some("We show things."));
+        assert_eq!(r.published_date.as_deref(), Some("2026-09-30"));
     }
 
     #[test]

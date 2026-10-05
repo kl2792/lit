@@ -171,11 +171,13 @@ enum Commands {
         #[command(subcommand)]
         action: DbAction,
     },
-    /// Locate (and if needed extract) the text of a paper. Prints file path.
+    /// Locate (and if needed extract) the text of one or more papers.
+    /// Prints one file path per id, in argument order.
     Read {
-        /// Paper identifier (arXiv ID, DOI, or local cite-key).
+        /// Paper identifiers (arXiv ID, DOI, or local cite-key).
         /// Auto-downloads arXiv PDFs if not cached.
-        id: String,
+        #[arg(required = true, value_name = "ID")]
+        ids: Vec<String>,
     },
     /// Remove an entry from a .bib file by citekey.
     Remove {
@@ -395,7 +397,7 @@ async fn main() {
                 cmd::check::run(&ctx, fix, bib_file.as_deref()).await
             }
         }
-        Some(Commands::Read { id }) => run_read(&ctx, &id).await,
+        Some(Commands::Read { ids }) => run_read(&ctx, &ids).await,
         Some(Commands::Remove { citekey, bib_file }) => run_remove(&ctx, &citekey, &bib_file),
         Some(Commands::Misc {
             citekey,
@@ -537,8 +539,59 @@ fn run_db_stats(ctx: &cmd::Context) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Run `lit read`: locate paper text, auto-downloading from arXiv if needed.
-async fn run_read(ctx: &cmd::Context, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// Run `lit read <ID>...`: print each id's text path in argument order.
+///
+/// Ids are read sequentially, so each arXiv auto-download goes through the
+/// shared HTTP retry budget one at a time. With one id the output and errors
+/// are the single-id form. With several, a failing id is reported on stderr
+/// as `<id>: <error>` and the rest still run; `--json` prints one array of the
+/// successful per-id objects; the exit code is 1 if any id failed.
+async fn run_read(ctx: &cmd::Context, ids: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if let [id] = ids {
+        let result = read_one(ctx, id).await?;
+        if ctx.json {
+            println!("{}", serde_json::to_string_pretty(&read_result_json(&result))?);
+        } else {
+            println!("{}", result.path.display());
+        }
+        return Ok(());
+    }
+
+    let mut objects = Vec::new();
+    let mut failed = false;
+    for id in ids {
+        match read_one(ctx, id).await {
+            Ok(result) if ctx.json => objects.push(read_result_json(&result)),
+            Ok(result) => println!("{}", result.path.display()),
+            Err(e) => {
+                format::error(&format!("{}: {}", id, e));
+                failed = true;
+            }
+        }
+    }
+    if ctx.json {
+        println!("{}", serde_json::to_string_pretty(&objects)?);
+    }
+    if failed {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// The `--json` object for one read result.
+fn read_result_json(result: &cmd::read::ReadResult) -> serde_json::Value {
+    serde_json::json!({
+        "path": result.path.to_string_lossy(),
+        "format": result.format,
+        "extra_files": result.extra_files,
+    })
+}
+
+/// Locate one paper's text, auto-downloading from arXiv if needed.
+async fn read_one(
+    ctx: &cmd::Context,
+    id: &str,
+) -> Result<cmd::read::ReadResult, Box<dyn std::error::Error>> {
     let result = match cmd::read::run_data(ctx, id) {
         Ok(r) => r,
         Err(cmd::read::ReadError::NotFound(_)) => {
@@ -562,18 +615,7 @@ async fn run_read(ctx: &cmd::Context, id: &str) -> Result<(), Box<dyn std::error
         // real cause instead of the misleading "not found locally" message.
         Err(e) => return Err(e.into()),
     };
-
-    if ctx.json {
-        let json = serde_json::json!({
-            "path": result.path.to_string_lossy(),
-            "format": result.format,
-            "extra_files": result.extra_files,
-        });
-        println!("{}", serde_json::to_string_pretty(&json)?);
-    } else {
-        println!("{}", result.path.display());
-    }
-    Ok(())
+    Ok(result)
 }
 
 /// Run `lit remove`: delete an entry from a .bib file by citekey.
