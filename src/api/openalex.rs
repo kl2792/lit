@@ -23,6 +23,42 @@ pub fn parse_work_paper(body: &str) -> Result<PaperResult, Box<dyn std::error::E
     Ok(work_to_paper(&data, &Regex::new(r"<[^>]+>")?))
 }
 
+/// Parse a single-work response as the record of arXiv paper `arxiv_id`.
+///
+/// OpenAlex sometimes answers a DOI lookup with a different work (a merged or
+/// mis-attributed record), so the work must name `arxiv_id` itself: through
+/// `doi`, `ids.doi`, or an `arxiv.org/abs|pdf/<id>` location URL. Any other
+/// work is an error, so a wrong paper is never written as the requested one.
+pub fn parse_arxiv_work(body: &str, arxiv_id: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
+    let paper = parse_work_paper(body)?;
+    let data: Value = serde_json::from_str(body)?;
+    let want = crate::detect::normalize_arxiv(arxiv_id);
+    if work_names_arxiv_id(&data, &want) {
+        Ok(paper)
+    } else {
+        Err(format!("OpenAlex work \"{}\" does not identify itself as arXiv:{}", paper.title, want).into())
+    }
+}
+
+/// True when some identifier of the work resolves to arXiv id `want` (normalized).
+fn work_names_arxiv_id(w: &Value, want: &str) -> bool {
+    let doi_matches = [&w["doi"], &w["ids"]["doi"]].iter().any(|d| {
+        d.as_str()
+            .map(crate::detect::normalize_doi)
+            .and_then(|d| crate::detect::arxiv_id_from_doi(&d))
+            .is_some_and(|id| id == want)
+    });
+    let locations = w["locations"].as_array().into_iter().flatten();
+    let located = locations.chain([&w["primary_location"], &w["best_oa_location"]]);
+    let url_matches = located.flat_map(|l| [&l["landing_page_url"], &l["pdf_url"]]).any(|u| {
+        u.as_str().is_some_and(|u| {
+            let u = u.trim_end_matches('/');
+            (u.contains("arxiv.org/abs/") || u.contains("arxiv.org/pdf/")) && crate::detect::normalize_arxiv(u) == want
+        })
+    });
+    doi_matches || url_matches
+}
+
 /// Parse response from the single-work endpoint.
 ///
 /// Extracts openalex_id, citation count, and open-access URL.
@@ -400,6 +436,44 @@ mod tests {
         assert_eq!(p.year, "2026");
         assert_eq!(p.arxiv_id.as_deref(), Some("2609.39243"));
         assert_eq!(p.abstract_text.as_deref(), Some("Hello world"));
+    }
+
+    /// Fixture: OpenAlex answered the Nanda DOI lookup with another work.
+    const WRONG_WORK: &str = r#"{
+        "title": "Certified Grokking: a machine-checked certificate",
+        "publication_year": 2026,
+        "authorships": [{"author": {"display_name": "Smith, Jess"}}],
+        "doi": "https://doi.org/10.5281/zenodo.1234567",
+        "ids": {"doi": "https://doi.org/10.5281/zenodo.1234567"},
+        "locations": [{"landing_page_url": "https://zenodo.org/records/1234567", "pdf_url": null}]
+    }"#;
+
+    #[test]
+    fn parse_arxiv_work_rejects_a_work_that_does_not_name_the_id() {
+        let err = parse_arxiv_work(WRONG_WORK, "2301.05217").unwrap_err().to_string();
+        assert!(err.contains("2301.05217"), "{}", err);
+    }
+
+    #[test]
+    fn parse_arxiv_work_rejects_a_work_for_a_different_arxiv_id() {
+        let body = r#"{"title": "Other", "doi": "https://doi.org/10.48550/arXiv.2301.05218"}"#;
+        assert!(parse_arxiv_work(body, "2301.05217").is_err());
+        let body = r#"{"title": "Other", "locations": [{"landing_page_url": "https://arxiv.org/abs/2301.052170"}]}"#;
+        assert!(parse_arxiv_work(body, "2301.05217").is_err());
+    }
+
+    #[test]
+    fn parse_arxiv_work_accepts_each_identifier_that_names_the_id() {
+        let bodies = [
+            r#"{"title": "T", "doi": "https://doi.org/10.48550/arXiv.2301.05217"}"#,
+            r#"{"title": "T", "ids": {"doi": "https://doi.org/10.48550/arxiv.2301.05217"}}"#,
+            r#"{"title": "T", "locations": [{"landing_page_url": "https://arxiv.org/abs/2301.05217v2"}]}"#,
+            r#"{"title": "T", "locations": [{"pdf_url": "https://arxiv.org/pdf/2301.05217.pdf"}]}"#,
+            r#"{"title": "T", "primary_location": {"landing_page_url": "http://arxiv.org/abs/2301.05217"}}"#,
+        ];
+        for b in bodies {
+            assert_eq!(parse_arxiv_work(b, "2301.05217").unwrap().title, "T", "{}", b);
+        }
     }
 
     #[test]

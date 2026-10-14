@@ -28,8 +28,8 @@ impl MetadataFetch for crate::http::Client {
     }
 }
 
-/// Parses one provider's response body into a record.
-type Parse = fn(&str) -> Result<PaperResult, Box<dyn std::error::Error>>;
+/// Parses one provider's response body into the record of the given arXiv id.
+type Parse = fn(&str, &str) -> Result<PaperResult, Box<dyn std::error::Error>>;
 
 /// The service that supplied an arXiv paper's metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,20 +77,20 @@ pub struct Metadata {
 /// Cost: at most three lookups, each under the HTTP client's retry budget.
 pub(crate) async fn arxiv_metadata<F: MetadataFetch>(f: &F, arxiv_id: &str) -> Result<Metadata, String> {
     let lookups: [(MetadataSource, &str, String, Parse); 3] = [
-        (MetadataSource::Arxiv, "arxiv", arxiv::query_url(arxiv_id), arxiv::parse_entry),
+        (MetadataSource::Arxiv, "arxiv", arxiv::query_url(arxiv_id), |b, _| arxiv::parse_entry(b)),
         (
             MetadataSource::SemanticScholar,
             "s2_paper",
             semantic_scholar::paper_url(&format!("arXiv:{}", arxiv_id)),
-            semantic_scholar::parse_paper,
+            |b, _| semantic_scholar::parse_paper(b),
         ),
-        (MetadataSource::OpenAlex, "openalex_arxiv", openalex::work_by_arxiv_url(arxiv_id), openalex::parse_work_paper),
+        (MetadataSource::OpenAlex, "openalex_arxiv", openalex::work_by_arxiv_url(arxiv_id), openalex::parse_arxiv_work),
     ];
     let mut failures = Vec::new();
     for (source, prefix, url, parse) in lookups {
         let key = Db::cache_key(prefix, arxiv_id);
         let parsed = f.load(&key, &url).await.and_then(|body| {
-            let paper = parse(&body).map_err(|e| e.to_string())?;
+            let paper = parse(&body, arxiv_id).map_err(|e| e.to_string())?;
             if paper.title.trim().is_empty() {
                 return Err("record has no title".to_string());
             }
@@ -164,6 +164,7 @@ pub(crate) mod tests {
 
     fn oa() -> String {
         r#"{"title": "From OpenAlex", "publication_year": 2026,
+            "doi": "https://doi.org/10.48550/arXiv.2609.39243",
             "authorships": [{"author": {"display_name": "Jane Doe"}}]}"#
             .to_string()
     }
@@ -223,6 +224,17 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn openalex_work_for_a_different_paper_is_neither_used_nor_cached() {
+        // OpenAlex answered the Nanda lookup with "Certified Grokking" (a different work).
+        let wrong = r#"{"title": "Certified Grokking", "authorships": [{"author": {"display_name": "Smith, Jess"}}],
+            "doi": "https://doi.org/10.5281/zenodo.1234567"}"#;
+        let f = MockMetadataFetch::new(vec![(ARXIV_URL, rate_limited()), (S2_URL, rate_limited()), (OA_URL, Ok(wrong.to_string()))]);
+        let err = arxiv_metadata(&f, "2609.39243").await.unwrap_err();
+        assert!(err.contains("OpenAlex") && err.contains("does not identify itself"), "err: {}", err);
+        assert!(f.stored.borrow().is_empty());
+    }
+
+    #[tokio::test]
     async fn every_source_failing_names_each_failure() {
         let f = MockMetadataFetch::new(vec![(ARXIV_URL, rate_limited()), (S2_URL, rate_limited())]);
         let err = arxiv_metadata(&f, "2609.39243").await.unwrap_err();
@@ -238,7 +250,7 @@ pub(crate) mod tests {
         let f = MockMetadataFetch::new(vec![
             (ARXIV_URL, Ok("not xml at all".to_string())),
             (S2_URL, Ok(r#"{"paperId": "p"}"#.to_string())),
-            (OA_URL, Ok(r#"{"publication_year": 2026}"#.to_string())),
+            (OA_URL, Ok(r#"{"publication_year": 2026, "doi": "https://doi.org/10.48550/arXiv.2609.39243"}"#.to_string())),
         ]);
         let err = arxiv_metadata(&f, "2609.39243").await.unwrap_err();
         assert!(err.starts_with("no metadata for arXiv:2609.39243"), "err: {}", err);
