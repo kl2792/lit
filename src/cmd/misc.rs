@@ -212,8 +212,7 @@ fn write_artifact(
     bytes: &[u8],
     extra_yaml: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let staging = staging_path(dir);
-    let _ = std::fs::remove_dir_all(&staging);
+    let staging = fresh_staging(dir);
     let result = fill_staging(params, &staging, bytes, extra_yaml)
         .and_then(|()| publish(&staging, dir).map_err(Into::into));
     if result.is_err() {
@@ -224,10 +223,20 @@ fn write_artifact(
 
 /// Staging directory for `dir`, a dot-prefixed sibling so scans of `etc/pdf/`
 /// that look for `source.yaml` never pick a half-written artifact up.
-pub(crate) fn staging_path(dir: &Path) -> PathBuf {
-    let name = dir.file_name().unwrap_or_default().to_string_lossy().to_string();
+///
+/// The name carries this process's id, so concurrent writers of one artifact
+/// never share a staging directory. Before handing it out, this deletes this
+/// process's own leftover and the stale staging other processes left for the
+/// same artifact (`lock::sweep`), so a crash's debris does not outlive the
+/// next write.
+pub(crate) fn fresh_staging(dir: &Path) -> PathBuf {
+    let name = dir.file_name().unwrap_or_default().to_string_lossy();
     let parent = dir.parent().unwrap_or(Path::new("."));
-    parent.join(format!(".lit-staging-{}-{}", name, std::process::id()))
+    let prefix = format!("{}{}-", super::lock::STAGING_PREFIX, name);
+    super::lock::sweep(parent, &prefix);
+    let staging = parent.join(format!("{}{}", prefix, std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    staging
 }
 
 fn fill_staging(
@@ -335,6 +344,29 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn fresh_staging_clears_stale_staging_of_the_same_artifact_and_keeps_live_ones() {
+        use super::super::lock::testing::{dead_pid, entries};
+        let base = tempfile::tempdir().unwrap();
+        let (dead, me, parent) = (dead_pid(), std::process::id(), std::os::unix::process::parent_id());
+        for name in [
+            format!(".lit-staging-foo-{}", dead),
+            format!(".lit-staging-foo-{}.old", dead),
+            format!(".lit-staging-foo-{}", me),
+            format!(".lit-staging-foo-{}", parent),
+            format!(".lit-staging-bar-{}", dead),
+        ] {
+            fs::create_dir(base.path().join(name)).unwrap();
+        }
+        let staging = fresh_staging(&base.path().join("foo"));
+        assert_eq!(staging, base.path().join(format!(".lit-staging-foo-{}", me)));
+        assert_eq!(
+            entries(base.path()),
+            vec![format!(".lit-staging-bar-{}", dead), format!(".lit-staging-foo-{}", parent)],
+            "this process's leftover and the dead process's staging must go; the running parent's stays"
+        );
+    }
 
     #[test]
     fn test_misc_basic_generates_correct_bibtex() {

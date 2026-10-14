@@ -202,8 +202,7 @@ fn yaml_value(yaml: &str, key: &str) -> Option<String> {
 /// Write `paper.txt` and `source.yaml` into a staging directory, then move
 /// it onto `artifact.dir`, so a failure leaves the previous artifact or none.
 fn write_artifact(artifact: &WebArtifact, page: &WebPage) -> std::io::Result<()> {
-    let staging = super::misc::staging_path(&artifact.dir);
-    let _ = std::fs::remove_dir_all(&staging);
+    let staging = super::misc::fresh_staging(&artifact.dir);
     let result = fill_staging(artifact, page, &staging).and_then(|()| super::misc::publish(&staging, &artifact.dir));
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&staging);

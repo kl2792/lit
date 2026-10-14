@@ -30,6 +30,9 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 flate2 = "1"
 # Bounded concurrent fan-out in `lit closure`; already in the tree via reqwest.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# `kill(pid, 0)` and `gethostname` judge whether a lock's holder still runs
+# (src/cmd/lock.rs); already in the tree via tokio.
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

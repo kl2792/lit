@@ -1,8 +1,10 @@
 /// `lit check [--fix]` -- Validate DB<->filesystem consistency.
 ///
-/// Two checks:
+/// Three checks:
 /// 1. DB->FS: papers with non-null local_path must have the directory on disk.
 /// 2. FS->DB: etc/pdf/*/ dirs with source.yaml should have a corresponding paper in DB.
+/// 3. Debris: stale locks, lock scratch and staging directories, and retired
+///    `.lit-claim` files under etc/pdf (ADR-007); `--fix` removes them.
 
 use std::path::{Path, PathBuf};
 
@@ -486,9 +488,11 @@ pub async fn run_in(
 
     // --- Check 2: FS -> DB consistency ---
     if pdf_dir.is_dir() {
+        // Dot-prefixed directories are staging areas (ADR-007), whose
+        // `source.yaml` describes a write in progress or abandoned.
         let mut entries: Vec<_> = std::fs::read_dir(&pdf_dir)?
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
+            .filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().starts_with('.'))
             .collect();
         entries.sort_by_key(|e| e.file_name());
 
@@ -532,6 +536,31 @@ pub async fn run_in(
                         Some(error.to_string()),
                     ));
                     failure.get_or_insert(error);
+                }
+            }
+        }
+
+        // --- Check 3: locks and staging a crashed lit left behind ---
+        // An error is held until the unresolved report is written, as above.
+        let debris = super::lock::find_debris(&pdf_dir).unwrap_or_else(|e| {
+            failure.get_or_insert(e.into());
+            Vec::new()
+        });
+        for path in debris {
+            let shown = path.strip_prefix(root).unwrap_or(&path).display().to_string();
+            issues += 1;
+            eprintln!("stale debris: {}", shown);
+            if !fix {
+                continue;
+            }
+            match super::lock::remove_debris(&path) {
+                Ok(()) => {
+                    fixed += 1;
+                    format::info(&format!("  fixed: removed {}", shown));
+                }
+                Err(e) => {
+                    format::warn(&format!("  failed: {} (remove_debris): {}", shown, e));
+                    failure.get_or_insert(e.into());
                 }
             }
         }
@@ -1127,6 +1156,62 @@ bibtex_key: lewis1973causation
             f.local_paths(),
             vec!["etc/pdf/bbb-lewis".to_string()],
             "artifacts before the error must still be reconciled"
+        );
+    }
+
+    /// Crash debris under the fixture's `etc/pdf`, stale and live.
+    struct Debris {
+        stale: Vec<PathBuf>,
+        live: Vec<PathBuf>,
+    }
+
+    fn plant_debris(f: &Fixture) -> Debris {
+        use crate::cmd::lock::testing::{dead_pid, now, plant_lock};
+        let pdf = f.root().join("etc/pdf");
+        let (dead, me) = (dead_pid(), std::process::id());
+        let crashed = pdf.join("crashed2020x");
+        std::fs::create_dir_all(&crashed).unwrap();
+        plant_lock(&crashed, "2001.00001", dead, now());
+        let retired = pdf.join("retired2020x");
+        std::fs::create_dir_all(&retired).unwrap();
+        std::fs::write(retired.join(".lit-claim"), "2001.00002").unwrap();
+        // A staging directory already holds `source.yaml`, which must not make
+        // it an artifact to reconcile.
+        let staging = f.artifact(&format!(".lit-staging-lewis1973causation-{}", dead), LEWIS_YAML);
+        let scratch = pdf.join(format!("lewis1973causation/.lit-lock.tmp-{}-1-0", dead));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let busy = f.artifact("busy2020x", LEWIS_YAML);
+        plant_lock(&busy, "2001.00003", me, now());
+        let working = pdf.join(format!(".lit-staging-busy2020x-{}", me));
+        std::fs::create_dir_all(&working).unwrap();
+        Debris { stale: vec![crashed, retired, staging, scratch], live: vec![busy.join(".lit-lock"), working] }
+    }
+
+    #[tokio::test]
+    async fn check_reports_stale_debris_and_leaves_it() {
+        let f = Fixture::new();
+        let debris = plant_debris(&f);
+        run_in(&f.ctx, false, None, f.root()).await.unwrap();
+        for path in debris.stale.iter().chain(&debris.live) {
+            assert!(path.exists(), "a check without --fix removed {}", path.display());
+        }
+    }
+
+    #[tokio::test]
+    async fn check_fix_removes_stale_debris_and_keeps_live_locks_and_staging() {
+        let f = Fixture::new();
+        let debris = plant_debris(&f);
+        f.fix(None).await.unwrap();
+        for path in &debris.stale {
+            assert!(!path.exists(), "--fix kept {}", path.display());
+        }
+        for path in &debris.live {
+            assert!(path.exists(), "--fix removed live {}", path.display());
+        }
+        assert_eq!(
+            f.local_paths(),
+            vec!["etc/pdf/busy2020x".to_string()],
+            "a staging directory must never be reconciled as an artifact"
         );
     }
 

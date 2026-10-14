@@ -530,8 +530,7 @@ async fn run_source(
 /// and any hand-attached files, is untouched. Files in `dir` that the e-print
 /// does not contain are kept.
 fn place_source(dir: &Path, arxiv_id: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-    let staging = super::misc::staging_path(dir);
-    let _ = std::fs::remove_dir_all(&staging);
+    let staging = super::misc::fresh_staging(dir);
     std::fs::create_dir(&staging)?;
     let result = unpack_source(&staging, arxiv_id, bytes).and_then(|()| Ok(merge_dir(&staging, dir)?));
     let _ = std::fs::remove_dir_all(&staging);

@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use super::check::yaml_field;
+use super::lock::{self, Acquired, Lock};
 use crate::detect::{arxiv_id_from_doi, detect_type, normalize_arxiv, normalize_doi, InputType};
 
 /// A paper named by an arXiv id (normalized) or a DOI. DOIs compare
@@ -126,28 +127,23 @@ fn is_free(dir: &Path) -> bool {
     !dir.exists() || (dir.is_dir() && !holds_content(dir) && dir_paper_ids(dir).is_empty())
 }
 
-/// The dotfile through which a download claims a directory before writing to
-/// it. It holds the claimed id, so a concurrent download of the same paper
-/// shares the directory and one of another paper moves to the next name.
-const CLAIM_FILE: &str = ".lit-claim";
-
 /// A directory a download of one paper writes into, held until dropped.
 ///
-/// Dropping releases the claim file, if this claim created it, and removes
-/// the directory if nothing was written to it, so a failed first fetch leaves
-/// no directory behind. A directory holding anything, such as a stale copy
-/// being refetched, is never removed.
+/// Dropping releases the lock, if this claim took it, and removes the
+/// directory if nothing was written to it, so a failed first fetch leaves no
+/// directory behind. A directory holding anything, such as a stale copy being
+/// refetched, is never removed.
 #[derive(Debug)]
 pub(crate) struct Claim {
     dir: PathBuf,
-    marker: Option<PathBuf>,
+    lock: Option<Lock>,
 }
 
 impl Claim {
     /// Claim `dir` as named by the caller (`--dir`, `--citekey`), creating it.
     pub(crate) fn at(dir: &Path) -> std::io::Result<Claim> {
         std::fs::create_dir_all(dir)?;
-        Ok(Claim { dir: dir.to_path_buf(), marker: None })
+        Ok(Claim { dir: dir.to_path_buf(), lock: None })
     }
 
     pub(crate) fn dir(&self) -> &Path {
@@ -157,10 +153,8 @@ impl Claim {
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        if let Some(marker) = &self.marker {
-            let _ = std::fs::remove_file(marker);
-        }
-        // Succeeds only on an empty directory.
+        // The lock goes first: the directory is removed only once it is empty.
+        drop(self.lock.take());
         let _ = std::fs::remove_dir(&self.dir);
     }
 }
@@ -169,14 +163,15 @@ impl Drop for Claim {
 ///
 /// The directory already naming `id` is reused, so a refetch lands on the
 /// existing copy. Otherwise the first of `slug`, `slug`b, ..., `slug`z,
-/// `slug`27, ... that `is_free` is claimed by creating its claim file with
-/// `create_new`, which is atomic: of two downloads racing for one name, only
-/// one creates the file, and the other moves on unless it fetches the same
-/// paper. A paper therefore never writes into a directory holding or being
-/// written with another paper, or holding content of unknown provenance.
+/// `slug`27, ... that `is_free` is claimed by taking its lock (`lock::acquire`),
+/// which is atomic: of two downloads racing for one name, only one takes it,
+/// and the other moves on unless it fetches the same paper. A lock whose
+/// download crashed is stale and is broken rather than skipped. A paper
+/// therefore never writes into a directory holding or being written with
+/// another paper, or holding content of unknown provenance.
 pub(crate) fn claim_dir(base: &Path, slug: &str, id: &Target) -> std::io::Result<Claim> {
     if let Some(own) = owner_dir(base, id)? {
-        return Ok(Claim { dir: own, marker: None });
+        return Ok(Claim { dir: own, lock: None });
     }
     let names = std::iter::once(slug.to_string())
         .chain(('b'..='z').map(|c| format!("{}{}", slug, c)))
@@ -190,21 +185,13 @@ pub(crate) fn claim_dir(base: &Path, slug: &str, id: &Target) -> std::io::Result
         if !is_free(&dir) {
             continue;
         }
-        let marker = dir.join(CLAIM_FILE);
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&marker) {
-            Ok(mut file) => {
-                use std::io::Write;
-                let claim = Claim { dir, marker: Some(marker) };
-                file.write_all(id.as_str().as_bytes())?;
-                return Ok(claim);
+        lock::sweep(&dir, lock::LOCK_SCRATCH_PREFIX);
+        match lock::acquire(&dir, id.as_str())? {
+            Acquired::Locked(held) => return Ok(Claim { dir, lock: Some(held) }),
+            Acquired::Held(holder) if paper_id(&holder.id).as_ref() == Some(id) => {
+                return Ok(Claim { dir, lock: None });
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let holder = std::fs::read_to_string(&marker).ok().and_then(|text| paper_id(&text));
-                if holder.as_ref() == Some(id) {
-                    return Ok(Claim { dir, marker: None });
-                }
-            }
-            Err(e) => return Err(e),
+            Acquired::Held(_) => {}
         }
     }
     unreachable!("an unbounded sequence of names has a free one")
@@ -408,6 +395,36 @@ mod tests {
         std::fs::write(dir.join(".DS_Store"), "x").unwrap();
         drop(claim_dir(base.path(), "doe2020paper", &Target::Arxiv("2001.00001".into())).unwrap());
         assert_eq!(entries(&dir), vec![".DS_Store"]);
+    }
+
+    #[test]
+    fn a_crashed_claim_is_reclaimed_by_the_next_download() {
+        // A download that died holding its claim used to block the slug for
+        // every other paper forever.
+        use super::super::lock::testing::{dead_pid, lock_owner, now, plant_lock};
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("doe2020paper");
+        std::mem::forget(claim_dir(base.path(), "doe2020paper", &Target::Arxiv("2001.00001".into())).unwrap());
+        // The process that leaked the guard then exits.
+        plant_lock(&dir, "2001.00001", dead_pid(), now());
+        let next = claim_dir(base.path(), "doe2020paper", &Target::Arxiv("2002.00002".into())).unwrap();
+        assert_eq!(next.dir(), dir);
+        assert_eq!(lock_owner(&dir).unwrap().id, "2002.00002");
+        drop(next);
+        assert!(!dir.exists(), "releasing the reclaimed lock must leave nothing behind");
+    }
+
+    #[test]
+    fn claim_dir_sweeps_stale_lock_scratch_from_the_directory_it_claims() {
+        use super::super::lock::{testing::dead_pid, LOCK_DIR};
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("doe2020paper");
+        let dead = dead_pid();
+        std::fs::create_dir_all(dir.join(format!(".lit-lock.tmp-{}-1-0", dead))).unwrap();
+        std::fs::create_dir_all(dir.join(format!(".lit-lock.stale-{}-1-0", dead))).unwrap();
+        let claim = claim_dir(base.path(), "doe2020paper", &Target::Arxiv("2001.00001".into())).unwrap();
+        assert_eq!(claim.dir(), dir);
+        assert_eq!(entries(&dir), vec![LOCK_DIR]);
     }
 
     #[test]

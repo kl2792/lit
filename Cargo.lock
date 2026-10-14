@@ -773,6 +773,7 @@ dependencies = [
  "clap",
  "flate2",
  "futures-util",
+ "libc",
  "md-5",
  "quick-xml",
  "regex",

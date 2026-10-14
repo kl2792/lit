@@ -427,6 +427,13 @@ otherwise the nearest directory above you holding a non-empty `etc/pdf/`.
 `lit db rebuild` reconstructs the SQLite database, cache included, from the
 on-disk source-of-truth files, so there is no separate cache to delete.
 
+A download holds a lock, `etc/pdf/<dir>/.lit-lock/`, while it writes, and
+stages files in a sibling `etc/pdf/.lit-staging-<dir>-<pid>/`. A crash leaves
+both behind; the next download that needs the name breaks the lock once the
+process is gone or the lock is an hour old (ADR-007). `lit check` lists stale
+locks, staging directories and leftover `.lit-claim` files from older lit
+versions, and `lit check --fix` deletes them along with its other repairs.
+
 ---
 
 ## 11. Migrate from MCP-era patterns
