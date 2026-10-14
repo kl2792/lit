@@ -89,6 +89,7 @@ Three entries take the safe reading rather than the faithful one, because a meta
 
 `cmd::read` returns `ReadError::{NotFound, Unreadable{dir,message}, Other}`.
 arXiv auto-download fires only on `NotFound`.
+ADR-007 supersedes this rule: `lit read` also refetches a directory holding only metadata and, with `--no-cache`, a readable one.
 An unreadable artifact reports its real cause instead of the misleading "not found locally, download it first".
 
 ### Supporting policy changes

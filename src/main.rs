@@ -593,7 +593,7 @@ fn read_result_json(result: &cmd::read::ReadResult) -> serde_json::Value {
     })
 }
 
-/// Locate one paper's text, auto-downloading from arXiv if needed.
+/// Locate one paper's text, fetching it first when `cmd::read::plan_in` says so.
 async fn read_one(
     ctx: &cmd::Context,
     id: &str,
@@ -601,30 +601,7 @@ async fn read_one(
     if cmd::web::is_page_url(id) {
         return cmd::web::read(ctx, id).await;
     }
-    let result = match cmd::read::run_data(ctx, id) {
-        Ok(r) => r,
-        Err(cmd::read::ReadError::NotFound(_)) => {
-            let normalized = id.trim();
-            let looks_like_arxiv = normalized
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_digit())
-                || normalized.starts_with("arxiv:");
-            if !looks_like_arxiv {
-                return Err(format!(
-                    "paper '{}' not found locally. Download it first with an arXiv ID.",
-                    id
-                )
-                .into());
-            }
-            cmd::download::run(ctx, normalized, true, false, None, None).await?;
-            cmd::read::run_data(ctx, id)?
-        }
-        // Local source exists but is unreadable (or other failure): surface the
-        // real cause instead of the misleading "not found locally" message.
-        Err(e) => return Err(e.into()),
-    };
-    Ok(result)
+    Ok(cmd::read::read_or_fetch(ctx, id).await?.0)
 }
 
 /// Run `lit remove`: delete an entry from a .bib file by citekey.

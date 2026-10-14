@@ -274,6 +274,8 @@ lit read 2006.11239
 # → /abs/path/to/etc/pdf/2006.11239/paper.txt
 ```
 
+For LaTeX source the path is the main `.tex` file: the toplevel file arXiv's `00README.json` names (possibly in a subdirectory), else the top-level file with `\documentclass`.
+
 The output is a path — use shell substitution to feed it into another command:
 
 ```bash
@@ -281,10 +283,18 @@ cat "$(lit read 2006.11239)"
 grep -i "diffusion" "$(lit read 2006.11239)"
 ```
 
-If the paper isn't cached and the ID looks like arXiv, `lit read` auto-downloads
-the PDF, extracts text, then returns the path. Behaviour mirrors the historical
-MCP handler.
+If the paper isn't cached and the id is an arXiv id or a DOI, `lit read` fetches it first, then returns the path: an arXiv id fetches the LaTeX source (or the PDF, for a PDF-only submission), and a DOI fetches the PDF through the `lit download` tiers.
+The MCP `read` tool does the same and adds `"auto_downloaded": true`.
+A directory holding only `source.yaml` and dotfiles has nothing to read, so `lit read` fetches its paper again into the same directory; `--no-cache` refetches a readable copy too (ADR-007).
+A refetch writes each fetched file over the same-named one and keeps the rest, so `--no-cache` replaces a hand-attached `paper.pdf` when the fetch delivers a PDF; a failed refetch changes nothing.
+A refetch keeps the old `source.yaml`'s bibliographic fields when the new fetch found no provider metadata, and keeps its `bibtex_key`; `source_url` and `retrieved` always describe the latest fetch.
+`lit read` prints only the path on stdout, including after a fetch; progress goes to stderr.
 When the arXiv API is rate-limiting, metadata comes from Semantic Scholar or OpenAlex (a one-line note names which), and if none answers the download still proceeds into `etc/pdf/<arxiv id>/` (ADR-004).
+
+A directory belongs to the paper its `source.yaml` names by `arxiv` or `doi`.
+A download reuses the directory already naming its paper; otherwise it takes the generated name (`<lastname><year><titleword>`) or, when another paper, unidentified content or a concurrent download of another paper holds that name, the first free name with a suffix `b`, `c`, ... (e.g. `wang2025doesb`).
+For an arXiv id or DOI, `lit read` returns the directory whose `source.yaml` names it, and only failing that a directory matched by name that names no paper.
+When two directories name one paper, `lit read` and downloads both use the first by name and print a warning naming both.
 
 For JSON output (e.g. when calling from an agent):
 

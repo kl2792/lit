@@ -1,4 +1,5 @@
 pub mod add;
+pub(crate) mod artifact;
 pub mod check;
 pub mod clean;
 pub mod clio;

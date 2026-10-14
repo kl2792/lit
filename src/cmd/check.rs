@@ -33,7 +33,7 @@ const CONFIRMED_KEY: &str = "metadata_confirmed";
 /// known" with "nothing was checked": an artifact with a present but incomplete
 /// record was therefore never completed. The absence of the key means
 /// unconfirmed, so artifacts written before it existed are looked up once.
-fn is_confirmed(content: &str) -> bool {
+pub(crate) fn is_confirmed(content: &str) -> bool {
     yaml_field(content, CONFIRMED_KEY).is_some_and(|value| value == "true")
 }
 

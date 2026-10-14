@@ -306,7 +306,7 @@ read_fixture() {
     run --separate-stderr "$LIT" read nosuchpaper
     [ "$status" -eq 1 ]
     [ -z "$output" ]
-    [ "$stderr" = "paper 'nosuchpaper' not found locally. Download it first with an arXiv ID." ]
+    [ "$stderr" = "paper 'nosuchpaper' not found locally. Download it first with an arXiv ID or DOI." ]
 }
 
 @test "read: several ids print one path line each, in argument order" {
@@ -324,7 +324,7 @@ $ALPHA" ]
     [ "$status" -ne 0 ]
     [ "$output" = "$ALPHA
 $BETA" ]
-    [ "$stderr" = "nosuchpaper: paper 'nosuchpaper' not found locally. Download it first with an arXiv ID." ]
+    [ "$stderr" = "nosuchpaper: paper 'nosuchpaper' not found locally. Download it first with an arXiv ID or DOI." ]
 }
 
 @test "read: several ids with --json print one array of the per-id objects" {
@@ -361,11 +361,23 @@ $BETA" ]
     run --separate-stderr "$LIT" read nosuchpaper otherpaper
     [ "$status" -eq 1 ]
     [ -z "$output" ]
-    [ "$stderr" = "nosuchpaper: paper 'nosuchpaper' not found locally. Download it first with an arXiv ID.
-otherpaper: paper 'otherpaper' not found locally. Download it first with an arXiv ID." ]
+    [ "$stderr" = "nosuchpaper: paper 'nosuchpaper' not found locally. Download it first with an arXiv ID or DOI.
+otherpaper: paper 'otherpaper' not found locally. Download it first with an arXiv ID or DOI." ]
     run --separate-stderr "$LIT" --json read nosuchpaper otherpaper
     [ "$status" -eq 1 ]
     [ "$output" = "[]" ]
+}
+
+# Reaches arXiv: no fetch stub exists, so the e-print is downloaded for real.
+@test "read: stdout is exactly the text path after an auto-fetch" {
+    read_fixture
+    mkdir -p "$PDF/stale1999"
+    printf 'arxiv: "hep-th/9901001"\n' > "$PDF/stale1999/source.yaml"
+    run --separate-stderr "$LIT" read hep-th/9901001
+    [ "$status" -eq 0 ]
+    [ "${#lines[@]}" -eq 1 ]
+    [[ "$output" == "$PDF/stale1999/"* ]]
+    [ -f "$output" ]
 }
 
 @test "read: no id is a usage error" {

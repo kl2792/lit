@@ -8,12 +8,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use super::artifact::{claim_dir, classify, yaml_paper_ids, Claim, Target};
+use super::check::{is_confirmed, yaml_field};
 use super::metadata::{arxiv_metadata, Metadata, MetadataFetch};
 use super::Context;
 use crate::api::{extract_last_name, unpaywall, PaperResult};
 use crate::citekey::SKIP_WORDS;
 use crate::db;
-use crate::detect::{arxiv_id_from_doi, detect_type, normalize_arxiv, normalize_doi, InputType};
+use crate::detect::normalize_arxiv;
 use crate::format;
 
 /// Download timeout for source tarballs (seconds).
@@ -28,14 +30,26 @@ pub async fn run(
     citekey: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if source {
-        return run_source(ctx, input, dir_override).await;
+        run_source(ctx, input, dir_override).await?;
+    } else {
+        run_pdf(ctx, input, url_only, citekey).await?;
     }
-    run_pdf(ctx, input, url_only, citekey).await
+    Ok(())
+}
+
+/// Fetch `id` into its artifact directory, an arXiv preprint's LaTeX source
+/// or a DOI's PDF, and return that directory. Fails when nothing arrived.
+pub(crate) async fn fetch(ctx: &Context, id: &Target) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    match id {
+        Target::Arxiv(arxiv_id) => run_source(ctx, arxiv_id, None).await,
+        Target::Doi(doi) => Ok(run_doi_pdf(ctx, doi, false, None).await?.ok_or("a DOI fetch listed URLs instead of saving")?),
+    }
 }
 
 /// Download a PDF to etc/pdf/<citekey>/, from arXiv for an arXiv preprint and
-/// through the DOI tiers otherwise.
-async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+/// through the DOI tiers otherwise. Returns the directory written, or `None`
+/// when `url_only` printed the candidate URLs instead.
+async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&str>) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     match classify(input) {
         Target::Arxiv(id) => run_arxiv_pdf(ctx, &id, url_only, citekey).await,
         Target::Doi(doi) => run_doi_pdf(ctx, &doi, url_only, citekey).await,
@@ -44,39 +58,33 @@ async fn run_pdf(ctx: &Context, input: &str, url_only: bool, citekey: Option<&st
 
 /// Download an arXiv preprint's PDF from arXiv, with metadata from the arXiv
 /// API or its fallbacks. Missing metadata does not stop the download.
-async fn run_arxiv_pdf(ctx: &Context, arxiv_id: &str, url_only: bool, citekey: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_arxiv_pdf(ctx: &Context, arxiv_id: &str, url_only: bool, citekey: Option<&str>) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     let tiers = arxiv_tiers(arxiv_id);
     if url_only {
         for url in tier_urls(&tiers) {
             println!("{}", url);
         }
-        return Ok(());
+        return Ok(None);
     }
 
     let meta = fetch_metadata(&ctx.client(), arxiv_id).await;
     if let Some(m) = &meta {
-        println!("Title: {}", m.paper.title);
+        format::info(&format!("Title: {}", m.paper.title));
     }
 
-    match fetch_tiers(&tiers).await {
-        Ok((data, delivered_by)) => {
-            let yaml = build_source_yaml(meta.as_ref(), arxiv_id, citekey, Some(&delivered_by), &today_string());
-            let slug = citekey.map(str::to_string).unwrap_or_else(|| arxiv_slug(meta.as_ref(), arxiv_id));
-            save_pdf(&slug, &data, &yaml)
-        }
-        Err(failures) => {
-            for line in failure_report(&failures, Some(&tiers[0].url), None, None) {
-                println!("{}", line);
-            }
-            Ok(())
-        }
-    }
+    let (data, delivered_by) = fetch_tiers(&tiers)
+        .await
+        .map_err(|failures| failure_report(&failures, Some(&tiers[0].url), None, None).join("\n"))?;
+    let yaml = build_source_yaml(meta.as_ref(), arxiv_id, citekey, Some(&delivered_by), &today_string());
+    let id = Target::Arxiv(arxiv_id.to_string());
+    save_pdf(pdf_dir(citekey, || arxiv_slug(meta.as_ref(), arxiv_id), &id)?, &data, yaml).map(Some)
 }
 
 /// Find open-access PDF via Unpaywall, with S2 and OpenAlex fallbacks.
 /// Resolves in tier order (open access, Clio, EZProxy) and downloads the first
-/// tier that delivers bytes to etc/pdf/<citekey>/.
-async fn run_doi_pdf(ctx: &Context, doi: &str, url_only: bool, citekey: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+/// tier that delivers bytes to etc/pdf/<citekey>/. Returns the directory
+/// written, or `None` when `url_only` printed the candidate URLs instead.
+async fn run_doi_pdf(ctx: &Context, doi: &str, url_only: bool, citekey: Option<&str>) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     use crate::api::{openalex as oa_api, semantic_scholar as s2_api};
 
     let doi = doi.to_string();
@@ -136,10 +144,10 @@ async fn run_doi_pdf(ctx: &Context, doi: &str, url_only: bool, citekey: Option<&
         for url in tier_urls(&tiers) {
             println!("{}", url);
         }
-        return Ok(());
+        return Ok(None);
     }
 
-    println!("Title: {}", title);
+    format::info(&format!("Title: {}", title));
 
     // Semantic Scholar's record when it answered, otherwise one assembled from
     // what the other lookups returned, which is metadata only if one did.
@@ -150,21 +158,14 @@ async fn run_doi_pdf(ctx: &Context, doi: &str, url_only: bool, citekey: Option<&
         ..Default::default()
     });
 
-    match fetch_tiers(&tiers).await {
-        Ok((data, delivered_by)) => {
-            // Provenance is the tier that produced these bytes, not the first tier
-            // that merely had a candidate URL.
-            let yaml = build_doi_source_yaml(&meta, &doi, citekey, Some(delivered_by.as_str()), &today_string(), confirmed);
-            let slug = citekey.map(str::to_string).unwrap_or_else(|| generate_dir_name(&meta));
-            save_pdf(&slug, &data, &yaml)
-        }
-        Err(failures) => {
-            for line in failure_report(&failures, pdf_url.as_deref(), clio_url.as_deref(), ez_url.as_deref()) {
-                println!("{}", line);
-            }
-            Ok(())
-        }
-    }
+    let (data, delivered_by) = fetch_tiers(&tiers).await.map_err(|failures| {
+        failure_report(&failures, pdf_url.as_deref(), clio_url.as_deref(), ez_url.as_deref()).join("\n")
+    })?;
+    // Provenance is the tier that produced these bytes, not the first tier
+    // that merely had a candidate URL.
+    let yaml = build_doi_source_yaml(&meta, &doi, citekey, Some(delivered_by.as_str()), &today_string(), confirmed);
+    let id = Target::Doi(doi.clone());
+    save_pdf(pdf_dir(citekey, || generate_dir_name(&meta), &id)?, &data, yaml).map(Some)
 }
 
 /// Fetch the tiers in order with curl.
@@ -178,43 +179,40 @@ async fn fetch_tiers(tiers: &[Tier]) -> Result<(Vec<u8>, String), Vec<FetchError
     .await
 }
 
-/// Write `paper.pdf`, its `pdftotext` extraction, and `source.yaml` to
-/// etc/pdf/<slug>/.
-fn save_pdf(slug: &str, data: &[u8], yaml: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let dir_name = crate::paths::artifact_dir()?.join(slug);
-    std::fs::create_dir_all(&dir_name)?;
-    let pdf_path = dir_name.join("paper.pdf");
+/// The directory a PDF download of `id` writes: etc/pdf/<citekey> when the
+/// caller names a citekey, else the one `claim_dir` picks from `slug`.
+fn pdf_dir(citekey: Option<&str>, slug: impl FnOnce() -> String, id: &Target) -> Result<Claim, Box<dyn std::error::Error>> {
+    let base = crate::paths::artifact_dir()?;
+    Ok(match citekey {
+        Some(key) => Claim::at(&base.join(key))?,
+        None => claim_dir(&base, &slug(), id)?,
+    })
+}
+
+/// Write `paper.pdf`, its `pdftotext` extraction, and `source.yaml` to the
+/// claimed directory, and return it.
+fn save_pdf(claim: Claim, data: &[u8], yaml: String) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    write_pdf(claim.dir(), data)?;
+    write_source_yaml(claim.dir(), yaml)?;
+    format::info(&format!("Saved: {} ({}KB)", claim.dir().display(), data.len() / 1024));
+    Ok(claim.dir().to_path_buf())
+}
+
+/// Write `data` as `dir/paper.pdf` and its `pdftotext` extraction as
+/// `dir/paper.txt`; a failed extraction leaves the PDF for `lit read` to retry.
+fn write_pdf(dir: &Path, data: &[u8]) -> std::io::Result<()> {
+    let pdf_path = dir.join("paper.pdf");
     std::fs::write(&pdf_path, data)?;
-    let _ = Command::new("pdftotext")
-        .arg(&pdf_path)
-        .arg(dir_name.join("paper.txt"))
-        .status();
-    std::fs::write(dir_name.join("source.yaml"), yaml)?;
-    println!("Saved: {} ({}KB)", dir_name.display(), data.len() / 1024);
+    let _ = Command::new("pdftotext").arg(&pdf_path).arg(dir.join("paper.txt")).status();
     Ok(())
 }
 
-/// What a `lit download` input names: an arXiv preprint (by normalized id) or a
-/// DOI. arXiv preprints are fetched from arXiv itself, never through a DOI
-/// resolver or EZProxy.
-#[derive(Debug, PartialEq, Eq)]
-enum Target {
-    Arxiv(String),
-    Doi(String),
-}
-
-/// Classify a download input.
-///
-/// arXiv-registered DOIs (`10.48550/arXiv.<id>`) are arXiv preprints too.
-fn classify(input: &str) -> Target {
-    if detect_type(input) == InputType::Arxiv {
-        return Target::Arxiv(normalize_arxiv(input));
-    }
-    let doi = normalize_doi(input);
-    match arxiv_id_from_doi(&doi) {
-        Some(id) => Target::Arxiv(id),
-        None => Target::Doi(doi),
-    }
+/// Write `yaml` as `dir/source.yaml`, merged with the record already there.
+fn write_source_yaml(dir: &Path, yaml: String) -> std::io::Result<PathBuf> {
+    let path = dir.join("source.yaml");
+    let old = std::fs::read_to_string(&path).ok();
+    std::fs::write(&path, merge_source_yaml(old.as_deref(), yaml))?;
+    Ok(path)
 }
 
 /// The arXiv identifier `--source` fetches: the one `classify` finds, so an
@@ -421,7 +419,7 @@ async fn fetch_pdf_via_curl(url: &str, cookie_path: Option<&std::path::Path>) ->
     }
 }
 
-/// The lines `lit download` prints when no tier delivered a PDF.
+/// The lines of the error a download fails with when no tier delivered a PDF.
 ///
 /// "No open-access PDF found" is a claim about the paper, so it is made only
 /// when every attempt reached a server and none of them returned a PDF. A
@@ -488,77 +486,176 @@ fn push_provenance(yaml: &mut String, bibtex_key: Option<&str>, source_url: Opti
     }
 }
 
-/// Download arXiv LaTeX source tarball.
+/// Download an arXiv preprint's LaTeX source into its artifact directory and
+/// return that directory.
 async fn run_source(
     ctx: &Context,
     input: &str,
     dir_override: Option<&Path>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let arxiv_id = source_arxiv_id(input);
 
     let (meta, bytes) = fetch_source(&ctx.client(), &arxiv_id, download_bytes).await?;
 
-    let dir_name = match dir_override {
-        Some(d) => d.to_path_buf(),
-        None => crate::paths::artifact_dir()?.join(arxiv_slug(meta.as_ref(), &arxiv_id)),
+    let claim = match dir_override {
+        Some(dir) => Claim::at(dir)?,
+        None => claim_dir(
+            &crate::paths::artifact_dir()?,
+            &arxiv_slug(meta.as_ref(), &arxiv_id),
+            &Target::Arxiv(arxiv_id.clone()),
+        )?,
     };
+    format::info(&format!("Output directory: {}", claim.dir().display()));
 
-    format::info(&format!("Output directory: {}", dir_name.display()));
-    std::fs::create_dir_all(&dir_name)?;
-
-    let safe_id = arxiv_id.replace('/', "_");
-    let tarball = dir_name.join(format!("{}.tar.gz", safe_id));
-    std::fs::write(&tarball, &bytes)?;
-
-    if !tarball.exists() {
-        return Err("Download failed".into());
-    }
-
-    format::info("Extracting source tarball...");
-    let status = Command::new("tar")
-        .arg("-xzf")
-        .arg(&tarball)
-        .arg("-C")
-        .arg(&dir_name)
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            format::warn(&format!("tar exited with status {}", s));
-            format::info("Retrying as gzipped file...");
-            let gunzip_status = Command::new("gunzip")
-                .arg("-f")
-                .arg(&tarball)
-                .status();
-            if let Ok(gs) = gunzip_status {
-                if !gs.success() {
-                    format::warn("gunzip also failed; tarball may be in an unexpected format");
-                }
-            }
-        }
-        Err(e) => return Err(format!("failed to run tar: {}", e).into()),
-    }
-
+    // source.yaml is written only after the e-print is in place, so a failed
+    // fetch never leaves a directory that holds metadata and nothing to read.
+    place_source(claim.dir(), &arxiv_id, &bytes)?;
     let yaml = build_source_yaml(meta.as_ref(), &arxiv_id, None, Some(&eprint_url(&arxiv_id)), &today_string());
-    let yaml_path = dir_name.join("source.yaml");
-    std::fs::write(&yaml_path, &yaml)?;
+    let yaml_path = write_source_yaml(claim.dir(), yaml)?;
     format::info(&format!("Wrote {}", yaml_path.display()));
 
-    if tarball.exists() {
-        std::fs::remove_file(&tarball)?;
-        format::info("Cleaned up tarball");
-    }
-
     if let Some(Metadata { paper, .. }) = &meta {
-        println!("Title: {}", paper.title);
         let first_author = paper.authors.first().map(|s| s.as_str()).unwrap_or("?");
-        println!("Authors: {} et al.", first_author);
-        println!("Year: {}", paper.year);
+        format::info(&format!("Title: {}\nAuthors: {} et al.\nYear: {}", paper.title, first_author, paper.year));
     }
-    println!("Directory: {}", dir_name.display());
+    Ok(claim.dir().to_path_buf())
+}
 
+/// Unpack an arXiv e-print into a staging sibling of `dir`, then move its
+/// entries into `dir`, replacing same-named ones.
+///
+/// The staging directory carries this process's id, so two processes
+/// fetching one paper never share or delete each other's files. A failed
+/// unpack deletes only the staging directory: `dir`, with its `source.yaml`
+/// and any hand-attached files, is untouched. Files in `dir` that the e-print
+/// does not contain are kept.
+fn place_source(dir: &Path, arxiv_id: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let staging = super::misc::staging_path(dir);
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir(&staging)?;
+    let result = unpack_source(&staging, arxiv_id, bytes).and_then(|()| Ok(merge_dir(&staging, dir)?));
+    let _ = std::fs::remove_dir_all(&staging);
+    result
+}
+
+/// Move every entry of `from` into `to`, replacing an entry of the same name.
+fn merge_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        match std::fs::symlink_metadata(&target) {
+            Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&target)?,
+            Ok(_) => std::fs::remove_file(&target)?,
+            Err(_) => {}
+        }
+        std::fs::rename(entry.path(), &target)?;
+    }
     Ok(())
+}
+
+/// Unpack an arXiv e-print into `dir`.
+///
+/// arXiv serves a gzipped tarball for a multi-file submission, a gzipped
+/// single file for a one-file submission (saved as `<id>.tex`), and the PDF
+/// itself for a PDF-only submission (saved as `paper.pdf` and `paper.txt`).
+/// Any other payload is an error, so no metadata-only directory results.
+///
+/// The payload is classified by content rather than by whether `tar`
+/// succeeds, because bsdtar (macOS) reads plain text as an mtree spec and
+/// "extracts" junk files from a gzipped single .tex file.
+fn unpack_source(dir: &Path, arxiv_id: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let staged = dir.join(format!("{}.eprint", arxiv_id.replace('/', "_")));
+    std::fs::write(&staged, bytes)?;
+    let result = unpack_staged(dir, &staged, arxiv_id, bytes);
+    if staged.exists() {
+        std::fs::remove_file(&staged)?;
+    }
+    result
+}
+
+/// `unpack_source` for an e-print already written to `staged`.
+fn unpack_staged(dir: &Path, staged: &Path, arxiv_id: &str, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    let gunzipped = Command::new("gzip")
+        .arg("-dc")
+        .arg(staged)
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| out.stdout);
+    let payload = gunzipped.as_deref().unwrap_or(bytes);
+
+    if payload.starts_with(b"%PDF") {
+        format::info("e-print is a PDF (PDF-only submission)");
+        return Ok(write_pdf(dir, payload)?);
+    }
+    if is_tar(payload) {
+        format::info("Extracting source tarball...");
+        std::fs::write(staged, payload)?;
+        let status = Command::new("tar").arg("-xf").arg(staged).arg("-C").arg(dir).status()?;
+        if !status.success() {
+            return Err(format!("tar exited with {} on the e-print for {}", status, arxiv_id).into());
+        }
+        return Ok(());
+    }
+    if gunzipped.is_some() {
+        format::info("e-print is a single gzipped file; saving it as .tex");
+        std::fs::write(dir.join(format!("{}.tex", arxiv_id.replace('/', "_"))), payload)?;
+        return Ok(());
+    }
+    Err(format!("arXiv e-print for {} is neither a PDF, a tarball nor a gzipped file", arxiv_id).into())
+}
+
+/// Whether `payload` starts with a tar header: its checksum field equals the
+/// byte sum of the header with that field read as spaces. Every tar format
+/// has this checksum, including pre-POSIX (v7) archives without the `ustar`
+/// magic, while text such as a single .tex file has odds of matching it that
+/// are negligible.
+fn is_tar(payload: &[u8]) -> bool {
+    let Some(header) = payload.get(..512) else { return false };
+    let field = String::from_utf8_lossy(&header[148..156]);
+    let Ok(recorded) = u32::from_str_radix(field.trim_matches(|c: char| c == '\0' || c == ' '), 8) else {
+        return false;
+    };
+    let sum: u32 = header
+        .iter()
+        .enumerate()
+        .map(|(i, &b)| if (148..156).contains(&i) { u32::from(b' ') } else { u32::from(b) })
+        .sum();
+    recorded == sum
+}
+
+/// The keys of `source.yaml` that describe the fetch that produced the bytes
+/// on disk, rather than the paper.
+const FETCH_KEYS: [&str; 2] = ["source_url", "retrieved"];
+
+/// The `source.yaml` to write over `old`, if one exists.
+///
+/// When both records name the same paper, a record without provider-confirmed
+/// metadata does not replace one with it, and the old record's `bibtex_key`
+/// carries over when the kept record has none, so a refetch never loses what
+/// an earlier fetch or `lit check --fix` wrote. The fetch keys always come
+/// from `new`, since the bytes now on disk are the ones this fetch delivered.
+fn merge_source_yaml(old: Option<&str>, new: String) -> String {
+    let Some(old) = old.filter(|old| {
+        let new_ids = yaml_paper_ids(&new);
+        yaml_paper_ids(old).iter().any(|id| new_ids.contains(id))
+    }) else {
+        return new;
+    };
+    let is_fetch_line = |line: &&str| line.split_once(':').is_some_and(|(key, _)| FETCH_KEYS.contains(&key.trim()));
+    let mut merged = if is_confirmed(old) && !is_confirmed(&new) {
+        let kept = old.lines().filter(|line| !is_fetch_line(line));
+        kept.chain(new.lines().filter(is_fetch_line)).map(|line| format!("{}\n", line)).collect()
+    } else {
+        new.clone()
+    };
+    if yaml_field(&merged, "bibtex_key").is_none() {
+        if let Some(key) = yaml_field(old, "bibtex_key").or_else(|| yaml_field(&new, "bibtex_key")) {
+            merged.push_str(&format!("bibtex_key: \"{}\"\n", key));
+        }
+    }
+    merged
 }
 
 // -- Helpers (moved from source.rs) -------------------------------------------
@@ -1161,33 +1258,6 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_routes_every_arxiv_form_to_arxiv() {
-        let cases = [
-            ("2510.24941", "2510.24941"),
-            ("2510.24941v4", "2510.24941"),
-            ("arXiv:2510.24941", "2510.24941"),
-            ("arxiv:2510.24941v4", "2510.24941"),
-            ("hep-th/9901001", "hep-th/9901001"),
-            ("https://arxiv.org/abs/2510.24941", "2510.24941"),
-            ("10.48550/arXiv.2510.24941", "2510.24941"),
-            ("https://doi.org/10.48550/arXiv.2510.24941", "2510.24941"),
-            ("10.48550/arXiv.hep-th/9901001", "hep-th/9901001"),
-        ];
-        for (input, id) in cases {
-            assert_eq!(classify(input), Target::Arxiv(id.to_string()), "input {:?}", input);
-        }
-    }
-
-    #[test]
-    fn test_classify_keeps_a_publisher_doi_a_doi() {
-        assert_eq!(classify("10.1145/3442188.3445899"), Target::Doi("10.1145/3442188.3445899".to_string()));
-        assert_eq!(
-            classify("https://doi.org/10.1145/3442188.3445899"),
-            Target::Doi("10.1145/3442188.3445899".to_string())
-        );
-    }
-
-    #[test]
     fn test_source_arxiv_id_accepts_an_arxiv_doi() {
         assert_eq!(source_arxiv_id("10.48550/arXiv.2510.24941"), "2510.24941");
         assert_eq!(source_arxiv_id("https://doi.org/10.48550/arXiv.2510.24941v2"), "2510.24941");
@@ -1204,6 +1274,185 @@ mod tests {
         assert_eq!(tier_urls(&arxiv_tiers("2510.24941")), vec!["https://arxiv.org/pdf/2510.24941"]);
         assert_eq!(tier_urls(&arxiv_tiers("hep-th/9901001")), vec!["https://arxiv.org/pdf/hep-th/9901001"]);
         assert!(arxiv_tiers("2510.24941").iter().all(|t| t.cookies.is_none()), "arXiv needs no session cookie");
+    }
+
+    /// Entry names in `dir`, sorted.
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Run `program args` in `dir` and assert it succeeds.
+    fn run_in(dir: &Path, program: &str, args: &[&str]) {
+        let status = Command::new(program).args(args).current_dir(dir).status().unwrap();
+        assert!(status.success(), "{} {:?} failed", program, args);
+    }
+
+    #[test]
+    fn unpack_source_extracts_a_tarball() {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("main.tex"), "\\documentclass{article}\n").unwrap();
+        run_in(work.path(), "tar", &["-czf", "e.tgz", "main.tex"]);
+        let bytes = std::fs::read(work.path().join("e.tgz")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unpack_source(dir.path(), "2502.11447", &bytes).unwrap();
+        assert_eq!(entries(dir.path()), vec!["main.tex"]);
+    }
+
+    #[test]
+    fn unpack_source_saves_a_gzipped_single_file_as_tex() {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("only"), "\\documentclass{article}\n").unwrap();
+        run_in(work.path(), "gzip", &["only"]);
+        let bytes = std::fs::read(work.path().join("only.gz")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unpack_source(dir.path(), "hep-th/9901001", &bytes).unwrap();
+        assert_eq!(entries(dir.path()), vec!["hep-th_9901001.tex"]);
+    }
+
+    #[test]
+    fn unpack_source_saves_a_pdf_payload_as_paper_pdf() {
+        // A PDF-only submission's e-print is the PDF; it used to fail tar and
+        // gunzip and leave a directory holding only source.yaml.
+        let dir = tempfile::tempdir().unwrap();
+        unpack_source(dir.path(), "2606.21078", b"%PDF-1.5\nnot really a pdf\n").unwrap();
+        assert!(entries(dir.path()).contains(&"paper.pdf".to_string()));
+    }
+
+    #[test]
+    fn unpack_source_rejects_an_unrecognized_payload_and_leaves_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = unpack_source(dir.path(), "2606.21078", b"<html>rate limited</html>").unwrap_err();
+        assert!(err.to_string().contains("2606.21078"));
+        assert!(entries(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn merge_source_yaml_keeps_confirmed_metadata_and_takes_the_new_provenance() {
+        // The bytes now on disk came from this fetch, so its source_url and
+        // date are the provenance even when the old metadata is kept.
+        let old = "title: \"T\"\narxiv: \"2606.21078\"\nbibtex_key: \"ahmed2026validation\"\nsource_url: \"https://example.org/old.pdf\"\nmetadata_confirmed: true\nretrieved: \"2025-01-01\"\n";
+        let new = build_source_yaml(None, "2606.21078", None, Some("https://arxiv.org/e-print/2606.21078"), "2026-10-13");
+        let merged = merge_source_yaml(Some(old), new);
+        for (key, value) in [
+            ("title", "T"),
+            ("bibtex_key", "ahmed2026validation"),
+            ("metadata_confirmed", "true"),
+            ("source_url", "https://arxiv.org/e-print/2606.21078"),
+            ("retrieved", "2026-10-13"),
+        ] {
+            assert_eq!(yaml_field(&merged, key).as_deref(), Some(value), "{} in {:?}", key, merged);
+        }
+        assert_eq!(merged.matches("source_url").count(), 1, "{:?}", merged);
+    }
+
+    /// A tar archive in the pre-POSIX (v7) format, which has no `ustar` magic,
+    /// holding `name` with `content`.
+    fn v7_tar(name: &str, content: &[u8]) -> Vec<u8> {
+        let mut header = [0u8; 512];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        header[100..108].copy_from_slice(b"0000644\0");
+        header[108..116].copy_from_slice(b"0000000\0");
+        header[116..124].copy_from_slice(b"0000000\0");
+        header[124..136].copy_from_slice(format!("{:011o}\0", content.len()).as_bytes());
+        header[136..148].copy_from_slice(b"00000000000\0");
+        header[148..156].copy_from_slice(b"        ");
+        header[156] = b'0';
+        let sum: u32 = header.iter().map(|&b| b as u32).sum();
+        header[148..156].copy_from_slice(format!("{:06o}\0 ", sum).as_bytes());
+        let mut tar = header.to_vec();
+        tar.extend_from_slice(content);
+        tar.resize(512 + content.len().div_ceil(512) * 512 + 1024, 0);
+        tar
+    }
+
+    #[test]
+    fn unpack_source_extracts_a_v7_tarball_plain_or_gzipped() {
+        let tar = v7_tar("main.tex", b"\\documentclass{article}\n");
+        let work = tempfile::tempdir().unwrap();
+        std::fs::write(work.path().join("e.tar"), &tar).unwrap();
+        run_in(work.path(), "gzip", &["-k", "e.tar"]);
+        for bytes in [tar.clone(), std::fs::read(work.path().join("e.tar.gz")).unwrap()] {
+            let dir = tempfile::tempdir().unwrap();
+            unpack_source(dir.path(), "hep-th/9901001", &bytes).unwrap();
+            assert_eq!(entries(dir.path()), vec!["main.tex"]);
+            assert_eq!(std::fs::read(dir.path().join("main.tex")).unwrap(), b"\\documentclass{article}\n");
+        }
+    }
+
+    /// `base/name` holding `source.yaml` and a hand-attached `paper.pdf`.
+    fn attached_artifact(base: &Path, name: &str) -> PathBuf {
+        let dir = base.join(name);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("source.yaml"), "arxiv: \"2502.11447\"\nmetadata_confirmed: true\n").unwrap();
+        std::fs::write(dir.join("paper.pdf"), "%PDF hand-attached").unwrap();
+        dir
+    }
+
+    #[test]
+    fn place_source_failure_leaves_an_existing_directory_intact() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = attached_artifact(base.path(), "wang2025does");
+        assert!(place_source(&dir, "2502.11447", b"<html>rate limited</html>").is_err());
+        assert_eq!(entries(&dir), vec!["paper.pdf", "source.yaml"]);
+        assert_eq!(std::fs::read_to_string(dir.join("paper.pdf")).unwrap(), "%PDF hand-attached");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("source.yaml")).unwrap(),
+            "arxiv: \"2502.11447\"\nmetadata_confirmed: true\n"
+        );
+        assert_eq!(entries(base.path()), vec!["wang2025does"]);
+    }
+
+    #[test]
+    fn place_source_failure_removes_a_newly_claimed_directory() {
+        let base = tempfile::tempdir().unwrap();
+        let claim = claim_dir(base.path(), "wang2025does", &Target::Arxiv("2502.11447".into())).unwrap();
+        assert!(place_source(claim.dir(), "2502.11447", b"<html>rate limited</html>").is_err());
+        drop(claim);
+        assert!(entries(base.path()).is_empty());
+    }
+
+    #[test]
+    fn place_source_merges_the_e_print_into_the_directory_and_keeps_user_files() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = attached_artifact(base.path(), "wang2025does");
+        std::fs::create_dir(dir.join("figures")).unwrap();
+        std::fs::write(dir.join("figures/old.png"), "old").unwrap();
+        let work = tempfile::tempdir().unwrap();
+        std::fs::create_dir(work.path().join("figures")).unwrap();
+        std::fs::write(work.path().join("figures/new.png"), "new").unwrap();
+        std::fs::write(work.path().join("main.tex"), "\\documentclass{article}\n").unwrap();
+        run_in(work.path(), "tar", &["-czf", "e.tgz", "main.tex", "figures"]);
+        place_source(&dir, "2502.11447", &std::fs::read(work.path().join("e.tgz")).unwrap()).unwrap();
+        assert_eq!(entries(&dir), vec!["figures", "main.tex", "paper.pdf", "source.yaml"]);
+        assert_eq!(entries(&dir.join("figures")), vec!["new.png"]);
+        assert_eq!(std::fs::read_to_string(dir.join("paper.pdf")).unwrap(), "%PDF hand-attached");
+        assert_eq!(entries(base.path()), vec!["wang2025does"]);
+    }
+
+    #[test]
+    fn merge_source_yaml_takes_new_metadata_and_carries_the_citekey() {
+        let old = "arxiv: \"2606.21078\"\nbibtex_key: \"ahmed2026validation\"\n";
+        let paper = PaperResult { title: "Validation".to_string(), year: "2026".to_string(), ..Default::default() };
+        let meta = Metadata { paper, source: MetadataSource::Arxiv };
+        let new = build_source_yaml(Some(&meta), "2606.21078", None, None, "2026-10-13");
+        let merged = merge_source_yaml(Some(old), new.clone());
+        assert!(merged.starts_with(&new));
+        assert_eq!(yaml_field(&merged, "bibtex_key").as_deref(), Some("ahmed2026validation"));
+        assert_eq!(merge_source_yaml(None, new.clone()), new);
+    }
+
+    #[test]
+    fn merge_source_yaml_ignores_a_record_for_another_paper() {
+        // An explicit --citekey may point at a directory holding another
+        // paper; its record must not survive into this paper's.
+        let old = "title: \"Other\"\narxiv: \"2506.21812\"\nbibtex_key: \"palikhe2025towards\"\nmetadata_confirmed: true\n";
+        let new = build_source_yaml(None, "2509.21631", None, None, "2026-10-13");
+        assert_eq!(merge_source_yaml(Some(old), new.clone()), new);
     }
 
     #[test]

@@ -39,6 +39,7 @@ A change that alters what the tool promises, or that closes off an alternative s
 | [ADR-004](ADR-004-arxiv-metadata-fallback-and-retry-budget.md) | arXiv metadata falls back to Semantic Scholar then OpenAlex; downloads never wait on metadata; retries honor Retry-After under a 60s budget | Proposed |
 | [ADR-005](ADR-005-web-pages-from-a-host-allowlist.md) | Web pages are read and cited only from an allowlist of five hosts, each with its own extractor; no generic scraping | Proposed |
 | [ADR-006](ADR-006-verify-selected-keys-and-json-statuses.md) | `lit verify --key` checks named entries; `--json` for `verify` and `add`, with `rate_limited` reported apart from `not_found` | Proposed |
+| [ADR-007](ADR-007-artifact-directory-ownership-and-refetch.md) | An artifact directory belongs to the paper its `source.yaml` names; atomic claims, suffixed names, staged in-place refetch, `--no-cache` means refetch | Proposed |
 
 ADR-001 is not in this log.
 It governs the boundary between `lit` and the repository that embeds it, so it belongs to the repository containing both, at `docs/ADR-001-lit-and-repository-workflow.md` in the parent.

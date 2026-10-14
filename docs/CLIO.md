@@ -43,8 +43,9 @@ issued after Columbia CAS login and is valid for ~8 hours.
    # → Expiry: 2026-05-21 – 2026-05-22
    ```
 
-When `.cache/lit/clio/cookies.txt` is present, `lit download <doi>` prints the
-EZProxy URL alongside any open-access URL from Unpaywall:
+When `.cache/lit/clio/cookies.txt` is present and no tier delivers a PDF,
+`lit download <doi>` fails and reports on stderr the EZProxy URL alongside any
+open-access URL from Unpaywall:
 
 ```bash
 lit download 10.1080/00031305.2016.1200489

@@ -350,49 +350,12 @@ pub async fn handle_read(ctx: &cmd::Context, args: &Value) -> Result<String, Str
         return serde_json::to_string(&json).map_err(|e| e.to_string());
     }
 
-    let initial = cmd::read::run_data(ctx, query);
-
-    match initial {
-        Ok(result) => {
-            let mut json = serde_json::Map::new();
-            json.insert(
-                "path".into(),
-                Value::String(result.path.to_string_lossy().into_owned()),
-            );
-            json.insert("format".into(), Value::String(result.format));
-            serde_json::to_string(&Value::Object(json)).map_err(|e| e.to_string())
-        }
-        // Local source exists but is unreadable (or other failure): surface the
-        // real cause instead of the misleading "not found locally" message.
-        Err(e @ (cmd::read::ReadError::Unreadable { .. } | cmd::read::ReadError::Other(_))) => {
-            Err(e.to_string())
-        }
-        Err(cmd::read::ReadError::NotFound(_)) => {
-            let normalized = query.trim();
-            let looks_like_arxiv = normalized.chars().next().is_some_and(|c| c.is_ascii_digit())
-                || normalized.starts_with("arxiv:");
-
-            if looks_like_arxiv {
-                cmd::download::run(ctx, normalized, true, false, None, None)
-                    .await
-                    .map_err(|e| format!("auto-download failed: {}", e))?;
-
-                let result = cmd::read::run_data(ctx, query)
-                    .map_err(|e| format!("read after download failed: {}", e))?;
-
-                let mut json = serde_json::Map::new();
-                json.insert(
-                    "path".into(),
-                    Value::String(result.path.to_string_lossy().into_owned()),
-                );
-                json.insert("format".into(), Value::String(result.format));
-                json.insert("auto_downloaded".into(), Value::Bool(true));
-                serde_json::to_string(&Value::Object(json)).map_err(|e| e.to_string())
-            } else {
-                Err(format!("paper '{}' not found locally. Download it first with an arXiv ID.", query))
-            }
-        }
+    let (result, fetched) = cmd::read::read_or_fetch(ctx, query).await.map_err(|e| e.to_string())?;
+    let mut json = serde_json::json!({ "path": result.path.to_string_lossy(), "format": result.format });
+    if fetched {
+        json["auto_downloaded"] = Value::Bool(true);
     }
+    serde_json::to_string(&json).map_err(|e| e.to_string())
 }
 
 pub async fn handle_refs(ctx: &cmd::Context, args: &Value) -> Result<String, String> {
