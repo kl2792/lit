@@ -7,11 +7,16 @@
 /// When the input is a free-text search query (not a recognized identifier),
 /// searches for the paper, takes the top result, extracts the best available
 /// identifier (DOI > arXiv > ISBN), and uses that to fetch BibTeX.
+///
+/// A URL on an ADR-005 host (Distill, Transformer Circuits, Alignment Forum,
+/// LessWrong) stores the page text as an artifact, then writes the entry
+/// for the page's DOI when it has one, else a `@misc` entry.
 
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
+use super::metadata::{arxiv_metadata, Metadata, MetadataSource};
 use super::Context;
 use crate::api::crossref;
 use crate::api::openlibrary;
@@ -21,46 +26,55 @@ use crate::db;
 use crate::detect::{detect_type, normalize_arxiv, normalize_doi, normalize_isbn, InputType};
 
 /// Result of a successful add operation.
+#[derive(Debug)]
 pub struct AddResult {
     /// The BibTeX citation key (e.g. "schulman2017ppo").
     pub entry_key: String,
     /// The full BibTeX entry text.
     pub bib_text: String,
+    /// True when the citekey was new to the bib file; false when an existing
+    /// entry was replaced.
+    pub added: bool,
+}
+
+impl AddResult {
+    /// The `--json` document for a write to `bib_file`.
+    pub fn to_json(&self, bib_file: &Path) -> serde_json::Value {
+        serde_json::json!({
+            "entry_key": self.entry_key,
+            "bib_file": bib_file.display().to_string(),
+            "added": self.added,
+        })
+    }
 }
 
 /// Fetch BibTeX for a paper, append to a .bib file, and return structured result.
-pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>) -> Result<AddResult, Box<dyn std::error::Error>> {
+pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>, force: bool) -> Result<AddResult, Box<dyn std::error::Error>> {
     let input_type = detect_type(input);
+
+    // CausalAI tech reports have no DOI/arXiv id and the site's own .bib files
+    // are unreliable, so we download the PDF, parse its title page, and ingest
+    // it through the shared misc artifact pipeline (PDF + source.yaml + entry).
+    if input_type == InputType::Causalai {
+        return add_causalai(input, bib_file, key, force);
+    }
+    if input_type == InputType::Url && crate::api::web::is_supported(input) {
+        return add_web(ctx, input, bib_file, key, force).await;
+    }
+
     let client = ctx.client();
+    // The arXiv record behind an arXiv entry, indexed after the write.
+    let mut arxiv_record: Option<Metadata> = None;
 
     let bib_text = match input_type {
         InputType::Arxiv => {
             let id = normalize_arxiv(input);
-            let arxiv_key = db::Db::cache_key("arxiv", &id);
-            let arxiv_url = crate::api::arxiv::query_url(&id);
-            let s2_key = db::Db::cache_key("s2_paper", &id);
-            let s2_url = s2_api::paper_url(&format!("arXiv:{}", id));
-
-            let (arxiv_body, s2_body) = tokio::join!(
-                client.get_cached(&arxiv_key, &arxiv_url, db::TTL_DOI),
-                client.get_cached(&s2_key, &s2_url, db::TTL_DOI),
-            );
-
-            let arxiv_body = arxiv_body?;
-            let mut result = crate::api::arxiv::parse_entry(&arxiv_body)?;
-
-            if let Ok(body) = s2_body {
-                if let Ok(s2) = s2_api::parse_paper(&body) {
-                    if result.venue.is_none() {
-                        result.venue = s2.venue.filter(|v| !is_junk_venue(v));
-                    }
-                }
-            }
-
-            // S2 venue is now used by generate_arxiv_bibtex; no need to hit CrossRef.
+            let meta = arxiv_metadata_with_venue(ctx, &id).await?;
             // CrossRef has inconsistent author ordering vs arXiv, so we prefer our
             // generated entry (correct author order + S2 venue) over CrossRef BibTeX.
-            generate_arxiv_bibtex(&result, &id)
+            let bib = generate_arxiv_bibtex(&meta.paper, &id);
+            arxiv_record = Some(meta);
+            bib
         }
         InputType::Doi => {
             let doi = normalize_doi(input);
@@ -117,18 +131,15 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
         bib_text
     };
 
-    bibtex::upsert_to_file(bib_file, &bib_text)?;
+    // upsert_to_file returns the sanitized text as written, so the printed
+    // and JSON-emitted entry always matches the file.
+    let written = bibtex::upsert_to_file(bib_file, &bib_text, force)?;
 
     // Opportunistic index
     match input_type {
         InputType::Arxiv => {
-            let id = normalize_arxiv(input);
-            let key = db::Db::cache_key("arxiv", &id);
-            let url = crate::api::arxiv::query_url(&id);
-            if let Ok(body) = client.get_cached(&key, &url, db::TTL_DOI).await {
-                if let Ok(result) = crate::api::arxiv::parse_entry(&body) {
-                    super::try_upsert(ctx, &result, "arxiv");
-                }
+            if let Some(meta) = &arxiv_record {
+                super::try_upsert(ctx, &meta.paper, meta.source.id());
             }
         }
         InputType::Doi => {
@@ -144,16 +155,73 @@ pub async fn run_data(ctx: &Context, input: &str, bib_file: &Path, key: Option<&
         _ => {}
     }
 
-    let entry_key = bibtex::extract_entry_key(&bib_text).unwrap_or_else(|| "unknown".to_string());
+    let entry_key = bibtex::extract_entry_key(&written.text).unwrap_or_else(|| "unknown".to_string());
 
-    Ok(AddResult { entry_key, bib_text })
+    Ok(AddResult { entry_key, bib_text: written.text, added: written.added })
 }
 
-pub async fn run(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
-    let result = run_data(ctx, input, bib_file, key).await?;
-    println!("Added {} to {}", result.entry_key, bib_file.display());
-    println!("{}", result.bib_text);
+/// Run `lit add`: the human report, or with `--json` one document from
+/// `AddResult::to_json`.
+pub async fn run(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>, force: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let result = run_data(ctx, input, bib_file, key, force).await?;
+    if ctx.json {
+        println!("{}", serde_json::to_string_pretty(&result.to_json(bib_file))?);
+    } else {
+        println!("Added {} to {}", result.entry_key, bib_file.display());
+        println!("{}", result.bib_text);
+    }
     Ok(())
+}
+
+/// Ingest a CausalAI Lab technical report: download the PDF, parse its title
+/// page for metadata, and write a `@misc` entry plus the `etc/pdf/` artifact
+/// (PDF + source.yaml + extracted text) through the shared misc pipeline.
+fn add_causalai(input: &str, bib_file: &Path, key: Option<&str>, force: bool) -> Result<AddResult, Box<dyn std::error::Error>> {
+    use crate::api::causalai;
+
+    let id = crate::detect::normalize_causalai(input)
+        .ok_or_else(|| format!("could not parse a report number from: {}", input))?;
+    let (meta, bytes) = causalai::fetch(&id)?;
+
+    let citekey = match key {
+        Some(k) => k.to_string(),
+        None => crate::citekey::generate(&meta.authors, &meta.year, &meta.title),
+    };
+    let params = super::misc::MiscParams {
+        citekey,
+        title: meta.title.clone(),
+        authors: meta.authors.clone(),
+        year: meta.year.clone(),
+        howpublished: Some(format!("\\url{{{}}}", causalai::pdf_url(&id))),
+        note: Some(format!(
+            "Technical Report {}, Causal Artificial Intelligence Lab, Columbia University",
+            meta.number
+        )),
+        url: None,
+    };
+
+    // Hand the already-downloaded bytes to the shared misc pipeline via a temp
+    // file, so the artifact is written without a second download.
+    let tmp = std::env::temp_dir().join(format!("lit_causalai_add_{}.pdf", std::process::id()));
+    std::fs::write(&tmp, &bytes)?;
+    let tmp_str = tmp.to_str().ok_or("temp path is not valid UTF-8")?.to_string();
+    let pdf_root = super::read::find_pdf_base()?;
+    let result = super::misc::run_pdf_data(&params, bib_file, &tmp_str, force, &pdf_root);
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+/// Add a page from an ADR-005 host: store or reuse its `etc/pdf/` artifact,
+/// then take the entry from the page's DOI when it has one (under the
+/// artifact's citekey unless `key` is given), else write `@misc`.
+async fn add_web(ctx: &Context, input: &str, bib_file: &Path, key: Option<&str>, force: bool) -> Result<AddResult, Box<dyn std::error::Error>> {
+    use super::web::BibSource;
+
+    let artifact = super::web::ensure(&ctx.client(), &super::read::find_pdf_base()?, input, key, ctx.no_cache).await?;
+    match artifact.bib_source(key) {
+        BibSource::Doi(doi) => Box::pin(run_data(ctx, &doi, bib_file, Some(key.unwrap_or(&artifact.citekey)), force)).await,
+        BibSource::Misc(params) => super::misc::run_data(&params, bib_file, force),
+    }
 }
 
 /// Normalize an OL author name to "First Last" display order for citekey generation.
@@ -185,7 +253,26 @@ async fn fetch_ol_bibtex(ctx: &Context, url: &str) -> Result<String, Box<dyn std
             let edition_url = openlibrary::edition_url(&parts.id);
             let body = client.get(&edition_url).await?;
             let ed = openlibrary::parse_edition(&body)?;
-            (ed.title, ed.publisher, ed.year, ed.author_keys)
+            if !ed.author_keys.is_empty() {
+                (ed.title, ed.publisher, ed.year, ed.author_keys)
+            } else {
+                let edition: serde_json::Value = serde_json::from_str(&body)?;
+                let work_keys = edition["works"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|w| w["key"].as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let mut fallback_authors = Vec::new();
+                for work_key in work_keys {
+                    let work_id = work_key.trim_start_matches("/works/");
+                    let work_body = client.get(&openlibrary::work_url(work_id)).await?;
+                    fallback_authors.extend(openlibrary::parse_work(&work_body)?.author_keys);
+                }
+                (ed.title, ed.publisher, ed.year, fallback_authors)
+            }
         }
         openlibrary::OlKind::Works => {
             let work_url = openlibrary::work_url(&parts.id);
@@ -204,6 +291,7 @@ async fn fetch_ol_bibtex(ctx: &Context, url: &str) -> Result<String, Box<dyn std
                     publisher: None,
                     year: "?".to_string(),
                     author_keys: work.author_keys.clone(),
+                    isbn: None,
                 });
             let author_keys = if !earliest.author_keys.is_empty() {
                 earliest.author_keys
@@ -214,23 +302,21 @@ async fn fetch_ol_bibtex(ctx: &Context, url: &str) -> Result<String, Box<dyn std
         }
     };
 
-    // Fetch the first author's name
-    let author_name = if let Some(key) = author_keys.first() {
-        let author_url = openlibrary::author_url(key);
-        match client.get(&author_url).await {
-            Ok(body) => {
-                let raw = openlibrary::parse_author(&body).unwrap_or_else(|_| "Unknown".to_string());
-                normalize_ol_author(&raw)
-            }
-            Err(_) => "Unknown".to_string(),
-        }
-    } else {
-        "Unknown".to_string()
-    };
+    // Resolve every author, and fail rather than emitting a misleading
+    // `Unknown` author when the metadata endpoint is unavailable.
+    let mut authors = Vec::with_capacity(author_keys.len());
+    for key in &author_keys {
+        let body = client.get(&openlibrary::author_url(key)).await?;
+        let raw = openlibrary::parse_author(&body)?;
+        authors.push(normalize_ol_author(&raw));
+    }
+    if authors.is_empty() {
+        return Err("Open Library edition has no resolvable author names".into());
+    }
 
     let result = crate::api::PaperResult {
         title,
-        authors: vec![author_name],
+        authors,
         year,
         venue: publisher,
         ..Default::default()
@@ -244,6 +330,7 @@ async fn fetch_ol_bibtex(ctx: &Context, url: &str) -> Result<String, Box<dyn std
 /// the first line of extracted text with more than 15 characters.
 pub async fn fetch_title_from_url(url: &str) -> Result<String, Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
+        .use_rustls_tls()
         .timeout(Duration::from_secs(60))
         .build()?;
 
@@ -271,6 +358,26 @@ pub async fn fetch_title_from_url(url: &str) -> Result<String, Box<dyn std::erro
         .to_string();
 
     Ok(title)
+}
+
+/// Metadata for an arXiv paper (arXiv API or its fallbacks) with a publication
+/// venue: the fallback record's own, or Semantic Scholar's when the arXiv API
+/// answered. Preprint servers are dropped as venues.
+async fn arxiv_metadata_with_venue(ctx: &Context, id: &str) -> Result<Metadata, Box<dyn std::error::Error>> {
+    let client = ctx.client();
+    let mut meta = arxiv_metadata(&client, id).await?;
+    // Only the arXiv API lacks venues; after a fallback, S2 was already asked.
+    if meta.source == MetadataSource::Arxiv {
+        let s2_key = db::Db::cache_key("s2_paper", id);
+        let s2_url = s2_api::paper_url(&format!("arXiv:{}", id));
+        if let Ok(body) = client.get_cached(&s2_key, &s2_url, db::TTL_DOI).await {
+            if let Ok(s2) = s2_api::parse_paper(&body) {
+                meta.paper.venue = s2.venue;
+            }
+        }
+    }
+    meta.paper.venue = meta.paper.venue.filter(|v| !is_junk_venue(v));
+    Ok(meta)
 }
 
 /// Generate BibTeX for an arXiv paper from a PaperResult.
@@ -323,11 +430,8 @@ async fn resolve_bibtex_from_result(
     if let Some(ref arxiv_id) = result.arxiv_id {
         let truncated = crate::format::truncate(&result.title, 60);
         eprintln!("Resolved: {} (arXiv:{})", truncated, arxiv_id);
-        let key = db::Db::cache_key("arxiv", arxiv_id);
-        let url = crate::api::arxiv::query_url(arxiv_id);
-        let body = client.get_cached(&key, &url, db::TTL_DOI).await?;
-        let parsed = crate::api::arxiv::parse_entry(&body)?;
-        return Ok(generate_arxiv_bibtex(&parsed, arxiv_id));
+        let meta = arxiv_metadata(&client, arxiv_id).await?;
+        return Ok(generate_arxiv_bibtex(&meta.paper, arxiv_id));
     }
 
     if let Some(ref isbn) = result.isbn {
@@ -359,11 +463,7 @@ async fn resolve_bibtex_from_result(
 /// Generate BibTeX for a book from a PaperResult.
 fn generate_book_bibtex(result: &crate::api::PaperResult) -> String {
     let key = crate::citekey::generate(&result.authors, &result.year, &result.title);
-    let author_str = result
-        .authors
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "Unknown".to_string());
+    let author_str = result.authors.join(" and ");
 
     let mut fields = vec![
         format!("  title = {{{}}}", result.title),
@@ -411,10 +511,8 @@ fn normalize_bibtex_key_from_content(bib: &str) -> String {
 /// S2 returns preprint servers as venue names (e.g. "arXiv.org"), which would
 /// cause `generate_arxiv_bibtex` to emit `@inproceedings` with a bogus booktitle.
 fn is_junk_venue(v: &str) -> bool {
-    matches!(
-        v.to_lowercase().as_str(),
-        "arxiv.org" | "arxiv" | "biorxiv.org" | "biorxiv"
-    )
+    let v = v.to_lowercase();
+    v.starts_with("arxiv") || v.starts_with("biorxiv")
 }
 
 /// Replace the first citekey in a BibTeX string with `new_key`.
@@ -428,4 +526,18 @@ fn replace_bib_key(bib: &str, new_key: &str) -> String {
         }
     }
     bib.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_junk_venue;
+
+    #[test]
+    fn preprint_servers_are_not_venues_under_any_provider_name() {
+        // S2 says "arXiv.org"; OpenAlex says "arXiv (Cornell University)".
+        for v in ["arXiv.org", "arxiv", "arXiv (Cornell University)", "bioRxiv"] {
+            assert!(is_junk_venue(v), "{}", v);
+        }
+        assert!(!is_junk_venue("NeurIPS"));
+    }
 }

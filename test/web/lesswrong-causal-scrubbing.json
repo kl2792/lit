@@ -1,0 +1,25 @@
+{
+ "data": {
+  "post": {
+   "result": {
+    "title": "Causal Scrubbing: a method for rigorously testing interpretability hypotheses [Redwood Research]",
+    "postedAt": "2022-12-03T00:58:36.973Z",
+    "htmlBody": "<p><i>* Authors sorted alphabetically.</i></p><p><br>Summary: This post introduces causal scrubbing, a principled approach for evaluating the quality of mechanistic interpretations.</p><h1>1 Introduction</h1><p>A question that all mechanistic interpretability work must answer is, “how well does this interpretation explain the phenomenon being studied?”.<span class=\"footnote-reference\" role=\"doc-noteref\" id=\"fnrefdtq6l2laqcp\"><sup><a href=\"#fndtq6l2laqcp\">[1]</a></sup></span></p><h1>2 Setup</h1><p>We assume a dataset&nbsp;<span><span class=\"mjpage\"><span class=\"mjx-chtml\"><span class=\"mjx-math\" aria-label=\"D\"><span class=\"mjx-mrow\" aria-hidden=\"true\"><span class=\"mjx-mi\"><span class=\"mjx-char MJXc-TeX-math-I\" style=\"padding-top: 0.446em;\">D</span></span></span></span><style>.mjx-chtml {display: inline-block; line-height: 0;}</style></span></span></span> over a domain.</p><pre><code>def scrub(model):\n    return model</code></pre><ol class=\"footnotes\" role=\"doc-endnotes\"><li class=\"footnote-item\" role=\"doc-endnote\" id=\"fndtq6l2laqcp\"><p>Ad hoc methods include ablations.</p></li></ol>",
+    "user": {
+     "displayName": "LawrenceC"
+    },
+    "coauthors": [
+     {
+      "displayName": "Adrià Garriga-alonso"
+     },
+     {
+      "displayName": "ryan_greenblatt"
+     },
+     {
+      "displayName": "Buck"
+     }
+    ]
+   }
+  }
+ }
+}

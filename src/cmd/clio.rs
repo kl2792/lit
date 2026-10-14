@@ -108,6 +108,7 @@ pub async fn run_sync(
             None if files_done > 0 => println!("Last sync: in progress ({} files done)", files_done),
             None => println!("Last sync: never"),
         }
+        report_stale_doi_index(&conn);
         return Ok(());
     }
 
@@ -131,22 +132,21 @@ pub async fn run_sync(
         if let Some(ref date) = last_sync {
             println!("Already synced on {}. Columbia updates monthly.", date);
             println!("Run `lit clio sync --force` to re-sync.");
+            report_stale_doi_index(&conn);
             return Ok(());
         }
     }
 
-    // --force: clear existing data and per-file progress
     if force {
-        conn.execute_batch(
-            "DELETE FROM clio_fts;
-             DELETE FROM clio_meta WHERE key LIKE 'file:%';
-             DELETE FROM clio_meta WHERE key='last_sync';",
-        )?;
+        clio_api::clear_clio_db(&conn)?;
         println!("Cleared existing index.");
+    } else {
+        report_stale_doi_index(&conn);
     }
 
     // Fetch index page to discover extract filenames
     let client = reqwest::Client::builder()
+        .use_rustls_tls()
         .user_agent("lit/1.0")
         .timeout(std::time::Duration::from_secs(120))
         .build()?;
@@ -270,6 +270,17 @@ pub async fn run_sync(
 }
 
 // --- Helpers ---
+
+/// Tell the user when the DOI index is unfillable without a full re-sync.
+///
+/// Sync skips files already in `clio_meta`, so a database synced before `clio_doi`
+/// existed would otherwise miss every DOI lookup silently.
+fn report_stale_doi_index(conn: &rusqlite::Connection) {
+    if clio_api::doi_index_stale(conn) {
+        println!("DOI index missing: this database was synced before the DOI table existed.");
+        println!("Run `lit clio sync --force` to build it.");
+    }
+}
 
 /// Extract `extract-NNN.xml.gz` filenames from an HTML index page.
 fn extract_gz_filenames(html: &str) -> Vec<String> {

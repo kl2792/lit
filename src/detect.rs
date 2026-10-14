@@ -20,13 +20,23 @@ static PHILPAPERS_URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://philpapers\.org/rec/").unwrap());
 static OL_URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^https?://openlibrary\.org/(works|books)/").unwrap());
+static CAUSALAI_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^https?://(www\.)?causalai\.net/r[0-9]+(\.pdf)?/?$").unwrap()
+});
+static CAUSALAI_SCHEME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^causalai:r?[0-9]+$").unwrap());
 static ARXIV_NEW_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(arXiv:|arxiv:)?[0-9]{4}\.[0-9]{4,5}(v[0-9]+)?$").unwrap());
+    LazyLock::new(|| Regex::new(r"^(?i:arxiv:)?[0-9]{4}\.[0-9]{4,5}(v[0-9]+)?$").unwrap());
 static ARXIV_OLD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[a-z-]+(\.[A-Z][A-Za-z-]*)?/[0-9]{7}(v[0-9]+)?$").unwrap()
+    Regex::new(r"^(?i:arxiv:)?[a-z-]+(\.[A-Z][A-Za-z-]*)?/[0-9]{7}(v[0-9]+)?$").unwrap()
 });
 static DOI_BARE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^10\.[0-9]{4,}/").unwrap());
+    LazyLock::new(|| Regex::new(r"^(?i:doi:)?10\.[0-9]{4,}/").unwrap());
+/// Every arXiv abstract or PDF page URL, on any host arXiv serves it from.
+static ARXIV_PAGE_URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^https?://(www\.|export\.)?arxiv\.org/(abs|pdf)/").unwrap());
+static ARXIV_SCHEME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^arxiv:").unwrap());
+static DOI_SCHEME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^doi:").unwrap());
 static ISBN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[0-9]{9}[0-9Xx]$|^[0-9]{13}$").unwrap());
 static VERSION_RE: LazyLock<Regex> =
@@ -41,6 +51,8 @@ pub enum InputType {
     SemanticScholarUrl,
     PhilPapersUrl,
     OpenLibraryUrl,
+    /// CausalAI Lab technical report (causalai.net/rNNN or `causalai:rNNN`).
+    Causalai,
     Url,
     Search,
 }
@@ -81,6 +93,13 @@ pub fn detect_type(input: &str) -> InputType {
         return InputType::OpenLibraryUrl;
     }
 
+    // CausalAI tech report: causalai.net URL or `causalai:rNNN` scheme.
+    // Checked before the generic URL fallback so the report PDF is ingested
+    // rather than scraped as an HTML title.
+    if CAUSALAI_URL_RE.is_match(input) || CAUSALAI_SCHEME_RE.is_match(input) {
+        return InputType::Causalai;
+    }
+
     // Any remaining https/http URL not matched above
     if input.starts_with("https://") || input.starts_with("http://") {
         return InputType::Url;
@@ -107,63 +126,54 @@ pub fn detect_type(input: &str) -> InputType {
     InputType::Search
 }
 
-/// Strip URL prefixes, `arXiv:` prefix, version suffix, and `.pdf` suffix
-/// from an arXiv identifier.
+/// Strip an arXiv page URL or an `arXiv:` prefix (any case), then the `.pdf`
+/// and version suffixes, from an arXiv identifier.
 pub fn normalize_arxiv(input: &str) -> String {
-    let mut s = input.to_string();
-
-    // Strip URL prefixes (order matters: longer prefixes first)
-    let prefixes = [
-        "https://export.arxiv.org/abs/",
-        "https://arxiv.org/abs/",
-        "http://arxiv.org/abs/",
-        "https://arxiv.org/pdf/",
-        "http://arxiv.org/pdf/",
-    ];
-    for prefix in &prefixes {
-        if let Some(rest) = s.strip_prefix(prefix) {
-            s = rest.to_string();
-            break;
-        }
-    }
-
-    // Strip arXiv: prefix (case-insensitive for the two known variants)
-    if let Some(rest) = s.strip_prefix("arXiv:") {
-        s = rest.to_string();
-    } else if let Some(rest) = s.strip_prefix("arxiv:") {
-        s = rest.to_string();
-    }
-
-    // Strip version suffix vN (e.g., v1, v12)
-    s = VERSION_RE.replace(&s, "").to_string();
-
-    // Strip .pdf suffix
-    if let Some(rest) = s.strip_suffix(".pdf") {
-        s = rest.to_string();
-    }
-
-    s
+    let s = ARXIV_PAGE_URL_RE.replace(input, "");
+    let s = ARXIV_SCHEME_RE.replace(&s, "");
+    let s = s.strip_suffix(".pdf").unwrap_or(&s);
+    VERSION_RE.replace(s, "").into_owned()
 }
 
-/// Strip URL prefixes from a DOI string.
+/// Strip a DOI resolver URL or a `doi:` prefix (any case) from a DOI string.
 pub fn normalize_doi(input: &str) -> String {
-    let prefixes = [
-        "https://doi.org/",
-        "http://doi.org/",
-        "https://dx.doi.org/",
-        "http://dx.doi.org/",
-    ];
-    for prefix in &prefixes {
-        if let Some(rest) = input.strip_prefix(prefix) {
-            return rest.to_string();
-        }
+    DOI_SCHEME_RE.replace(&DOI_URL_RE.replace(input, ""), "").into_owned()
+}
+
+/// The arXiv identifier an arXiv-registered DOI (`10.48550/arXiv.<id>`) names,
+/// normalized as `normalize_arxiv` would, or `None` for any other DOI.
+pub fn arxiv_id_from_doi(doi: &str) -> Option<String> {
+    const PREFIX: &str = "10.48550/arxiv.";
+    let head = doi.get(..PREFIX.len())?;
+    if !head.eq_ignore_ascii_case(PREFIX) {
+        return None;
     }
-    input.to_string()
+    let id = &doi[PREFIX.len()..];
+    (ARXIV_NEW_RE.is_match(id) || ARXIV_OLD_RE.is_match(id)).then(|| normalize_arxiv(id))
 }
 
 /// Strip hyphens and spaces from an ISBN string.
 pub fn normalize_isbn(input: &str) -> String {
     input.chars().filter(|c| *c != '-' && *c != ' ').collect()
+}
+
+/// Extract the canonical report id (e.g. `r145`) from any accepted CausalAI
+/// input: a `causalai.net/rNNN[.pdf]` URL or a `causalai:rNNN` / `causalai:NNN`
+/// scheme. Returns `None` if no report number is present.
+pub fn normalize_causalai(input: &str) -> Option<String> {
+    // Take the final path/scheme segment ("r145.pdf", "r145", or "145"),
+    // then keep only its digits.
+    let segment = input
+        .trim_end_matches('/')
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or("");
+    let digits: String = segment.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        Some(format!("r{}", digits))
+    }
 }
 
 #[cfg(test)]
@@ -373,6 +383,42 @@ mod tests {
     }
 
     #[test]
+    fn detect_causalai_pdf_url() {
+        assert_eq!(detect_type("https://causalai.net/r145.pdf"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_url_no_pdf() {
+        assert_eq!(detect_type("https://causalai.net/r125"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_www_http() {
+        assert_eq!(detect_type("http://www.causalai.net/r152.pdf"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_scheme() {
+        assert_eq!(detect_type("causalai:r145"), InputType::Causalai);
+        assert_eq!(detect_type("causalai:152"), InputType::Causalai);
+    }
+
+    #[test]
+    fn detect_causalai_other_path_is_plain_url() {
+        // Non-report causalai.net pages fall through to the generic URL handler.
+        assert_eq!(detect_type("https://causalai.net/publications"), InputType::Url);
+    }
+
+    #[test]
+    fn normalize_causalai_variants() {
+        assert_eq!(normalize_causalai("https://causalai.net/r145.pdf").as_deref(), Some("r145"));
+        assert_eq!(normalize_causalai("https://www.causalai.net/r125/").as_deref(), Some("r125"));
+        assert_eq!(normalize_causalai("causalai:r152").as_deref(), Some("r152"));
+        assert_eq!(normalize_causalai("causalai:152").as_deref(), Some("r152"));
+        assert_eq!(normalize_causalai("causalai:rabbit").as_deref(), None);
+    }
+
+    #[test]
     fn detect_search_free_text() {
         assert_eq!(
             detect_type("attention is all you need"),
@@ -435,6 +481,34 @@ mod tests {
         );
     }
 
+    // ── arxiv_id_from_doi ──
+
+    #[test]
+    fn arxiv_id_from_doi_new_style() {
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv.2510.24941"), Some("2510.24941".to_string()));
+    }
+
+    #[test]
+    fn arxiv_id_from_doi_is_case_insensitive_in_the_prefix() {
+        // DOIs are case-insensitive, and DataCite lowercases them in some records.
+        assert_eq!(arxiv_id_from_doi("10.48550/ARXIV.2510.24941"), Some("2510.24941".to_string()));
+        assert_eq!(arxiv_id_from_doi("10.48550/arxiv.2510.24941"), Some("2510.24941".to_string()));
+    }
+
+    #[test]
+    fn arxiv_id_from_doi_old_style() {
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv.hep-th/9901001"), Some("hep-th/9901001".to_string()));
+    }
+
+    #[test]
+    fn arxiv_id_from_doi_rejects_other_dois() {
+        assert_eq!(arxiv_id_from_doi("10.1145/3442188.3445899"), None);
+        // Same registrant, but the suffix is not an arXiv identifier.
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv.notanid"), None);
+        assert_eq!(arxiv_id_from_doi("10.48550/arXiv."), None);
+        assert_eq!(arxiv_id_from_doi(""), None);
+    }
+
     // ── normalize_doi ──
 
     #[test]
@@ -467,6 +541,56 @@ mod tests {
             normalize_doi("http://doi.org/10.1145/3442188.3445899"),
             "10.1145/3442188.3445899"
         );
+    }
+
+    // ── identifier prefixes and URL hosts ──
+
+    #[test]
+    fn detect_type_accepts_every_prefix_and_host_form() {
+        let cases = [
+            ("arxiv:hep-th/9901001", InputType::Arxiv),
+            ("arXiv:hep-th/9901001v2", InputType::Arxiv),
+            ("ARXIV:2006.11239", InputType::Arxiv),
+            ("ArXiv:math.AG/0601001", InputType::Arxiv),
+            ("https://www.arxiv.org/abs/2006.11239", InputType::Arxiv),
+            ("http://export.arxiv.org/abs/2006.11239", InputType::Arxiv),
+            ("doi:10.1145/3442188.3445899", InputType::Doi),
+            ("DOI:10.1145/3442188.3445899", InputType::Doi),
+            ("doi:2006.11239", InputType::Search),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(detect_type(input), expected, "input {:?}", input);
+        }
+    }
+
+    #[test]
+    fn normalize_arxiv_strips_every_prefix_and_host_form() {
+        let cases = [
+            ("arxiv:hep-th/9901001", "hep-th/9901001"),
+            ("ARXIV:2006.11239v2", "2006.11239"),
+            ("ArXiv:math.AG/0601001v1", "math.AG/0601001"),
+            ("https://www.arxiv.org/abs/2006.11239v1", "2006.11239"),
+            ("http://www.arxiv.org/pdf/2006.11239.pdf", "2006.11239"),
+            ("http://export.arxiv.org/abs/2006.11239", "2006.11239"),
+            ("https://export.arxiv.org/pdf/2006.11239v3", "2006.11239"),
+            ("https://arxiv.org/abs/hep-th/9901001v2", "hep-th/9901001"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize_arxiv(input), expected, "input {:?}", input);
+        }
+    }
+
+    #[test]
+    fn normalize_doi_strips_a_doi_scheme_in_any_case() {
+        let cases = [
+            ("doi:10.1145/3442188.3445899", "10.1145/3442188.3445899"),
+            ("DOI:10.1145/3442188.3445899", "10.1145/3442188.3445899"),
+            ("Doi:10.1145/3442188.3445899", "10.1145/3442188.3445899"),
+            ("https://doi.org/10.1145/3442188.3445899", "10.1145/3442188.3445899"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize_doi(input), expected, "input {:?}", input);
+        }
     }
 
     // ── normalize_isbn ──
