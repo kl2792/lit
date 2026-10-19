@@ -373,10 +373,12 @@ pub fn meta_all(nodes: &[Node], name: &str) -> Vec<String> {
 
 /// Render `nodes` as plain text: headings as `#` lines, list items as `- `
 /// lines, one blank line between blocks, `<pre>` verbatim, math as `$TeX$`,
-/// footnotes as `[footnote: ...]`, citations as `[key]`. Navigation, scripts,
-/// styles, SVG, comments sections and `aria-hidden` subtrees are omitted.
+/// footnotes as `[footnote: ...]`, citations as `[key]`, links as
+/// `[text](href)` (in-page `#` and `javascript:` links as their text).
+/// Navigation, scripts, styles, SVG, comments sections and `aria-hidden`
+/// subtrees are omitted.
 pub fn render_text(nodes: &[Node]) -> String {
-    let mut r = Renderer { out: String::new(), prefix: String::new() };
+    let mut r = Renderer::default();
     r.nodes(nodes);
     let mut text = String::new();
     let mut blank = 0;
@@ -394,6 +396,14 @@ pub fn render_text(nodes: &[Node]) -> String {
     text
 }
 
+/// Whether a link target (trimmed) can name another work, so the link keeps
+/// it: in-page `#` anchors and `javascript:` actions name none.
+fn names_a_work(href: &str) -> bool {
+    let script = href.get(..11).is_some_and(|scheme| scheme.eq_ignore_ascii_case("javascript:"));
+    !href.is_empty() && !href.starts_with('#') && !script
+}
+
+#[derive(Default)]
 struct Renderer {
     out: String,
     /// A line marker (`- `, `## `) waiting for the first text of its line,
@@ -494,6 +504,12 @@ impl Renderer {
                 self.inline(&format!(" [footnote: {}]", e.text()));
                 return;
             }
+            "a" => {
+                if let Some(href) = e.attr("href").map(str::trim).filter(|h| names_a_work(h)) {
+                    self.link(e, href);
+                    return;
+                }
+            }
             _ => {}
         }
         if e.has_class("mjx-math")
@@ -526,6 +542,23 @@ impl Renderer {
         } else if is_block {
             self.block_break();
         }
+    }
+
+    /// Append link `e` to `href` as `[text](href)`, keeping the target a post
+    /// cites a paper by; the bare `href` when the text is empty or is `href`.
+    /// The text renders on one line, keeping the whitespace around it.
+    fn link(&mut self, e: &Element, href: &str) {
+        let mut inner = Renderer::default();
+        inner.nodes(&e.children);
+        let text = collapse_whitespace(&inner.out);
+        let link = if text.is_empty() || text == href { href.to_string() } else { format!("[{}]({})", text, href) };
+        // The edges come from the raw text because `inner` starts at a line
+        // start, where `inline` drops leading whitespace.
+        let mut raw = String::new();
+        collect_text(&e.children, &mut raw);
+        let space = |yes: bool| if yes { " " } else { "" };
+        let (before, after) = (raw.starts_with(char::is_whitespace), raw.ends_with(char::is_whitespace));
+        self.inline(&format!("{}{}{}", space(before), link, space(after)));
     }
 }
 
@@ -625,6 +658,42 @@ mod tests {
              <p>Set <span class=\"mjx-math\" aria-label=\"D\"><span aria-hidden=\"true\">D</span></span> here.</p>",
         );
         assert_eq!(render_text(&doc), "Let $W_Q$ act[v2017]. [footnote: Note.]\n\nSet $D$ here.");
+    }
+
+    #[test]
+    fn render_keeps_link_targets_as_markdown_links() {
+        // Forum posts cite papers by link; dropping the href left no id to harvest.
+        let doc = parse(
+            "<p>See <a href=\"https://arxiv.org/abs/2211.00593\">the <i>IOI</i>\n paper</a>, \
+             <a href=\"https://doi.org/10.1/x\">https://doi.org/10.1/x</a>, <a href=\"/posts/abc\">a post</a> \
+             and <a href=\"https://example.org/fig\"><img src=\"f.png\"></a>.<sup><a href=\"#fn1\">[1]</a></sup></p>",
+        );
+        assert_eq!(
+            render_text(&doc),
+            "See [the IOI paper](https://arxiv.org/abs/2211.00593), https://doi.org/10.1/x, [a post](/posts/abc) \
+             and https://example.org/fig.[1]"
+        );
+    }
+
+    #[test]
+    fn a_link_keeps_the_whitespace_around_its_text() {
+        let doc = parse("<li>a<a href=\"u\"> b </a>c</li>");
+        assert_eq!(render_text(&doc), "- a [b](u) c");
+    }
+
+    #[test]
+    fn link_forms_render_as_a_link_or_as_their_text() {
+        for (html, text) in [
+            ("<li><a href=\"u\">x</a></li>", "- [x](u)"),
+            ("<h2><a href=u>x</a></h2>", "## [x](u)"),
+            ("<p><a href=\"mailto:a@b.org\">mail</a></p>", "[mail](mailto:a@b.org)"),
+            ("<p><a href=\" \">x</a></p>", "x"),
+            ("<p><a href=\" #x \">x</a></p>", "x"),
+            ("<p><a name=\"s1\">x</a></p>", "x"),
+            ("<p><a href=\"JavaScript:void(0)\">x</a></p>", "x"),
+        ] {
+            assert_eq!(render_text(&parse(html)), text, "html: {}", html);
+        }
     }
 
     #[test]

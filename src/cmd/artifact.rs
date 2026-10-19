@@ -159,13 +159,22 @@ impl Drop for Claim {
     }
 }
 
+/// The names a new artifact for `slug` may take, in order: `slug`, `slug`b,
+/// ..., `slug`z, `slug`27, ... (ADR-007 decision 3). Unbounded, so a free one
+/// exists.
+pub(crate) fn candidate_names(slug: &str) -> impl Iterator<Item = String> + '_ {
+    std::iter::once(slug.to_string())
+        .chain(('b'..='z').map(move |c| format!("{}{}", slug, c)))
+        .chain((27u32..).map(move |n| format!("{}{}", slug, n)))
+}
+
 /// Claim the directory under `base` that a download of `id` writes.
 ///
 /// The directory already naming `id` is reused, so a refetch lands on the
-/// existing copy. Otherwise the first of `slug`, `slug`b, ..., `slug`z,
-/// `slug`27, ... that `is_free` is claimed by taking its lock (`lock::acquire`),
-/// which is atomic: of two downloads racing for one name, only one takes it,
-/// and the other moves on unless it fetches the same paper. A lock whose
+/// existing copy. Otherwise the first of `candidate_names(slug)` that
+/// `is_free` is claimed by taking its lock (`lock::acquire`), which is
+/// atomic: of two downloads racing for one name, only one takes it, and the
+/// other moves on unless it fetches the same paper. A lock whose
 /// download crashed is stale and is broken rather than skipped. A paper
 /// therefore never writes into a directory holding or being written with
 /// another paper, or holding content of unknown provenance.
@@ -173,10 +182,7 @@ pub(crate) fn claim_dir(base: &Path, slug: &str, id: &Target) -> std::io::Result
     if let Some(own) = owner_dir(base, id)? {
         return Ok(Claim { dir: own, lock: None });
     }
-    let names = std::iter::once(slug.to_string())
-        .chain(('b'..='z').map(|c| format!("{}{}", slug, c)))
-        .chain((27u32..).map(|n| format!("{}{}", slug, n)));
-    for dir in names.map(|name| base.join(name)) {
+    for dir in candidate_names(slug).map(|name| base.join(name)) {
         match std::fs::create_dir(&dir) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -300,6 +306,12 @@ mod tests {
             std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         names
+    }
+
+    #[test]
+    fn candidate_names_are_the_slug_then_letter_then_number_suffixes() {
+        let nth = |n: usize| candidate_names("s").nth(n).unwrap();
+        assert_eq!([nth(0), nth(1), nth(25), nth(26)], ["s", "sb", "sz", "s27"]);
     }
 
     #[test]

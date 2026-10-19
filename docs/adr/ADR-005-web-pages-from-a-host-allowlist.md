@@ -26,7 +26,13 @@ A scraper that guesses would write plausible but wrong authors into a bibliograp
    Distill pages give `citation_*` meta tags, including the DOI.
    Transformer Circuits pages give the title, the byline author names and the published date.
    The body is the page's `d-article`, `article` or `main` element, rendered to plain text without navigation, scripts, styles, figures' vector graphics, comments, appendices or footers; math, citations and footnotes stay inline.
+   A link stays inline as `[text](href)` with the target as the page wrote it, because a post cites papers by linking them and the target is the only place their ids appear.
+   A link whose text is empty or is the target itself is written as the bare target, and an in-page link (`#...`) or a `javascript:` link as its text alone, since its target names no other work.
 3. A page is stored as the artifact `etc/pdf/<citekey>/` holding `paper.txt` and a `source.yaml` that records the canonical URL, the host, the fetch time, the extraction method and `metadata_confirmed`.
+   A new page's directory is the `--key` value when given, and an error if that directory exists.
+   Otherwise it is the generated citekey or, when a directory of that name exists, the first absent name in ADR-007's suffix sequence (`b`, `c`, ...), and the suffixed name is the artifact's citekey.
+   A store takes a name by creating its directory, which fails when the directory exists, so two concurrent stores never take one name.
+   Absent, rather than ADR-007's free, because a web artifact's `source.yaml` names its work by `url`, not by `arxiv` or `doi`, so ADR-007's test would take another page's metadata-only directory for a free one.
    The artifact is the cache: a later request for any spelling of the same page, or for the same post on another forum host, reads it with no request.
    `--no-cache` refetches into the same directory.
    The page body never enters the HTTP response cache.
@@ -38,4 +44,7 @@ A scraper that guesses would write plausible but wrong authors into a bibliograp
 A page on an unlisted host cannot be read or added from its URL; the user saves the text or runs `lit misc` by hand.
 A redesign of a host's page template can break its extractor, and the fixture tests do not detect that, because they run against stored samples; the live smoke test is the check.
 Forum metadata names authors by display name, which is often a username, so a citekey can come from one (`lawrencec2022causal`), and `--key` overrides it.
+Posts of one author and year whose titles share a first word, such as the "EIS ..." posts of one sequence, generate one citekey, so all but the first stored get suffixed citekeys (`scasper2023eisb`, ...) in the order they were read.
+Because the suffix order is the read order, one sequence post can get different citekeys on two machines; `--key` fixes the citekey when a stable one matters.
+Relative link targets stay relative, so a reader resolves them against the page's host.
 Web artifacts are not indexed in the paper database, so `lit search --local` does not find them; the artifact scan that finds them costs one `source.yaml` read per artifact directory.

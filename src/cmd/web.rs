@@ -82,10 +82,14 @@ pub async fn read(ctx: &super::Context, input: &str) -> Result<ReadResult, Box<d
 /// The artifact under `root` for the work at `input`, fetched and stored
 /// when none exists or `refresh` is set.
 ///
-/// A new artifact's directory is `key`, else the generated
-/// author-year-word citekey; an existing one keeps its directory. A
-/// directory of that name holding a different work is an error, never
-/// overwritten. On any failure nothing is written.
+/// A new artifact's directory is `key`, an error if it exists, else the
+/// first absent name in `candidate_names` of the generated author-year-word
+/// citekey, so posts whose titles share a first word get distinct
+/// directories; an existing artifact keeps its directory. A new directory is
+/// taken by creating it (`claim`), so two concurrent stores never pick one.
+/// "Absent", not ADR-007's "free": a web `source.yaml` names its work by
+/// `url`, which that test does not read (ADR-005 decision 3). On any failure
+/// nothing is written.
 /// Cost: one `source.yaml` read per artifact under `root`, plus one request
 /// when the work has no artifact.
 pub(crate) async fn ensure<F: MetadataFetch>(
@@ -110,25 +114,28 @@ pub(crate) async fn ensure<F: MetadataFetch>(
         .map_err(|e| format!("fetching {}: {}", url.url, e))?;
     let page = web::parse_page(url.site, &body).map_err(|e| format!("{}: {}", url.url, e))?;
 
-    let dir = match existing {
-        Some(dir) => dir,
-        None => {
-            let citekey = key
-                .map(str::to_string)
-                .unwrap_or_else(|| crate::citekey::generate(&page.authors, &page.year, &page.title));
-            let dir = root.join(&citekey);
-            if dir.exists() {
+    let claimed = existing.is_none();
+    let dir = match (existing, key) {
+        (Some(dir), _) => dir,
+        (None, Some(key)) => {
+            let dir = root.join(key);
+            if !claim(&dir).map_err(|e| format!("creating {}: {}", dir.display(), e))? {
                 return Err(format!(
-                    "{} already holds a different work; rerun `lit add {} <bib> --key <citekey>` to store this page under another citekey",
+                    "{} already holds a different work; rerun with another --key to store {} under another citekey",
                     dir.display(),
                     url.url
                 ));
             }
             dir
         }
+        (None, None) => {
+            let slug = crate::citekey::generate(&page.authors, &page.year, &page.title);
+            claim_first(root, &slug)
+                .map_err(|e| format!("creating a directory for {} under {}: {}", slug, root.display(), e))?
+        }
     };
     let artifact = artifact_for(dir, url, &page);
-    write_artifact(&artifact, &page).map_err(|e| format!("writing {}: {}", artifact.dir.display(), e))?;
+    write_artifact(&artifact, &page, claimed).map_err(|e| format!("writing {}: {}", artifact.dir.display(), e))?;
     crate::format::info(&format!("stored {} in {}", artifact.url.url, artifact.dir.display()));
     Ok(artifact)
 }
@@ -199,13 +206,53 @@ fn yaml_value(yaml: &str, key: &str) -> Option<String> {
     super::check::yaml_field(yaml, key).map(|v| v.replace("\\\"", "\"")).filter(|v| !v.is_empty())
 }
 
+/// Create `dir` empty, so that of concurrent stores only this one may write
+/// it; false when it already exists, as another work or another store's claim.
+fn claim(dir: &Path) -> std::io::Result<bool> {
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::create_dir(dir) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Claim the first of `candidate_names(slug)` under `root` that `claim` creates.
+///
+/// Not `artifact::claim_dir`: it identifies works by arXiv id or DOI and
+/// takes an empty directory as free, but here an empty directory may be
+/// another store's claim.
+fn claim_first(root: &Path, slug: &str) -> std::io::Result<PathBuf> {
+    for dir in super::artifact::candidate_names(slug).map(|name| root.join(name)) {
+        if claim(&dir)? {
+            return Ok(dir);
+        }
+    }
+    unreachable!("an unbounded sequence of names has a free one")
+}
+
 /// Write `paper.txt` and `source.yaml` into a staging directory, then move
 /// it onto `artifact.dir`, so a failure leaves the previous artifact or none.
-fn write_artifact(artifact: &WebArtifact, page: &WebPage) -> std::io::Result<()> {
+///
+/// A `claimed` directory is this store's empty claim: the staging directory
+/// replaces it by one rename, which fails rather than replace it if anything
+/// has entered it, and a failure removes the claim if it is still empty.
+fn write_artifact(artifact: &WebArtifact, page: &WebPage, claimed: bool) -> std::io::Result<()> {
     let staging = super::misc::fresh_staging(&artifact.dir);
-    let result = fill_staging(artifact, page, &staging).and_then(|()| super::misc::publish(&staging, &artifact.dir));
+    let result = fill_staging(artifact, page, &staging).and_then(|()| {
+        if claimed {
+            std::fs::rename(&staging, &artifact.dir)
+        } else {
+            super::misc::publish(&staging, &artifact.dir)
+        }
+    });
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
+        if claimed {
+            let _ = std::fs::remove_dir(&artifact.dir);
+        }
     }
     result
 }
@@ -347,15 +394,83 @@ mod tests {
         assert_eq!(calls(&f), 0);
     }
 
+    /// Make `root/name` holding a `source.yaml` for some other work.
+    fn other_work(root: &Path, name: &str) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("source.yaml"), "title: \"Other\"\n").unwrap();
+        dir
+    }
+
     #[tokio::test]
-    async fn a_citekey_held_by_another_work_is_an_error_not_an_overwrite() {
+    async fn two_posts_with_one_generated_citekey_get_suffixed_directories() {
+        // Posts of one author and year whose titles share a first word generate
+        // one citekey; every post of Casper's "EIS" sequence generated
+        // scasper2023eis, and the second one read failed with "already holds a
+        // different work". The fixture stands in with two post ids.
         let root = tempfile::tempdir().unwrap();
-        let other = root.path().join("olah2020zoom");
-        std::fs::create_dir_all(&other).unwrap();
-        std::fs::write(other.join("source.yaml"), "bibtex_key: \"olah2020zoom\"\ntitle: \"Other\"\n").unwrap();
-        let err = ensure(&mock(), root.path(), DISTILL_URL, None, false).await.unwrap_err();
+        let f = mock();
+        let first = ensure(&f, root.path(), AF_URL, None, false).await.unwrap();
+        let second = ensure(&f, root.path(), "https://www.alignmentforum.org/posts/AAAAAAAAAAAAAAAAA/eis-ii", None, false)
+            .await
+            .unwrap();
+        assert_eq!(first.dir, root.path().join("lawrencec2022causal"));
+        assert_eq!(second.dir, root.path().join("lawrencec2022causalb"));
+        assert_eq!(second.citekey, "lawrencec2022causalb");
+        let again = ensure(&f, root.path(), "https://www.lesswrong.com/posts/AAAAAAAAAAAAAAAAA", None, false).await.unwrap();
+        assert_eq!((again.dir, calls(&f)), (second.dir, 2));
+    }
+
+    #[tokio::test]
+    async fn a_generated_citekey_skips_any_existing_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let other = other_work(root.path(), "olah2020zoom");
+        std::fs::create_dir(root.path().join("olah2020zoomb")).unwrap();
+        let a = ensure(&mock(), root.path(), DISTILL_URL, None, false).await.unwrap();
+        assert_eq!(a.dir, root.path().join("olah2020zoomc"));
+        assert_eq!(std::fs::read_to_string(other.join("source.yaml")).unwrap(), "title: \"Other\"\n");
+        // An empty directory may be another store's claim, so it stays untouched.
+        assert_eq!(std::fs::read_dir(root.path().join("olah2020zoomb")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn concurrent_stores_of_two_pages_with_one_citekey_keep_both() {
+        // Both used to pick the absent slug, and the second publish replaced
+        // the first artifact.
+        for _ in 0..20 {
+            let root = tempfile::tempdir().unwrap();
+            let start = std::sync::Barrier::new(2);
+            let urls = [AF_URL, "https://www.alignmentforum.org/posts/AAAAAAAAAAAAAAAAA/eis-ii"];
+            let dirs: Vec<PathBuf> = std::thread::scope(|s| {
+                let stores: Vec<_> = urls
+                    .map(|url| {
+                        let (root, start) = (root.path(), &start);
+                        s.spawn(move || {
+                            let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+                            let f = mock();
+                            start.wait();
+                            rt.block_on(ensure(&f, root, url, None, false)).unwrap().dir
+                        })
+                    })
+                    .into_iter()
+                    .collect();
+                stores.into_iter().map(|t| t.join().unwrap()).collect()
+            });
+            assert_ne!(dirs[0], dirs[1]);
+            for (dir, url) in dirs.iter().zip(urls) {
+                let stored = yaml_value(&std::fs::read_to_string(dir.join("source.yaml")).unwrap(), "url").unwrap();
+                assert_eq!(web::parse_url(&stored).unwrap().identity(), web::parse_url(url).unwrap().identity());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_key_held_by_another_work_is_an_error_not_an_overwrite() {
+        let root = tempfile::tempdir().unwrap();
+        let other = other_work(root.path(), "olah2020circuits");
+        let err = ensure(&mock(), root.path(), DISTILL_URL, Some("olah2020circuits"), false).await.unwrap_err();
         assert!(err.contains("already holds a different work") && err.contains("--key"), "err: {}", err);
-        assert_eq!(std::fs::read_to_string(other.join("source.yaml")).unwrap(), "bibtex_key: \"olah2020zoom\"\ntitle: \"Other\"\n");
+        assert_eq!(std::fs::read_to_string(other.join("source.yaml")).unwrap(), "title: \"Other\"\n");
     }
 
     #[tokio::test]

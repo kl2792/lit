@@ -441,6 +441,7 @@ mod tests {
         assert!(text.contains("Micrographia[hooke1666micrographia] revealed"), "text: {}", text);
         assert!(text.contains("[footnote: By \u{201c}direction\u{201d} we mean"), "text: {}", text);
         assert!(text.contains("- Claim 1: Features\n- Claim 2: Circuits"), "text: {}", text);
+        assert!(text.contains("See the [Circuits thread](https://distill.pub/2020/circuits/)."), "text: {}", text);
         for absent in ["Contents", "Introduction", "svg label", "console.log", "Glossary", "Distill footer", "About"] {
             assert!(!text.contains(absent), "unexpected {:?} in: {}", absent, text);
         }
@@ -484,6 +485,8 @@ mod tests {
         assert!(text.contains("We assume a dataset $D$ over a domain."), "text: {}", text);
         assert!(text.contains("def scrub(model):\n    return model"), "text: {}", text);
         assert!(text.contains("- Ad hoc methods include ablations."), "text: {}", text);
+        assert!(text.contains("We test it on [the IOI circuit](https://arxiv.org/abs/2211.00593)."), "text: {}", text);
+        assert!(text.contains("studied?\u{201d}.[1]"), "an in-page footnote link stays plain: {}", text);
         assert!(!text.contains("mjx-chtml"), "text: {}", text);
     }
 

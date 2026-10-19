@@ -104,6 +104,9 @@ lit add https://distill.pub/2020/circuits/zoom-in/ refs.bib
 The first call stores the page text as `etc/pdf/<citekey>/paper.txt`, with `source.yaml` recording the URL, host, fetch time and extraction method.
 Later calls for the same page read that artifact with no request, whatever the URL spelling, and a forum post is one artifact whether the URL is on alignmentforum.org, lesswrong.com or greaterwrong.com.
 `--no-cache` refetches it.
+Links in the body are kept as `[text](href)`, with the target as the page wrote it (possibly relative), so `grep -oE 'https?://(www\.)?arxiv\.org/(abs|pdf)/[^) ]+'` lists the arXiv abstract and PDF URLs a post links, whether written as `[text](href)` or bare.
+A link whose text is empty or is its own URL appears as the bare URL; an in-page `#` link or a `javascript:` link keeps only its text (ADR-005).
+When another directory already holds the generated citekey, such as a second post of a sequence whose titles share their first word, the new page takes the first absent name with a suffix `b`, `c`, ..., and that name is its citekey; a `--key` naming an existing directory is an error.
 
 A Distill page with a DOI is added through the DOI path, under the artifact's citekey.
 Any other page becomes `@misc` with the site name as `howpublished` and the canonical URL as `url`.
