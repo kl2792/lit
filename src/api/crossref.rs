@@ -1,4 +1,5 @@
 use super::{urlencode, PaperResult};
+use crate::html;
 use serde_json::Value;
 
 /// Build URL for a general search query.
@@ -69,6 +70,7 @@ pub fn parse_search(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::
             year,
             doi,
             citations,
+            abstract_text: jats_abstract(&w["abstract"]),
             ..Default::default()
         });
     }
@@ -125,6 +127,41 @@ pub fn parse_doi(body: &str) -> Result<PaperResult, Box<dyn std::error::Error>> 
     })
 }
 
+/// JATS elements that separate text runs; inline ones (italic, sub) do not.
+const JATS_BLOCKS: &[&str] = &["jats:title", "jats:p", "jats:sec", "jats:list-item"];
+
+/// Plain text of a Crossref `abstract` (JATS XML): tags stripped, entities
+/// decoded, whitespace collapsed, and a leading "Abstract" heading dropped.
+/// `None` when absent or empty.
+fn jats_abstract(jats: &Value) -> Option<String> {
+    let mut raw = String::new();
+    jats_text(&html::parse(jats.as_str()?), &mut raw);
+    let text = html::collapse_whitespace(&raw);
+    let text = text
+        .strip_prefix("Abstract")
+        .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        .map_or(text.as_str(), str::trim_start);
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+fn jats_text(nodes: &[html::Node], out: &mut String) {
+    for node in nodes {
+        match node {
+            html::Node::Text(t) => out.push_str(t),
+            html::Node::Element(e) => {
+                let block = JATS_BLOCKS.contains(&e.name.as_str());
+                if block {
+                    out.push(' ');
+                }
+                jats_text(&e.children, out);
+                if block {
+                    out.push(' ');
+                }
+            }
+        }
+    }
+}
+
 /// Extract year from a CrossRef `published` (or `created`) object.
 ///
 /// Structure: `{ "date-parts": [[2021, 3, 15]] }`.
@@ -169,6 +206,33 @@ mod tests {
         assert_eq!(r.authors, vec!["Ashish Vaswani", "Noam Shazeer"]);
         assert_eq!(r.doi.as_deref(), Some("10.5555/3295222.3295349"));
         assert_eq!(r.citations, Some(90000));
+    }
+
+    #[test]
+    fn test_parse_search_reads_jats_abstract_as_plain_text() {
+        let body = r#"{"message": {"items": [
+            {"title": ["With"], "abstract": "<jats:title>Abstract</jats:title><jats:p>Causal  <jats:italic>credit</jats:italic>\n assignment &amp; Shapley values.</jats:p><jats:p>Second &lt;para&gt;.</jats:p>"},
+            {"title": ["Without"]}
+        ]}}"#;
+        let results = parse_search(body).unwrap();
+        assert_eq!(
+            results[0].abstract_text.as_deref(),
+            Some("Causal credit assignment & Shapley values. Second <para>.")
+        );
+        assert_eq!(results[1].abstract_text, None);
+    }
+
+    #[test]
+    fn test_jats_abstract_keeps_section_titles_and_drops_empty() {
+        let v = serde_json::json!("<jats:sec><jats:title>Background</jats:title><jats:p>Text.</jats:p></jats:sec>");
+        assert_eq!(jats_abstract(&v).as_deref(), Some("Background Text."));
+        assert_eq!(jats_abstract(&serde_json::json!("<jats:p> </jats:p>")), None);
+        assert_eq!(jats_abstract(&serde_json::json!("<jats:title>Abstract</jats:title>")), None);
+        assert_eq!(jats_abstract(&Value::Null), None);
+        assert_eq!(
+            jats_abstract(&serde_json::json!("<jats:p>Abstracting away details.</jats:p>")).as_deref(),
+            Some("Abstracting away details.")
+        );
     }
 
     #[test]
