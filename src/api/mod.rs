@@ -1,3 +1,4 @@
+pub mod anthology;
 pub mod arxiv;
 pub mod causalai;
 pub mod clio;

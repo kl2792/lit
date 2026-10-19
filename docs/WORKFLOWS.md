@@ -287,6 +287,7 @@ grep -i "diffusion" "$(lit read 2006.11239)"
 ```
 
 If the paper isn't cached and the id is an arXiv id or a DOI, `lit read` fetches it first, then returns the path: an arXiv id fetches the LaTeX source (or the PDF, for a PDF-only submission), and a DOI fetches the PDF through the `lit download` tiers.
+An ACL DOI (`10.18653/v1/<id>`, or `10.3115/v1/<id>` for 2014-2015 papers) takes the ACL Anthology PDF `https://aclanthology.org/<id>.pdf` as its open-access tier, so it needs no metadata provider to find a URL.
 The MCP `read` tool does the same and adds `"auto_downloaded": true`.
 A directory holding only `source.yaml` and dotfiles has nothing to read, so `lit read` fetches its paper again into the same directory; `--no-cache` refetches a readable copy too (ADR-007).
 A refetch writes each fetched file over the same-named one and keeps the rest, so `--no-cache` replaces a hand-attached `paper.pdf` when the fetch delivers a PDF; a failed refetch changes nothing.
