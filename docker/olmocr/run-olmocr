@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (($# == 0)); then
+    echo "usage: run-olmocr PDF_NAME [PDF_NAME ...]" >&2
+    exit 64
+fi
+
+mkdir -p "$HOME" "$XDG_CACHE_HOME"
+
+inputs=()
+for name in "$@"; do
+    if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.pdf$ ]]; then
+        echo "input must be a safe PDF basename: $name" >&2
+        exit 64
+    fi
+
+    path="/input/$name"
+    if [[ ! -f "$path" || -L "$path" ]]; then
+        echo "input must be a regular, non-symlink file: $name" >&2
+        exit 66
+    fi
+    inputs+=("$path")
+done
+
+exec olmocr /output \
+    --model "$OLMOCR_MODEL" \
+    --markdown \
+    --workers "${OLMOCR_WORKERS:-1}" \
+    --gpu-memory-utilization "${OLMOCR_GPU_MEMORY_UTILIZATION:-0.85}" \
+    --pdfs "${inputs[@]}"

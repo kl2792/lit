@@ -1,4 +1,4 @@
-/// `lit verify <bib_file> [jobs]` -- Verify .bib entries against multiple APIs.
+/// `lit verify <bib_file> [-j jobs] [--key K]...` -- Verify .bib entries against multiple APIs.
 ///
 /// Parses the .bib file, skips `% lit:skip`-annotated entries, and checks each
 /// entry against CrossRef (DOI), arXiv (eprint), OpenAlex (title search),
@@ -49,9 +49,16 @@ struct VerifyResult {
     key: String,
     title: String,
     issues: Vec<String>,
+    /// Lookup failures (HTTP errors after retries), one per failed source.
+    errors: Vec<String>,
 }
 
-pub async fn run(ctx: &Context, bib_file: &Path, jobs: usize) -> Result<(), Box<dyn std::error::Error>> {
+/// Verify the entries of `bib_file`, or only those named in `keys`.
+///
+/// Prints the human report, or with `--json` one array of
+/// `{"key", "status", "detail"}`. Either way the result is an error when
+/// any entry is unverified or mismatched.
+pub async fn run(ctx: &Context, bib_file: &Path, jobs: usize, keys: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if !bib_file.exists() {
         return Err(format!("File not found: {}", bib_file.display()).into());
     }
@@ -59,29 +66,88 @@ pub async fn run(ctx: &Context, bib_file: &Path, jobs: usize) -> Result<(), Box<
     format::info(&format!("Verifying entries in: {}", bib_file.display()));
 
     let content = std::fs::read_to_string(bib_file)?;
-    let entries = parse_entries(&content);
+    let entries = select_entries(parse_entries(&content), keys).map_err(|e| format!("{}: {}", bib_file.display(), e))?;
+    // `% lit:skip` entries count as manually verified only in a whole-file run.
+    let manual = if keys.is_empty() { content.matches("% lit:skip").count() } else { 0 };
 
-    let total = entries.len();
-    println!("Found {} entries to verify", total);
-    println!();
-
-    // Count manual skips
-    let manual = content.matches("% lit:skip").count();
-
+    if !ctx.json {
+        println!("Found {} entries to verify", entries.len());
+        println!();
+    }
     format::info(&format!("Verifying entries (parallel={})...", jobs));
-    println!();
 
-    // Verify entries using tokio tasks with a semaphore for concurrency control
     let client = Arc::new(ctx.client());
     let results = verify_parallel(&entries, jobs, &client).await;
 
-    // Tally and display results
+    if ctx.json {
+        let records: Vec<serde_json::Value> = results.iter().map(json_record).collect();
+        println!("{}", serde_json::to_string_pretty(&records)?);
+    } else {
+        println!();
+        print_report(&results, manual);
+    }
+
+    if results.iter().any(|r| matches!(r.status, Status::Unknown | Status::Mismatch)) {
+        Err("Verification found issues".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// The entries named in `keys` in file order, or all entries when `keys` is
+/// empty; a key with no verifiable entry is an error. O(entries + keys).
+fn select_entries(entries: Vec<BibEntry>, keys: &[String]) -> Result<Vec<BibEntry>, String> {
+    if keys.is_empty() {
+        return Ok(entries);
+    }
+    let present: std::collections::HashSet<&str> = entries.iter().map(|e| e.key.as_str()).collect();
+    let mut seen = std::collections::HashSet::new();
+    let unknown: Vec<&str> =
+        keys.iter().map(String::as_str).filter(|k| !present.contains(k) && seen.insert(*k)).collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "no entry with key {} (entries marked % lit:skip are not verified)",
+            unknown.join(", ")
+        ));
+    }
+    let wanted: std::collections::HashSet<&str> = keys.iter().map(String::as_str).collect();
+    Ok(entries.into_iter().filter(|e| wanted.contains(e.key.as_str())).collect())
+}
+
+/// The `--json` status of a result. An unverified entry is `rate_limited`
+/// when any source was still rate-limited after its retries, since that
+/// source might have found it; otherwise `not_found`.
+fn json_status(r: &VerifyResult) -> &'static str {
+    match r.status {
+        Status::Ok | Status::Tentative => "ok",
+        Status::Mismatch => "mismatch",
+        Status::Book => "book",
+        Status::Unknown if r.errors.iter().any(|e| http::is_rate_limited(e)) => "rate_limited",
+        Status::Unknown => "not_found",
+    }
+}
+
+/// One `--json` record: the key, `json_status`, and the detail the human
+/// report prints for that status, with lookup errors for unverified entries.
+fn json_record(r: &VerifyResult) -> serde_json::Value {
+    let detail = match r.status {
+        Status::Ok | Status::Tentative | Status::Mismatch => format!("[{}] {}", r.source, r.issues.join(" ")).trim_end().to_string(),
+        Status::Book => format!("[{}] {}", r.source, r.title),
+        Status::Unknown if r.errors.is_empty() => r.title.clone(),
+        Status::Unknown => format!("{}; lookup errors: {}", r.title, r.errors.join("; ")),
+    };
+    serde_json::json!({ "key": r.key, "status": json_status(r), "detail": detail })
+}
+
+/// The human report: one line per entry needing attention, then the tally.
+fn print_report(results: &[VerifyResult], manual: usize) {
+    let total = results.len();
     let mut ok_count = 0usize;
     let mut mismatch_count = 0usize;
     let mut unknown_count = 0usize;
     let mut book_count = 0usize;
 
-    for r in &results {
+    for r in results {
         match r.status {
             Status::Ok | Status::Tentative => {
                 ok_count += 1;
@@ -120,12 +186,6 @@ pub async fn run(ctx: &Context, bib_file: &Path, jobs: usize) -> Result<(), Box<
         "Total: {} | OK: {} (auto:{} manual:{}) | Mismatch: {} | Books: {} | Not found: {}",
         total, verified, ok_count, manual, mismatch_count, book_count, unknown_count
     );
-
-    if unknown_count > 0 || mismatch_count > 0 {
-        Err("Verification found issues".into())
-    } else {
-        Ok(())
-    }
 }
 
 /// Parse bib entries from file content, skipping those preceded by `% lit:skip`.
@@ -241,13 +301,14 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
     let mut found_year = String::new();
     let mut found_author = String::new();
     let mut issues: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
     let is_book = entry.entry_type == "book";
 
     // 1. Check CrossRef if DOI present
     if !entry.doi.is_empty() {
         let url = api::crossref::doi_url(&entry.doi);
         let cache_key = db::Db::cache_key("verify_doi", &entry.doi);
-        if let Ok(body) = client.get_cached(&cache_key, &url, db::TTL_SEARCH).await {
+        if let Some(body) = lookup(client, &cache_key, &url, &mut errors).await {
             if body.contains("\"title\"") {
                 if let Ok(result) = api::crossref::parse_doi(&body) {
                     found_title = result.title;
@@ -264,7 +325,7 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
     if !entry.eprint.is_empty() && matches!(status, Status::Unknown) {
         let url = api::arxiv::query_url(&entry.eprint);
         let cache_key = db::Db::cache_key("verify_arxiv", &entry.eprint);
-        if let Ok(body) = client.get_cached(&cache_key, &url, db::TTL_SEARCH).await {
+        if let Some(body) = lookup(client, &cache_key, &url, &mut errors).await {
             if body.contains("<entry>") {
                 if let Ok(result) = api::arxiv::parse_entry(&body) {
                     found_title = result.title;
@@ -292,7 +353,7 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
 
         let url = api::openalex::title_search_url(&search_title, 5);
         let cache_key = db::Db::cache_key("verify_oa", &entry.title);
-        if let Ok(body) = client.get_cached(&cache_key, &url, db::TTL_SEARCH).await {
+        if let Some(body) = lookup(client, &cache_key, &url, &mut errors).await {
             if body.contains("\"results\"") {
                 if let Ok(results) = api::openalex::parse_search(&body) {
                     if let Some((best, best_author_match)) =
@@ -359,7 +420,7 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
         );
         let url = api::semantic_scholar::search_url(&search_query, 5);
         let cache_key = db::Db::cache_key("verify_ss", &entry.title);
-        if let Ok(body) = client.get_cached(&cache_key, &url, db::TTL_SEARCH).await {
+        if let Some(body) = lookup(client, &cache_key, &url, &mut errors).await {
             if body.contains("\"data\"") {
                 if let Ok(results) = api::semantic_scholar::parse_search(&body) {
                     if let Some(matched) = find_ss_match(&results, entry) {
@@ -383,7 +444,7 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
         );
         let url = api::openlibrary::search_url(&search_query, 5);
         let cache_key = db::Db::cache_key("verify_book", &entry.title);
-        if let Ok(body) = client.get_cached(&cache_key, &url, db::TTL_SEARCH).await {
+        if let Some(body) = lookup(client, &cache_key, &url, &mut errors).await {
             if body.contains("\"docs\"") {
                 if let Ok(results) = api::openlibrary::parse_search(&body) {
                     let title_norm = normalize_title(&entry.title);
@@ -462,6 +523,19 @@ async fn verify_single(client: &http::Client, entry: &BibEntry, index: usize) ->
         key: entry.key.clone(),
         title: display_title,
         issues,
+        errors,
+    }
+}
+
+/// The body at `url`, or `None` with the failure appended to `errors`, so a
+/// lookup that failed stays distinguishable from one that found nothing.
+async fn lookup(client: &http::Client, cache_key: &str, url: &str, errors: &mut Vec<String>) -> Option<String> {
+    match client.get_cached(cache_key, url, db::TTL_SEARCH).await {
+        Ok(body) => Some(body),
+        Err(e) => {
+            errors.push(e.to_string());
+            None
+        }
     }
 }
 
@@ -705,5 +779,68 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].doi, "10.1145/3442188.3445899");
         assert_eq!(entries[0].entry_type, "inproceedings");
+    }
+
+    const THREE: &str = "@article{a2020x,\n  title = {A},\n}\n\n@article{b2021y,\n  title = {B},\n}\n\n% lit:skip\n@article{c2022z,\n  title = {C},\n}\n\n@article{d2023w,\n  title = {D},\n}\n";
+
+    fn keys(ks: &[&str]) -> Vec<String> {
+        ks.iter().map(|k| k.to_string()).collect()
+    }
+
+    #[test]
+    fn select_entries_keeps_named_keys_in_file_order() {
+        let picked = select_entries(parse_entries(THREE), &keys(&["d2023w", "a2020x", "a2020x"])).unwrap();
+        let picked: Vec<&str> = picked.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(picked, vec!["a2020x", "d2023w"]);
+        assert_eq!(select_entries(parse_entries(THREE), &[]).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn select_entries_rejects_unknown_and_skipped_keys() {
+        let err = select_entries(parse_entries(THREE), &keys(&["nope2020", "a2020x", "c2022z", "nope2020"])).err().unwrap();
+        assert!(err.contains("key nope2020, c2022z ("), "err: {}", err);
+        assert!(err.contains("lit:skip"), "err: {}", err);
+    }
+
+    fn result(status: Status, issues: &[&str], errors: &[&str]) -> VerifyResult {
+        VerifyResult {
+            index: 0,
+            status,
+            source: "OpenAlex".into(),
+            key: "k2020x".into(),
+            title: "A Title".into(),
+            issues: issues.iter().map(|s| s.to_string()).collect(),
+            errors: errors.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    const THROTTLED: &str = "HTTP 429 Too Many Requests for https://api.semanticscholar.org/x after 4 attempts";
+
+    #[test]
+    fn json_status_separates_rate_limited_from_not_found() {
+        assert_eq!(json_status(&result(Status::Unknown, &[], &[THROTTLED])), "rate_limited");
+        assert_eq!(json_status(&result(Status::Unknown, &[], &["HTTP 503 for https://api.openalex.org/x", THROTTLED])), "rate_limited");
+        assert_eq!(json_status(&result(Status::Unknown, &[], &[])), "not_found");
+        assert_eq!(json_status(&result(Status::Unknown, &[], &["HTTP 503 for https://api.openalex.org/x"])), "not_found");
+        // A source that answered outranks one that was throttled.
+        assert_eq!(json_status(&result(Status::Ok, &[], &[THROTTLED])), "ok");
+        assert_eq!(json_status(&result(Status::Tentative, &[], &[])), "ok");
+        assert_eq!(json_status(&result(Status::Mismatch, &["year:2020->2021"], &[])), "mismatch");
+        assert_eq!(json_status(&result(Status::Book, &[], &[])), "book");
+    }
+
+    #[test]
+    fn json_record_carries_key_status_and_the_reported_detail() {
+        assert_eq!(
+            json_record(&result(Status::Mismatch, &["year:2020->2021", "title-mismatch"], &[])),
+            serde_json::json!({"key": "k2020x", "status": "mismatch", "detail": "[OpenAlex] year:2020->2021 title-mismatch"})
+        );
+        assert_eq!(json_record(&result(Status::Ok, &[], &[]))["detail"], "[OpenAlex]");
+        assert_eq!(json_record(&result(Status::Book, &[], &[]))["detail"], "[OpenAlex] A Title");
+        assert_eq!(json_record(&result(Status::Unknown, &[], &[]))["detail"], "A Title");
+        assert_eq!(
+            json_record(&result(Status::Unknown, &[], &[THROTTLED]))["detail"],
+            format!("A Title; lookup errors: {}", THROTTLED)
+        );
     }
 }

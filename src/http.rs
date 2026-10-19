@@ -28,6 +28,7 @@ impl Client {
             .unwrap_or(15);
 
         let inner = reqwest::Client::builder()
+            .use_rustls_tls()
             .timeout(Duration::from_secs(timeout_secs))
             .user_agent("lit/1.0")
             .build()
@@ -94,80 +95,230 @@ impl Client {
     /// Perform an uncached HTTP GET request.
     ///
     /// Returns an error for non-success (non-2xx) HTTP status codes.
-    /// For 429 (rate limited), includes the Retry-After hint if present.
-    /// Automatically adds `x-api-key` header for Semantic Scholar if `$S2_API_KEY` is set.
+    /// A 429 that outlasts the retries reports the attempt count, the server's
+    /// Retry-After, and a missing API key variable (see `key_spec`).
+    /// Sends the host's API key header when its variable is set (`auth_header`).
     /// Rejects responses larger than 50 MB.
+    ///
+    /// Timeouts, connection errors, 429 and 5xx are retried under `with_retries`.
     pub async fn get(&self, url: &str) -> Result<String, Box<dyn std::error::Error>> {
-        let max_attempts = 60;
-        for attempt in 0..max_attempts {
-            let mut req = self.inner.get(url);
-            if url.contains("semanticscholar.org") {
-                if let Ok(key) = std::env::var("S2_API_KEY") {
-                    req = req.header("x-api-key", key);
-                }
+        let max_attempts = std::env::var("LIT_MAX_ATTEMPTS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_MAX_ATTEMPTS);
+        let outcome = with_retries(
+            max_attempts,
+            RETRY_BUDGET,
+            || self.attempt(url),
+            tokio::time::sleep,
+        )
+        .await;
+        match outcome {
+            Ok(result) => result,
+            Err((Transient::RateLimited, attempts, retry_after)) => {
+                let has_key = auth_header(url, env_var).is_some();
+                Err(rate_limit_message(url, attempts, has_key, retry_after).into())
             }
-            let resp = match req.send().await {
-                Ok(r) => r,
-                Err(e) if e.is_timeout() || e.is_connect() => {
-                    if attempt < max_attempts - 1 {
-                        eprintln!("note: {} (attempt {}/{}), retrying in 1s...",
-                            if e.is_timeout() { "timeout" } else { "connection error" },
-                            attempt + 1, max_attempts);
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        continue;
-                    }
-                    return Err(e.into());
-                }
-                Err(e) => return Err(e.into()),
-            };
-            if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                if attempt < max_attempts - 1 {
-                    let wait = resp
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .unwrap_or(1)
-                        .min(5); // cap wait at 5s per retry
-                    eprintln!("note: rate limited (attempt {}/{}), retrying in {}s...",
-                        attempt + 1, max_attempts, wait);
-                    tokio::time::sleep(Duration::from_secs(wait)).await;
-                    continue;
-                }
-                return Err(format!("HTTP 429 Too Many Requests for {} (retried {}x over ~60s)", url, max_attempts).into());
-            }
-            if resp.status().is_server_error() && attempt < max_attempts - 1 {
-                eprintln!("note: HTTP {} (attempt {}/{}), retrying in 1s...",
-                    resp.status(), attempt + 1, max_attempts);
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
-            }
-            if !resp.status().is_success() {
-                return Err(format!("HTTP {} for {}", resp.status(), url).into());
-            }
-            // Check Content-Length header if present
-            if let Some(len) = resp.content_length() {
-                if len as usize > MAX_RESPONSE_BYTES {
-                    return Err(format!(
-                        "Response too large ({} bytes) for {}",
-                        len, url
-                    )
-                    .into());
-                }
-            }
-            let body = resp.text().await?;
-            if body.len() > MAX_RESPONSE_BYTES {
-                return Err(format!(
-                    "Response too large ({} bytes) for {}",
-                    body.len(),
-                    url
-                )
-                .into());
-            }
-            return Ok(body);
+            Err((Transient::Status(status), _, _)) => Err(format!("HTTP {} for {}", status, url).into()),
+            Err((Transient::Transport(e), _, _)) => Err(e.into()),
         }
-        unreachable!()
     }
+
+    /// One GET: a final result, or a transient failure with the server's
+    /// Retry-After hint when it sent one.
+    async fn attempt(&self, url: &str) -> Attempt<Result<String, Box<dyn std::error::Error>>, Transient> {
+        let mut req = self.inner.get(url);
+        if let Some((name, value)) = auth_header(url, env_var) {
+            req = req.header(name, value);
+        }
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) if e.is_timeout() || e.is_connect() => {
+                return Attempt::Retry { err: Transient::Transport(e), retry_after: None };
+            }
+            Err(e) => return Attempt::Done(Err(e.into())),
+        };
+        let status = resp.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+            let retry_after = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_retry_after);
+            let err = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                Transient::RateLimited
+            } else {
+                Transient::Status(status)
+            };
+            return Attempt::Retry { err, retry_after };
+        }
+        if !status.is_success() {
+            return Attempt::Done(Err(format!("HTTP {} for {}", status, url).into()));
+        }
+        Attempt::Done(read_body(resp, url).await)
+    }
+}
+
+/// Read a success response's body, rejecting anything over `MAX_RESPONSE_BYTES`.
+async fn read_body(resp: reqwest::Response, url: &str) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(len) = resp.content_length() {
+        if len as usize > MAX_RESPONSE_BYTES {
+            return Err(format!("Response too large ({} bytes) for {}", len, url).into());
+        }
+    }
+    let body = resp.text().await?;
+    if body.len() > MAX_RESPONSE_BYTES {
+        return Err(format!("Response too large ({} bytes) for {}", body.len(), url).into());
+    }
+    Ok(body)
+}
+
+/// Attempts per request unless `$LIT_MAX_ATTEMPTS` overrides it.
+const DEFAULT_MAX_ATTEMPTS: usize = 5;
+
+/// Longest total sleep across one request's retries. A provider that stays
+/// unavailable longer is treated as down, so callers can fall back elsewhere.
+const RETRY_BUDGET: Duration = Duration::from_secs(60);
+
+/// A failure worth retrying.
+enum Transient {
+    RateLimited,
+    Status(reqwest::StatusCode),
+    Transport(reqwest::Error),
+}
+
+impl std::fmt::Display for Transient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Transient::RateLimited => write!(f, "rate limited"),
+            Transient::Status(s) => write!(f, "HTTP {}", s),
+            Transient::Transport(e) if e.is_timeout() => write!(f, "timeout"),
+            Transient::Transport(_) => write!(f, "connection error"),
+        }
+    }
+}
+
+/// What one attempt produced: a final value, or a transient failure `err`
+/// with the server's requested delay, if any.
+#[derive(Debug, PartialEq)]
+enum Attempt<T, E> {
+    Done(T),
+    Retry { err: E, retry_after: Option<Duration> },
+}
+
+/// Run `attempt` up to `max_attempts` times, sleeping between transient failures.
+///
+/// The wait before retry `k` (0-based) is the server's Retry-After when given,
+/// otherwise `2^(k+1)` seconds plus up to 50% jitter (2s, 4s, 8s, 16s, ...).
+/// Gives up early rather than let total sleep exceed `budget`.
+/// Returns the first `Done` value, or the last transient error, the number
+/// of attempts made, and the last attempt's Retry-After.
+async fn with_retries<T, E, A, AFut, S, SFut>(
+    max_attempts: usize,
+    budget: Duration,
+    mut attempt: A,
+    mut sleep: S,
+) -> Result<T, (E, usize, Option<Duration>)>
+where
+    E: std::fmt::Display,
+    A: FnMut() -> AFut,
+    AFut: std::future::Future<Output = Attempt<T, E>>,
+    S: FnMut(Duration) -> SFut,
+    SFut: std::future::Future<Output = ()>,
+{
+    let mut slept = Duration::ZERO;
+    let mut made = 0;
+    loop {
+        made += 1;
+        let (err, retry_after) = match attempt().await {
+            Attempt::Done(value) => return Ok(value),
+            Attempt::Retry { err, retry_after } => (err, retry_after),
+        };
+        let wait = retry_after.unwrap_or_else(|| backoff(made - 1, jitter_fraction()));
+        if made >= max_attempts || slept + wait > budget {
+            return Err((err, made, retry_after));
+        }
+        eprintln!(
+            "note: {} (attempt {}/{}), retrying in {:.1}s...",
+            err, made, max_attempts, wait.as_secs_f64()
+        );
+        sleep(wait).await;
+        slept += wait;
+    }
+}
+
+/// Exponential backoff for retry `k`: `2^(k+1)` seconds scaled by `1 + jitter/2`,
+/// `jitter` in `[0, 1)`. The exponent is capped so the shift cannot overflow.
+fn backoff(k: usize, jitter: f64) -> Duration {
+    Duration::from_secs(2u64 << k.min(16)).mul_f64(1.0 + jitter / 2.0)
+}
+
+/// A jitter fraction in `[0, 1)` from the clock's sub-second nanoseconds,
+/// enough to de-synchronize concurrent retries without a RNG dependency.
+fn jitter_fraction() -> f64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    f64::from(nanos % 1_000_000) / 1_000_000.0
+}
+
+/// Parse a Retry-After value in delay-seconds form. The HTTP-date form is
+/// ignored, which falls back to exponential backoff.
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    value.trim().parse::<u64>().ok().map(Duration::from_secs)
+}
+
+/// How an API host takes a key: the environment variable holding it, the
+/// request header carrying it, and the prefix before the key in that header.
+struct KeySpec {
+    env: &'static str,
+    header: &'static str,
+    prefix: &'static str,
+}
+
+/// The key scheme for `url`'s API host, if it takes one.
+fn key_spec(url: &str) -> Option<KeySpec> {
+    if url.contains("api.semanticscholar.org") {
+        Some(KeySpec { env: "S2_API_KEY", header: "x-api-key", prefix: "" })
+    } else if url.contains("api.openalex.org") {
+        Some(KeySpec { env: "OPENALEX_API_KEY", header: "authorization", prefix: "Bearer " })
+    } else {
+        None
+    }
+}
+
+/// The auth header (name, value) for `url`, with the key read through `env`;
+/// nothing when the host takes no key or its variable is unset or empty.
+fn auth_header(url: &str, env: impl Fn(&str) -> Option<String>) -> Option<(&'static str, String)> {
+    let spec = key_spec(url)?;
+    let key = env(spec.env).filter(|k| !k.is_empty())?;
+    Some((spec.header, format!("{}{}", spec.prefix, key)))
+}
+
+fn env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+/// Error text for a request still rate-limited after `attempts` tries. Names
+/// the server's last Retry-After when sent, and the missing key variable for a
+/// keyed API host requested without one.
+fn rate_limit_message(url: &str, attempts: usize, has_key: bool, retry_after: Option<Duration>) -> String {
+    let wait = retry_after.map_or(String::new(), |d| format!("; retry after {}s", d.as_secs()));
+    let hint = match key_spec(url) {
+        Some(spec) if !has_key => format!(" ({} is not set; requests share the anonymous rate limit)", spec.env),
+        _ => String::new(),
+    };
+    format!("{} for {} after {} attempts{}{}", RATE_LIMITED, url, attempts, wait, hint)
+}
+
+const RATE_LIMITED: &str = "HTTP 429 Too Many Requests";
+
+/// True when `err` is the error for a request still rate-limited after all
+/// retries, as opposed to an absent record or another failure.
+pub fn is_rate_limited(err: &str) -> bool {
+    err.starts_with(RATE_LIMITED)
 }
 
 /// Check if a response body looks like valid content worth caching.
@@ -179,4 +330,175 @@ fn looks_valid(body: &str) -> bool {
         && (trimmed.starts_with('{')
             || trimmed.starts_with('[')
             || trimmed.starts_with('<'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{auth_header, is_rate_limited, parse_retry_after, rate_limit_message, with_retries, Attempt, RETRY_BUDGET};
+    use std::cell::RefCell;
+    use std::time::Duration;
+
+    /// Run `with_retries` over a scripted sequence of attempt outcomes,
+    /// recording every sleep instead of sleeping.
+    async fn drive(
+        max_attempts: usize,
+        script: Vec<Attempt<&'static str, &'static str>>,
+    ) -> (Result<&'static str, (&'static str, usize, Option<Duration>)>, Vec<Duration>) {
+        let script = RefCell::new(script.into_iter());
+        let sleeps = RefCell::new(Vec::new());
+        let result = with_retries(
+            max_attempts,
+            RETRY_BUDGET,
+            || std::future::ready(script.borrow_mut().next().expect("script exhausted")),
+            |d| {
+                sleeps.borrow_mut().push(d);
+                std::future::ready(())
+            },
+        )
+        .await;
+        (result, sleeps.into_inner())
+    }
+
+    fn transient(retry_after: Option<u64>) -> Attempt<&'static str, &'static str> {
+        Attempt::Retry { err: "rate limited", retry_after: retry_after.map(Duration::from_secs) }
+    }
+
+    #[tokio::test]
+    async fn retry_after_header_sets_the_wait() {
+        let (result, sleeps) = drive(5, vec![transient(Some(7)), Attempt::Done("body")]).await;
+        assert_eq!(result, Ok("body"));
+        assert_eq!(sleeps, vec![Duration::from_secs(7)]);
+    }
+
+    #[tokio::test]
+    async fn retry_after_beyond_the_budget_gives_up_without_sleeping() {
+        let (result, sleeps) = drive(5, vec![transient(Some(RETRY_BUDGET.as_secs() + 1))]).await;
+        assert_eq!(result, Err(("rate limited", 1, Some(RETRY_BUDGET + Duration::from_secs(1)))));
+        assert!(sleeps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn backoff_doubles_from_two_seconds_with_bounded_jitter_and_total() {
+        let (result, sleeps) = drive(5, (0..5).map(|_| transient(None)).collect()).await;
+        assert_eq!(result, Err(("rate limited", 5, None)));
+        assert_eq!(sleeps.len(), 4, "no sleep after the final attempt");
+        for (k, d) in sleeps.iter().enumerate() {
+            let base = Duration::from_secs(2 << k); // 2, 4, 8, 16
+            assert!(*d >= base && *d < base.mul_f64(1.5), "sleep {} = {:?}", k, d);
+        }
+        assert!(sleeps.iter().sum::<Duration>() <= RETRY_BUDGET);
+    }
+
+    #[tokio::test]
+    async fn total_sleep_never_exceeds_the_budget_however_many_attempts() {
+        let (result, sleeps) = drive(50, (0..50).map(|_| transient(None)).collect()).await;
+        assert!(result.is_err());
+        assert!(sleeps.iter().sum::<Duration>() <= RETRY_BUDGET);
+    }
+
+    #[tokio::test]
+    async fn success_on_first_attempt_never_sleeps() {
+        let (result, sleeps) = drive(5, vec![Attempt::Done("body")]).await;
+        assert_eq!(result, Ok("body"));
+        assert!(sleeps.is_empty());
+    }
+
+    #[test]
+    fn retry_after_parses_delay_seconds_only() {
+        assert_eq!(parse_retry_after("7"), Some(Duration::from_secs(7)));
+        assert_eq!(parse_retry_after(" 30 "), Some(Duration::from_secs(30)));
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+    }
+
+    /// An environment holding only `var=value`.
+    fn env_with(var: &'static str, value: &'static str) -> impl Fn(&str) -> Option<String> {
+        move |v| (v == var).then(|| value.to_string())
+    }
+
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn s2_key_goes_on_every_semantic_scholar_api_url_only() {
+        let env = env_with("S2_API_KEY", "k");
+        for url in [
+            "https://api.semanticscholar.org/graph/v1/paper/search?query=x",
+            "https://api.semanticscholar.org/graph/v1/paper/ARXIV:2408.01416/references?offset=0",
+            "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1/x/citations?offset=1000",
+        ] {
+            assert_eq!(auth_header(url, &env), Some(("x-api-key", "k".to_string())), "url: {}", url);
+        }
+        assert_eq!(auth_header("https://api.openalex.org/works?search=x", &env), None);
+        assert_eq!(auth_header("https://api.semanticscholar.org/graph/v1/paper/search", no_env), None);
+    }
+
+    #[test]
+    fn openalex_key_goes_as_bearer_token_on_openalex_api_urls_only() {
+        let env = env_with("OPENALEX_API_KEY", "k");
+        assert_eq!(
+            auth_header("https://api.openalex.org/works?search=x", &env),
+            Some(("authorization", "Bearer k".to_string()))
+        );
+        assert_eq!(auth_header("https://api.semanticscholar.org/graph/v1/paper/search", &env), None);
+        assert_eq!(auth_header("https://export.arxiv.org/api/query?id_list=1", &env), None);
+        assert_eq!(auth_header("https://api.openalex.org/works", no_env), None);
+    }
+
+    #[test]
+    fn empty_key_sends_no_header() {
+        assert_eq!(auth_header("https://api.openalex.org/works", env_with("OPENALEX_API_KEY", "")), None);
+        assert_eq!(auth_header("https://api.semanticscholar.org/graph/v1/paper/x", env_with("S2_API_KEY", "")), None);
+    }
+
+    #[test]
+    fn s2_rate_limit_without_a_key_says_so() {
+        let url = "https://api.semanticscholar.org/graph/v1/paper/search";
+        assert!(rate_limit_message(url, 4, false, None).contains("S2_API_KEY is not set"));
+        assert!(!rate_limit_message(url, 4, true, None).contains("S2_API_KEY"));
+        assert!(!rate_limit_message("https://api.openalex.org/works", 4, false, None).contains("S2_API_KEY"));
+    }
+
+    #[test]
+    fn openalex_rate_limit_without_a_key_says_so() {
+        let url = "https://api.openalex.org/works?search=x";
+        assert!(rate_limit_message(url, 1, false, None).contains("OPENALEX_API_KEY is not set"));
+        assert!(!rate_limit_message(url, 1, true, None).contains("OPENALEX_API_KEY"));
+        assert!(!rate_limit_message("https://export.arxiv.org/api/query", 1, false, None).contains("API_KEY"));
+    }
+
+    #[test]
+    fn rate_limit_message_reports_the_server_requested_wait() {
+        let url = "https://api.openalex.org/works";
+        let msg = rate_limit_message(url, 1, false, Some(Duration::from_secs(35714)));
+        assert!(msg.contains("retry after 35714s"), "{}", msg);
+        assert!(!rate_limit_message(url, 4, false, None).contains("retry after"));
+    }
+
+    #[tokio::test]
+    async fn exhausted_retries_return_the_last_retry_after() {
+        let (result, _) = drive(5, vec![transient(Some(35714))]).await;
+        assert_eq!(result, Err(("rate limited", 1, Some(Duration::from_secs(35714)))));
+        let (result, _) = drive(2, vec![transient(None), transient(None)]).await;
+        assert_eq!(result, Err(("rate limited", 2, None)));
+    }
+
+    #[test]
+    fn is_rate_limited_recognizes_exhausted_429_retries_only() {
+        assert!(is_rate_limited(&rate_limit_message("https://api.openalex.org/works", 4, false, None)));
+        assert!(!is_rate_limited("HTTP 503 for https://api.openalex.org/works"));
+        assert!(!is_rate_limited("error sending request"));
+    }
+
+    #[test]
+    fn test_rustls_client_builds() {
+        // Guards the sandbox fix: TLS must come from rustls with bundled webpki
+        // roots. macOS SecureTransport (reqwest default-tls) needs keychain
+        // access and fails with OSStatus -26276 inside seatbelt sandboxes.
+        // `use_rustls_tls()` only compiles while a rustls-tls feature is on.
+        reqwest::Client::builder()
+            .use_rustls_tls()
+            .build()
+            .expect("rustls-backed client should build without keychain access");
+    }
 }

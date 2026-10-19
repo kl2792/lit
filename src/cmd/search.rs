@@ -105,8 +105,8 @@ pub async fn run_data(
 
     let client = ctx.client();
     let results = match source {
-        Some(Source::All) => fetch_all(&client, ctx, query, limit).await,
-        Some(src) => fetch_single(&client, ctx, query, limit, src).await,
+        Some(Source::All) => fetch_all(&client, query, limit).await,
+        Some(src) => fetch_single(&client, query, limit, src).await,
         None => fetch_cascade(&client, ctx, query, limit).await,
     };
 
@@ -144,13 +144,12 @@ pub async fn resolve_top(
 /// Fetch from a single backend.
 async fn fetch_single(
     client: &http::Client,
-    ctx: &Context,
     query: &str,
     limit: usize,
     source: Source,
 ) -> Vec<PaperResult> {
     let b = backend_for(source);
-    fetch_backend(client, ctx, b, query, limit).await
+    fetch_backend(client, b, query, limit).await
 }
 
 /// Cascade through backends, stopping when we get a good-enough result.
@@ -165,7 +164,7 @@ async fn fetch_cascade(
 
     for &src in CASCADE {
         let b = backend_for(src);
-        let results = fetch_backend(client, ctx, b, query, limit).await;
+        let results = fetch_backend(client, b, query, limit).await;
 
         if ctx.verbose {
             format::info(&format!("Trying {}...", b.name));
@@ -214,18 +213,17 @@ async fn fetch_cascade(
 /// Fetch from all backends concurrently and merge (includes Clio).
 async fn fetch_all(
     client: &http::Client,
-    ctx: &Context,
     query: &str,
     limit: usize,
 ) -> Vec<PaperResult> {
     let (r0, r1, r2, r3, r4, r5, r6) = tokio::join!(
-        fetch_backend(client, ctx, &BACKENDS[0], query, limit),
-        fetch_backend(client, ctx, &BACKENDS[1], query, limit),
-        fetch_backend(client, ctx, &BACKENDS[2], query, limit),
-        fetch_backend(client, ctx, &BACKENDS[3], query, limit),
-        fetch_backend(client, ctx, &BACKENDS[4], query, limit),
-        fetch_backend(client, ctx, &BACKENDS[5], query, limit),
-        fetch_backend(client, ctx, &BACKENDS[6], query, limit),
+        fetch_backend(client, &BACKENDS[0], query, limit),
+        fetch_backend(client, &BACKENDS[1], query, limit),
+        fetch_backend(client, &BACKENDS[2], query, limit),
+        fetch_backend(client, &BACKENDS[3], query, limit),
+        fetch_backend(client, &BACKENDS[4], query, limit),
+        fetch_backend(client, &BACKENDS[5], query, limit),
+        fetch_backend(client, &BACKENDS[6], query, limit),
     );
     let mut all = Vec::new();
     all.extend(r0);
@@ -241,7 +239,6 @@ async fn fetch_all(
 /// Fetch and parse results from a single backend.
 async fn fetch_backend(
     client: &http::Client,
-    ctx: &Context,
     backend: &Backend,
     query: &str,
     limit: usize,
@@ -252,12 +249,12 @@ async fn fetch_backend(
         Ok(body) => match (backend.parse)(&body) {
             Ok(results) => results,
             Err(e) => {
-                print_cascade_error(ctx, backend.name, &e);
+                eprintln!("{}", cascade_note(backend.name, &e));
                 Vec::new()
             }
         },
         Err(e) => {
-            print_cascade_error(ctx, backend.name, &e);
+            eprintln!("{}", cascade_note(backend.name, &e));
             Vec::new()
         }
     }
@@ -383,24 +380,28 @@ fn print_results(ctx: &Context, results: &[PaperResult]) {
     }
 }
 
-/// Print a diagnostic message to stderr when an API source fails in the cascade.
 /// Returns true if the title looks like a book review that should not stop the cascade.
 fn is_book_review(title: &str) -> bool {
     let lower = title.to_lowercase();
     lower.contains("book review") || lower.starts_with("review of ") || lower.contains("reviews:")
 }
 
-fn print_cascade_error(ctx: &Context, source: &str, error: &dyn std::fmt::Display) {
-    if ctx.verbose {
-        eprintln!("note: {} unavailable: {}", source, error);
-    } else {
-        eprintln!("note: {} unavailable", source);
-    }
+/// Diagnostic for a failed API source; always names the error so callers can tell a 429 from a parse failure.
+fn cascade_note(source: &str, error: &dyn std::fmt::Display) -> String {
+    format!("note: {} unavailable: {}", source, error)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cascade_note_includes_error() {
+        assert_eq!(
+            cascade_note("OpenAlex", &"HTTP 429 Too Many Requests"),
+            "note: OpenAlex unavailable: HTTP 429 Too Many Requests"
+        );
+    }
 
     #[test]
     fn tokenize_basic() {

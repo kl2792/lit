@@ -26,6 +26,10 @@ pub fn run(_ctx: &Context, input: &str) -> Result<(), Box<dyn std::error::Error>
             format!("https://doi.org/{}", doi)
         }
         InputType::DblpUrl | InputType::SemanticScholarUrl | InputType::PhilPapersUrl | InputType::OpenLibraryUrl | InputType::Url => input.to_string(),
+        InputType::Causalai => {
+            let id = crate::detect::normalize_causalai(input).unwrap_or_default();
+            crate::api::causalai::pdf_url(&id)
+        }
         InputType::Isbn => {
             let stripped = normalize_isbn(input);
             format!("https://openlibrary.org/isbn/{}", stripped)

@@ -20,8 +20,8 @@ test: test-unit test-bats ## Run all tests (unit + bats)
 test-unit: ## Run Rust unit tests
 	cargo test
 
-test-bats: build ## Run bats integration tests
-	bats test/lit.bats
+test-bats: build ## Run bats integration tests against the debug binary just built
+	LIT=$(CURDIR)/target/debug/lit bats test/lit.bats
 
 test-parallel: ## Run parallel stress test (JOBS=N, default 8)
 	test/test.sh $(JOBS)

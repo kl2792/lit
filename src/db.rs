@@ -24,6 +24,18 @@ pub struct Db {
     in_bulk: AtomicBool,
 }
 
+/// What became of an artifact's attempt to claim a `local_path`.
+///
+/// Both variants name the paper id the upsert resolved to, so a caller that
+/// lost the claim can report which row it lost to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathClaim {
+    /// The artifact now owns the path; the paper and the path are committed.
+    Taken(i64),
+    /// Another artifact already owns the path; nothing was written.
+    Rejected(i64),
+}
+
 impl std::fmt::Debug for Db {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Db")
@@ -35,10 +47,19 @@ impl std::fmt::Debug for Db {
 impl Db {
     /// Open (or create) a SQLite database at `path`.
     ///
-    /// Sets pragmas, creates tables/indices/triggers if missing, checks schema
-    /// version, and evicts stale unreferenced cache entries.
+    /// Creates the parent directory, sets pragmas, creates tables/indices/triggers
+    /// if missing, checks schema version, and evicts stale unreferenced cache entries.
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).context("failed to open database")?;
+        // SQLite will not create intermediate directories, and its failure here
+        // reports neither the path nor the cause once wrapped in context below.
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        let conn = Connection::open(path)
+            .with_context(|| format!("failed to open database at {}", path.display()))?;
 
         // Pragmas
         conn.execute_batch(
@@ -234,6 +255,48 @@ impl Db {
     /// For s2_id and openalex_id, sets if null; if non-null and different, keeps
     /// existing and logs a warning. Returns the paper's row id.
     pub fn upsert_paper(&self, paper: &PaperRow, source: Option<&str>) -> Result<i64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        Self::upsert_paper_on(&conn, paper, source)
+    }
+
+    /// Upsert a paper and point it at an artifact directory in one transaction.
+    ///
+    /// `accept` receives the id the upsert resolved to and decides whether this
+    /// artifact may take the path; a `false` verdict rolls the upsert back.
+    /// Both statements commit together or neither does: a paper row committed
+    /// without its `local_path` is re-inserted by the next run as a fresh,
+    /// identifier-less artifact, which is the inconsistency `lit check` exists
+    /// to remove rather than create.
+    ///
+    /// `accept` runs while the connection is held, so it must decide from
+    /// state the caller already has and must not call back into the database.
+    pub fn upsert_paper_with_local_path(
+        &self,
+        paper: &PaperRow,
+        source: Option<&str>,
+        path: &str,
+        accept: impl FnOnce(i64) -> bool,
+    ) -> Result<PathClaim> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction()?;
+        let id = Self::upsert_paper_on(&tx, paper, source)?;
+        if !accept(id) {
+            tx.rollback()?;
+            return Ok(PathClaim::Rejected(id));
+        }
+        tx.execute(
+            "UPDATE papers SET local_path = ?1 WHERE id = ?2",
+            params![path, id],
+        )?;
+        tx.commit()?;
+        Ok(PathClaim::Taken(id))
+    }
+
+    /// The upsert itself, against a connection the caller already holds.
+    ///
+    /// Taking the connection rather than the lock is what lets the transaction
+    /// above wrap this together with the `local_path` write.
+    fn upsert_paper_on(conn: &Connection, paper: &PaperRow, source: Option<&str>) -> Result<i64> {
         let title = if paper.title.len() > 2000 {
             &paper.title[..2000]
         } else {
@@ -256,8 +319,6 @@ impl Db {
             .entry_type
             .as_deref()
             .map(|s| s.to_lowercase());
-
-        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         // Try to find existing paper by doi, arxiv_id, or isbn
         let existing_id: Option<i64> = if let Some(doi) = &paper.doi {
@@ -1070,6 +1131,15 @@ mod tests {
     }
 
     #[test]
+    fn test_open_creates_missing_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/deeper/lit.db");
+        let db = Db::open(&path).unwrap();
+        drop(db);
+        assert!(path.is_file(), "{} was not created", path.display());
+    }
+
+    #[test]
     fn test_open_creates_db() {
         let (f, db) = tmp_db();
         let conn = db.conn.lock().unwrap();
@@ -1796,5 +1866,109 @@ mod tests {
         assert_eq!(conflicts[0].0, id);
         assert_eq!(conflicts[0].2, "year");
         assert_eq!(conflicts[0].3.len(), 2);
+    }
+
+    // -- L8: the artifact upsert and its local_path are one operation ---------
+
+    fn artifact_paper(title: &str, doi: &str) -> PaperRow {
+        PaperRow {
+            title: title.into(),
+            authors: r#"["A Author"]"#.into(),
+            doi: Some(doi.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Refuse every `local_path` write, so the second statement always fails.
+    fn refuse_local_path_writes(db: &Db) {
+        db.conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER refuse_local_path BEFORE UPDATE OF local_path ON papers
+                 BEGIN SELECT RAISE(ABORT, 'local_path write refused'); END;",
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_failed_local_path_write_leaves_no_paper_row() {
+        // The row committed without its path is the state `check`'s
+        // collect-and-continue design exists to prevent: the next run sees an
+        // identifier-less artifact and re-inserts it.
+        let (_f, db) = tmp_db();
+        refuse_local_path_writes(&db);
+
+        let result = db.upsert_paper_with_local_path(
+            &artifact_paper("Atomic", "10.1/atomic"),
+            Some("source_yaml"),
+            "etc/pdf/atomic",
+            |_| true,
+        );
+
+        assert!(result.is_err(), "the refused write must surface as an error");
+        assert_eq!(db.db_stats().unwrap().paper_count, 0, "the insert must roll back with it");
+    }
+
+    #[test]
+    fn a_rejected_claim_writes_nothing() {
+        let (_f, db) = tmp_db();
+
+        let claim = db
+            .upsert_paper_with_local_path(
+                &artifact_paper("Rejected", "10.1/rejected"),
+                Some("source_yaml"),
+                "etc/pdf/rejected",
+                |_| false,
+            )
+            .unwrap();
+
+        match claim {
+            PathClaim::Rejected(id) => assert!(id > 0, "the caller needs the id it lost to"),
+            PathClaim::Taken(_) => panic!("a refused claim must not take the path"),
+        }
+        assert_eq!(db.db_stats().unwrap().paper_count, 0, "a rejected artifact leaves no trace");
+    }
+
+    #[test]
+    fn an_accepted_claim_commits_the_paper_and_its_path() {
+        let (_f, db) = tmp_db();
+
+        let claim = db
+            .upsert_paper_with_local_path(
+                &artifact_paper("Accepted", "10.1/accepted"),
+                Some("source_yaml"),
+                "etc/pdf/accepted",
+                |_| true,
+            )
+            .unwrap();
+
+        let id = match claim {
+            PathClaim::Taken(id) => id,
+            PathClaim::Rejected(_) => panic!("the claim was accepted"),
+        };
+        assert_eq!(db.papers_with_local_path().unwrap(), vec![(id, "etc/pdf/accepted".to_string())]);
+    }
+
+    #[test]
+    fn the_claim_test_sees_the_id_the_upsert_resolved_to() {
+        // Deduplication happens inside the transaction, so the id handed to the
+        // test is the row the path would point at, not a fresh insert.
+        let (_f, db) = tmp_db();
+        let existing = db.upsert_paper(&artifact_paper("Shared Work", "10.1/shared"), None).unwrap();
+
+        let mut seen = None;
+        db.upsert_paper_with_local_path(
+            &artifact_paper("Shared Work", "10.1/shared"),
+            Some("source_yaml"),
+            "etc/pdf/shared",
+            |id| {
+                seen = Some(id);
+                true
+            },
+        )
+        .unwrap();
+
+        assert_eq!(seen, Some(existing));
     }
 }

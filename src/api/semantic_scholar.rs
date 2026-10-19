@@ -6,16 +6,26 @@ use serde_json::Value;
 /// `id` can be an arXiv ID (use `arXiv:{id}`), DOI, or S2 paper ID.
 pub fn paper_url(id: &str) -> String {
     format!(
-        "https://api.semanticscholar.org/graph/v1/paper/{}?fields=paperId,externalIds,venue,citationCount,openAccessPdf",
+        "https://api.semanticscholar.org/graph/v1/paper/{}?fields=paperId,externalIds,title,authors,year,venue,abstract,publicationDate,citationCount,openAccessPdf",
         id
     )
 }
 
 /// Parse response from the single-paper endpoint.
 ///
-/// Extracts s2_id, DOI, venue, citation count, and open-access PDF URL.
+/// Extracts title, full author names, year, abstract, publication date, s2_id,
+/// DOI, venue, citation count, and open-access PDF URL. Absent fields stay
+/// empty, so a not-found reply parses to a record with an empty title.
 pub fn parse_paper(body: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(body)?;
+
+    let title = data["title"].as_str().unwrap_or_default().to_string();
+    let authors = data["authors"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|a| a["name"].as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let year = data["year"].as_u64().map(|y| y.to_string()).unwrap_or_default();
+    let published_date = data["publicationDate"].as_str().map(String::from);
 
     let s2_id = data["paperId"].as_str().map(|s| s.to_string());
     let ext = &data["externalIds"];
@@ -31,12 +41,17 @@ pub fn parse_paper(body: &str) -> Result<PaperResult, Box<dyn std::error::Error>
         .map(|s| s.to_string());
 
     Ok(PaperResult {
+        title,
+        authors,
+        year,
         s2_id,
         doi,
         arxiv_id,
         venue,
         citations,
         pdf_url,
+        abstract_text: abstract_of(&data),
+        published_date,
         ..Default::default()
     })
 }
@@ -44,32 +59,38 @@ pub fn parse_paper(body: &str) -> Result<PaperResult, Box<dyn std::error::Error>
 /// Build URL for paper search.
 pub fn search_url(query: &str, limit: usize) -> String {
     format!(
-        "https://api.semanticscholar.org/graph/v1/paper/search?query={}&limit={}&fields=title,authors,year,citationCount,externalIds",
+        "https://api.semanticscholar.org/graph/v1/paper/search?query={}&limit={}&fields=title,authors,year,citationCount,externalIds,abstract",
         urlencode(query),
         limit
     )
 }
 
-/// Build URL for a paper's references.
+/// Largest page the references/citations endpoints return per request.
+/// Longer neighbor lists are fetched by following the response's `next` offset.
+pub const S2_PAGE_MAX: usize = 1000;
+
+/// Build URL for one page of a paper's references, starting at `offset`.
 ///
 /// `paper_id` can be an arXiv ID, Semantic Scholar ID, or DOI.
 /// Bare DOIs (matching `10.\d{4,}/`) must be prefixed with `DOI:`.
-pub fn refs_url(paper_id: &str) -> String {
-    let id = normalize_paper_id(paper_id);
-    format!(
-        "https://api.semanticscholar.org/graph/v1/paper/{}/references?fields=title,authors,year,externalIds&limit=50",
-        id
-    )
+pub fn refs_url(paper_id: &str, offset: usize) -> String {
+    related_url(paper_id, "references", offset)
 }
 
-/// Build URL for papers citing a given paper.
+/// Build URL for one page of papers citing a given paper, starting at `offset`.
 ///
 /// Same DOI-prefix convention as `refs_url`.
-pub fn cites_url(paper_id: &str) -> String {
-    let id = normalize_paper_id(paper_id);
+pub fn cites_url(paper_id: &str, offset: usize) -> String {
+    related_url(paper_id, "citations", offset)
+}
+
+fn related_url(paper_id: &str, endpoint: &str, offset: usize) -> String {
     format!(
-        "https://api.semanticscholar.org/graph/v1/paper/{}/citations?fields=title,authors,year,externalIds&limit=50",
-        id
+        "https://api.semanticscholar.org/graph/v1/paper/{}/{}?fields=title,authors,year,venue,externalIds,abstract&limit={}&offset={}",
+        normalize_paper_id(paper_id),
+        endpoint,
+        S2_PAGE_MAX,
+        offset
     )
 }
 
@@ -117,6 +138,7 @@ pub fn parse_search(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::
             doi,
             arxiv_id,
             citations,
+            abstract_text: abstract_of(p),
             ..Default::default()
         });
     }
@@ -128,13 +150,23 @@ pub fn parse_search(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::
 ///
 /// Each item in `data[]` has a `citedPaper` object.
 pub fn parse_refs(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
-    parse_related(body, "citedPaper")
+    Ok(parse_refs_page(body)?.0)
 }
 
 /// Parse response from the citations endpoint.
 ///
 /// Each item in `data[]` has a `citingPaper` object.
 pub fn parse_cites(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
+    Ok(parse_cites_page(body)?.0)
+}
+
+/// One page of references and the offset of the next page, if any.
+pub fn parse_refs_page(body: &str) -> Result<(Vec<PaperResult>, Option<usize>), Box<dyn std::error::Error>> {
+    parse_related(body, "citedPaper")
+}
+
+/// One page of citations and the offset of the next page, if any.
+pub fn parse_cites_page(body: &str) -> Result<(Vec<PaperResult>, Option<usize>), Box<dyn std::error::Error>> {
     parse_related(body, "citingPaper")
 }
 
@@ -142,8 +174,9 @@ pub fn parse_cites(body: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::E
 fn parse_related(
     body: &str,
     paper_key: &str,
-) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
+) -> Result<(Vec<PaperResult>, Option<usize>), Box<dyn std::error::Error>> {
     let data: Value = serde_json::from_str(body)?;
+    let next = data["next"].as_u64().map(|n| n as usize);
     let items = data
         .get("data")
         .and_then(|v| v.as_array())
@@ -173,6 +206,10 @@ fn parse_related(
         let ext = &paper["externalIds"];
         let arxiv_id = ext["ArXiv"].as_str().map(|s| s.to_string());
         let doi = ext["DOI"].as_str().map(|s| s.to_string());
+        let venue = paper["venue"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
 
         results.push(PaperResult {
             title,
@@ -181,11 +218,18 @@ fn parse_related(
             s2_id,
             arxiv_id,
             doi,
+            venue,
+            abstract_text: abstract_of(paper),
             ..Default::default()
         });
     }
 
-    Ok(results)
+    Ok((results, next))
+}
+
+/// A paper's `abstract`, untruncated; S2 sends null (or rarely "") when it has none.
+fn abstract_of(paper: &Value) -> Option<String> {
+    paper["abstract"].as_str().filter(|s| !s.trim().is_empty()).map(String::from)
 }
 
 /// Prepend `ARXIV:` or `DOI:` for bare arXiv IDs / DOIs so S2 can resolve them.
@@ -240,6 +284,58 @@ fn rest_is_digits(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_refs_url_requests_a_full_page_at_offset() {
+        let url = refs_url("ARXIV:2501.16496", 400);
+        assert!(url.contains("/references?"), "url: {}", url);
+        assert!(url.contains(&format!("limit={}", S2_PAGE_MAX)), "url: {}", url);
+        assert!(url.contains("offset=400"), "url: {}", url);
+    }
+
+    #[test]
+    fn test_cites_url_requests_a_full_page_at_offset() {
+        let url = cites_url("2501.16496", 0);
+        assert!(url.contains("ARXIV:2501.16496/citations?"), "url: {}", url);
+        assert!(url.contains("offset=0"), "url: {}", url);
+    }
+
+    #[test]
+    fn test_search_and_neighbor_urls_request_the_abstract() {
+        for url in [search_url("q", 5), refs_url("ARXIV:2408.01416", 0), cites_url("2408.01416", 0)] {
+            let fields = url.split("fields=").nth(1).unwrap().split('&').next().unwrap();
+            assert!(fields.split(',').any(|f| f == "abstract"), "url: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_parse_search_and_related_read_the_full_abstract() {
+        let long = "word ".repeat(400);
+        let search = format!(r#"{{"data": [{{"title": "A", "abstract": "{}"}}, {{"title": "B", "abstract": null}}]}}"#, long);
+        let papers = parse_search(&search).unwrap();
+        assert_eq!(papers[0].abstract_text.as_deref(), Some(long.as_str()), "not truncated");
+        assert_eq!(papers[1].abstract_text, None);
+        let refs = r#"{"data": [{"citedPaper": {"title": "A", "abstract": "Refs abstract."}}]}"#;
+        assert_eq!(parse_refs(refs).unwrap()[0].abstract_text.as_deref(), Some("Refs abstract."));
+        let cites = r#"{"data": [{"citingPaper": {"title": "B", "abstract": ""}}]}"#;
+        assert_eq!(parse_cites(cites).unwrap()[0].abstract_text, None, "empty is absent");
+    }
+
+    #[test]
+    fn test_parse_refs_page_reads_next_offset() {
+        let body = r#"{"offset": 0, "next": 1000, "data": [{"citedPaper": {"title": "A"}}]}"#;
+        let (papers, next) = parse_refs_page(body).unwrap();
+        assert_eq!(papers.len(), 1);
+        assert_eq!(next, Some(1000));
+    }
+
+    #[test]
+    fn test_parse_cites_page_last_page_has_no_next() {
+        let body = r#"{"offset": 1000, "data": [{"citingPaper": {"title": "B"}}]}"#;
+        let (papers, next) = parse_cites_page(body).unwrap();
+        assert_eq!(papers[0].title, "B");
+        assert_eq!(next, None);
+    }
 
     #[test]
     fn test_normalize_paper_id_bare_doi() {
@@ -413,6 +509,29 @@ mod tests {
         assert!(url.contains("paperId"));
         assert!(url.contains("citationCount"));
         assert!(url.contains("openAccessPdf"));
+        for field in ["title", "authors", "year", "venue", "abstract", "publicationDate"] {
+            assert!(url.contains(field), "missing field {}", field);
+        }
+    }
+
+    #[test]
+    fn parse_paper_reads_bibliographic_fields_with_full_author_names() {
+        let body = r#"{
+            "paperId": "abc",
+            "externalIds": {"ArXiv": "2609.39243"},
+            "title": "A Paper",
+            "authors": [{"name": "Jane Q. Doe"}, {"name": "John Roe"}],
+            "year": 2026,
+            "venue": "NeurIPS",
+            "abstract": "We show things.",
+            "publicationDate": "2026-09-30"
+        }"#;
+        let r = parse_paper(body).unwrap();
+        assert_eq!(r.title, "A Paper");
+        assert_eq!(r.authors, vec!["Jane Q. Doe", "John Roe"]);
+        assert_eq!(r.year, "2026");
+        assert_eq!(r.abstract_text.as_deref(), Some("We show things."));
+        assert_eq!(r.published_date.as_deref(), Some("2026-09-30"));
     }
 
     #[test]
