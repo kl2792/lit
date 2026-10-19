@@ -28,37 +28,39 @@ pub fn run_auth(
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(cookie_path)?;
-
-    let mut count = 0usize;
-    let mut min_expiry: Option<u64> = None;
-    let mut max_expiry: Option<u64> = None;
-
-    for line in content.lines() {
-        let line = line.trim();
-        // Skip comments and blank lines
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        count += 1;
-
-        // Netscape cookie format: tab-separated, field 5 (0-indexed) is expiry epoch
-        let fields: Vec<&str> = line.splitn(7, '\t').collect();
-        if fields.len() >= 6 {
-            if let Ok(expiry) = fields[4].parse::<u64>() {
-                min_expiry = Some(min_expiry.map_or(expiry, |m: u64| m.min(expiry)));
-                max_expiry = Some(max_expiry.map_or(expiry, |m: u64| m.max(expiry)));
-            }
-        }
+    let expiries = ezproxy_expiries(&std::fs::read_to_string(cookie_path)?);
+    if expiries.is_empty() {
+        // Publisher cookies alone do not authenticate through the proxy.
+        println!("No EZProxy session: no {} cookie in {}", EZPROXY_DOMAIN, cookie_path.display());
+        println!("Log in via a Clio \"Full Text\" link, then run: python3 bin/clio-auth.py");
+        return Ok(());
     }
-
-    println!("EZProxy session: {} cookie(s) found", count);
-    if let (Some(min_e), Some(max_e)) = (min_expiry, max_expiry) {
-        println!("Expiry: {} – {}", epoch_to_date(min_e), epoch_to_date(max_e));
+    println!("EZProxy session: {} cookie(s) found", expiries.len());
+    // Expiry 0 marks a browser-session cookie, which has no date.
+    if let Some(max_e) = expiries.iter().copied().filter(|&e| e > 0).max() {
+        println!("Latest expiry: {}", epoch_to_date(max_e));
     }
     println!("Cookie file: {}", cookie_path.display());
 
     Ok(())
+}
+
+const EZPROXY_DOMAIN: &str = "ezproxy.cul.columbia.edu";
+
+/// Expiry epochs (0 = session cookie) of the EZProxy cookies in a Netscape-format
+/// cookies file. `#HttpOnly_` lines are cookies, not comments.
+fn ezproxy_expiries(content: &str) -> Vec<u64> {
+    content
+        .lines()
+        .map(|l| l.trim().strip_prefix("#HttpOnly_").unwrap_or(l.trim()))
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let fields: Vec<&str> = l.splitn(7, '\t').collect();
+            let domain = fields[0].trim_start_matches('.');
+            let is_ezproxy = domain == EZPROXY_DOMAIN || domain.ends_with(&format!(".{}", EZPROXY_DOMAIN));
+            (is_ezproxy && fields.len() >= 6).then(|| fields[4].parse().unwrap_or(0))
+        })
+        .collect()
 }
 
 /// Download and index the Columbia Clio catalog, or report current index status.
@@ -360,6 +362,22 @@ mod tests {
         // 2026-05-21 = day 20594 from epoch
         // 20594 * 86400 = 1779321600
         assert_eq!(epoch_to_date(1779321600), "2026-05-21");
+    }
+
+    #[test]
+    fn test_ezproxy_expiries_keeps_only_ezproxy_cookies() {
+        let content = "# Netscape HTTP Cookie File\n\
+            .tandfonline.com\tTRUE\t/\tTRUE\t1800000000\tMAID\tx\n\
+            #HttpOnly_.ezproxy.cul.columbia.edu\tTRUE\t/\tTRUE\t0\tezproxy\tx\n\
+            login.ezproxy.cul.columbia.edu\tFALSE\t/\tTRUE\t1790000000\tl\tx\n\
+            \n";
+        assert_eq!(ezproxy_expiries(content), vec![0, 1790000000]);
+    }
+
+    #[test]
+    fn test_ezproxy_expiries_empty_without_ezproxy_cookies() {
+        let content = ".springer.com\tTRUE\t/\tTRUE\t0\tidp_session\tx\n";
+        assert!(ezproxy_expiries(content).is_empty());
     }
 
     #[test]
