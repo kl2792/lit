@@ -119,6 +119,7 @@ See [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) section 2c.
 | `NO_COLOR` | *(unset)* | Set to any non-empty value to disable color |
 | `LIT_EMAIL` | `lit-cli@users.noreply.github.com` | Email for Unpaywall API |
 | `S2_API_KEY` | *(unset)* | Semantic Scholar API key (free, avoids shared rate limits) |
+| `OPENALEX_API_KEY` | *(unset)* | OpenAlex API key, sent as `Authorization: Bearer` (free; keyless requests share a per-IP daily budget) |
 | `LIT_INLINE_TIMEOUT_MS` | `1000` | `lit-mcp` only: milliseconds a tool call may run before the server returns a task id and notifies on completion |
 
 `lit db path` prints the resolved value of each path above together with the

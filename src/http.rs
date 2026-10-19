@@ -95,9 +95,9 @@ impl Client {
     /// Perform an uncached HTTP GET request.
     ///
     /// Returns an error for non-success (non-2xx) HTTP status codes.
-    /// A 429 that outlasts the retries reports the attempt count (and a missing
-    /// `$S2_API_KEY` for Semantic Scholar URLs).
-    /// Automatically adds `x-api-key` header for Semantic Scholar if `$S2_API_KEY` is set.
+    /// A 429 that outlasts the retries reports the attempt count, the server's
+    /// Retry-After, and a missing API key variable (see `key_spec`).
+    /// Sends the host's API key header when its variable is set (`auth_header`).
     /// Rejects responses larger than 50 MB.
     ///
     /// Timeouts, connection errors, 429 and 5xx are retried under `with_retries`.
@@ -116,12 +116,12 @@ impl Client {
         .await;
         match outcome {
             Ok(result) => result,
-            Err((Transient::RateLimited, attempts)) => {
-                let has_key = std::env::var("S2_API_KEY").is_ok_and(|k| !k.is_empty());
-                Err(rate_limit_message(url, attempts, has_key).into())
+            Err((Transient::RateLimited, attempts, retry_after)) => {
+                let has_key = auth_header(url, env_var).is_some();
+                Err(rate_limit_message(url, attempts, has_key, retry_after).into())
             }
-            Err((Transient::Status(status), _)) => Err(format!("HTTP {} for {}", status, url).into()),
-            Err((Transient::Transport(e), _)) => Err(e.into()),
+            Err((Transient::Status(status), _, _)) => Err(format!("HTTP {} for {}", status, url).into()),
+            Err((Transient::Transport(e), _, _)) => Err(e.into()),
         }
     }
 
@@ -129,8 +129,8 @@ impl Client {
     /// Retry-After hint when it sent one.
     async fn attempt(&self, url: &str) -> Attempt<Result<String, Box<dyn std::error::Error>>, Transient> {
         let mut req = self.inner.get(url);
-        if let Some(key) = s2_api_key(url, std::env::var("S2_API_KEY").ok()) {
-            req = req.header("x-api-key", key);
+        if let Some((name, value)) = auth_header(url, env_var) {
+            req = req.header(name, value);
         }
         let resp = match req.send().await {
             Ok(r) => r,
@@ -212,14 +212,14 @@ enum Attempt<T, E> {
 /// The wait before retry `k` (0-based) is the server's Retry-After when given,
 /// otherwise `2^(k+1)` seconds plus up to 50% jitter (2s, 4s, 8s, 16s, ...).
 /// Gives up early rather than let total sleep exceed `budget`.
-/// Returns the first `Done` value, or the last transient error and the number
-/// of attempts made.
+/// Returns the first `Done` value, or the last transient error, the number
+/// of attempts made, and the last attempt's Retry-After.
 async fn with_retries<T, E, A, AFut, S, SFut>(
     max_attempts: usize,
     budget: Duration,
     mut attempt: A,
     mut sleep: S,
-) -> Result<T, (E, usize)>
+) -> Result<T, (E, usize, Option<Duration>)>
 where
     E: std::fmt::Display,
     A: FnMut() -> AFut,
@@ -237,7 +237,7 @@ where
         };
         let wait = retry_after.unwrap_or_else(|| backoff(made - 1, jitter_fraction()));
         if made >= max_attempts || slept + wait > budget {
-            return Err((err, made));
+            return Err((err, made, retry_after));
         }
         eprintln!(
             "note: {} (attempt {}/{}), retrying in {:.1}s...",
@@ -270,25 +270,47 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
     value.trim().parse::<u64>().ok().map(Duration::from_secs)
 }
 
-fn is_s2_api(url: &str) -> bool {
-    url.contains("api.semanticscholar.org")
+/// How an API host takes a key: the environment variable holding it, the
+/// request header carrying it, and the prefix before the key in that header.
+struct KeySpec {
+    env: &'static str,
+    header: &'static str,
+    prefix: &'static str,
 }
 
-/// The `x-api-key` value for `url`: the S2 key (`$S2_API_KEY`, passed in as
-/// `key`) on Semantic Scholar API URLs, nothing elsewhere or when unset/empty.
-fn s2_api_key(url: &str, key: Option<String>) -> Option<String> {
-    key.filter(|k| is_s2_api(url) && !k.is_empty())
-}
-
-/// Error text for a request still rate-limited after `attempts` tries; for
-/// Semantic Scholar without a key, names the missing `S2_API_KEY`.
-fn rate_limit_message(url: &str, attempts: usize, has_key: bool) -> String {
-    let hint = if is_s2_api(url) && !has_key {
-        " (S2_API_KEY is not set; requests share the anonymous rate limit)"
+/// The key scheme for `url`'s API host, if it takes one.
+fn key_spec(url: &str) -> Option<KeySpec> {
+    if url.contains("api.semanticscholar.org") {
+        Some(KeySpec { env: "S2_API_KEY", header: "x-api-key", prefix: "" })
+    } else if url.contains("api.openalex.org") {
+        Some(KeySpec { env: "OPENALEX_API_KEY", header: "authorization", prefix: "Bearer " })
     } else {
-        ""
+        None
+    }
+}
+
+/// The auth header (name, value) for `url`, with the key read through `env`;
+/// nothing when the host takes no key or its variable is unset or empty.
+fn auth_header(url: &str, env: impl Fn(&str) -> Option<String>) -> Option<(&'static str, String)> {
+    let spec = key_spec(url)?;
+    let key = env(spec.env).filter(|k| !k.is_empty())?;
+    Some((spec.header, format!("{}{}", spec.prefix, key)))
+}
+
+fn env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+/// Error text for a request still rate-limited after `attempts` tries. Names
+/// the server's last Retry-After when sent, and the missing key variable for a
+/// keyed API host requested without one.
+fn rate_limit_message(url: &str, attempts: usize, has_key: bool, retry_after: Option<Duration>) -> String {
+    let wait = retry_after.map_or(String::new(), |d| format!("; retry after {}s", d.as_secs()));
+    let hint = match key_spec(url) {
+        Some(spec) if !has_key => format!(" ({} is not set; requests share the anonymous rate limit)", spec.env),
+        _ => String::new(),
     };
-    format!("{} for {} after {} attempts{}", RATE_LIMITED, url, attempts, hint)
+    format!("{} for {} after {} attempts{}{}", RATE_LIMITED, url, attempts, wait, hint)
 }
 
 const RATE_LIMITED: &str = "HTTP 429 Too Many Requests";
@@ -312,7 +334,7 @@ fn looks_valid(body: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_rate_limited, parse_retry_after, rate_limit_message, s2_api_key, with_retries, Attempt, RETRY_BUDGET};
+    use super::{auth_header, is_rate_limited, parse_retry_after, rate_limit_message, with_retries, Attempt, RETRY_BUDGET};
     use std::cell::RefCell;
     use std::time::Duration;
 
@@ -321,7 +343,7 @@ mod tests {
     async fn drive(
         max_attempts: usize,
         script: Vec<Attempt<&'static str, &'static str>>,
-    ) -> (Result<&'static str, (&'static str, usize)>, Vec<Duration>) {
+    ) -> (Result<&'static str, (&'static str, usize, Option<Duration>)>, Vec<Duration>) {
         let script = RefCell::new(script.into_iter());
         let sleeps = RefCell::new(Vec::new());
         let result = with_retries(
@@ -351,14 +373,14 @@ mod tests {
     #[tokio::test]
     async fn retry_after_beyond_the_budget_gives_up_without_sleeping() {
         let (result, sleeps) = drive(5, vec![transient(Some(RETRY_BUDGET.as_secs() + 1))]).await;
-        assert_eq!(result, Err(("rate limited", 1)));
+        assert_eq!(result, Err(("rate limited", 1, Some(RETRY_BUDGET + Duration::from_secs(1)))));
         assert!(sleeps.is_empty());
     }
 
     #[tokio::test]
     async fn backoff_doubles_from_two_seconds_with_bounded_jitter_and_total() {
         let (result, sleeps) = drive(5, (0..5).map(|_| transient(None)).collect()).await;
-        assert_eq!(result, Err(("rate limited", 5)));
+        assert_eq!(result, Err(("rate limited", 5, None)));
         assert_eq!(sleeps.len(), 4, "no sleep after the final attempt");
         for (k, d) in sleeps.iter().enumerate() {
             let base = Duration::from_secs(2 << k); // 2, 4, 8, 16
@@ -388,31 +410,82 @@ mod tests {
         assert_eq!(parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT"), None);
     }
 
+    /// An environment holding only `var=value`.
+    fn env_with(var: &'static str, value: &'static str) -> impl Fn(&str) -> Option<String> {
+        move |v| (v == var).then(|| value.to_string())
+    }
+
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
     #[test]
     fn s2_key_goes_on_every_semantic_scholar_api_url_only() {
-        let key = Some("k".to_string());
+        let env = env_with("S2_API_KEY", "k");
         for url in [
             "https://api.semanticscholar.org/graph/v1/paper/search?query=x",
             "https://api.semanticscholar.org/graph/v1/paper/ARXIV:2408.01416/references?offset=0",
             "https://api.semanticscholar.org/graph/v1/paper/DOI:10.1/x/citations?offset=1000",
         ] {
-            assert_eq!(s2_api_key(url, key.clone()).as_deref(), Some("k"), "url: {}", url);
+            assert_eq!(auth_header(url, &env), Some(("x-api-key", "k".to_string())), "url: {}", url);
         }
-        assert_eq!(s2_api_key("https://api.openalex.org/works?search=x", key), None);
-        assert_eq!(s2_api_key("https://api.semanticscholar.org/graph/v1/paper/search", None), None);
+        assert_eq!(auth_header("https://api.openalex.org/works?search=x", &env), None);
+        assert_eq!(auth_header("https://api.semanticscholar.org/graph/v1/paper/search", no_env), None);
+    }
+
+    #[test]
+    fn openalex_key_goes_as_bearer_token_on_openalex_api_urls_only() {
+        let env = env_with("OPENALEX_API_KEY", "k");
+        assert_eq!(
+            auth_header("https://api.openalex.org/works?search=x", &env),
+            Some(("authorization", "Bearer k".to_string()))
+        );
+        assert_eq!(auth_header("https://api.semanticscholar.org/graph/v1/paper/search", &env), None);
+        assert_eq!(auth_header("https://export.arxiv.org/api/query?id_list=1", &env), None);
+        assert_eq!(auth_header("https://api.openalex.org/works", no_env), None);
+    }
+
+    #[test]
+    fn empty_key_sends_no_header() {
+        assert_eq!(auth_header("https://api.openalex.org/works", env_with("OPENALEX_API_KEY", "")), None);
+        assert_eq!(auth_header("https://api.semanticscholar.org/graph/v1/paper/x", env_with("S2_API_KEY", "")), None);
     }
 
     #[test]
     fn s2_rate_limit_without_a_key_says_so() {
         let url = "https://api.semanticscholar.org/graph/v1/paper/search";
-        assert!(rate_limit_message(url, 4, false).contains("S2_API_KEY is not set"));
-        assert!(!rate_limit_message(url, 4, true).contains("S2_API_KEY"));
-        assert!(!rate_limit_message("https://api.openalex.org/works", 4, false).contains("S2_API_KEY"));
+        assert!(rate_limit_message(url, 4, false, None).contains("S2_API_KEY is not set"));
+        assert!(!rate_limit_message(url, 4, true, None).contains("S2_API_KEY"));
+        assert!(!rate_limit_message("https://api.openalex.org/works", 4, false, None).contains("S2_API_KEY"));
+    }
+
+    #[test]
+    fn openalex_rate_limit_without_a_key_says_so() {
+        let url = "https://api.openalex.org/works?search=x";
+        assert!(rate_limit_message(url, 1, false, None).contains("OPENALEX_API_KEY is not set"));
+        assert!(!rate_limit_message(url, 1, true, None).contains("OPENALEX_API_KEY"));
+        assert!(!rate_limit_message("https://export.arxiv.org/api/query", 1, false, None).contains("API_KEY"));
+    }
+
+    #[test]
+    fn rate_limit_message_reports_the_server_requested_wait() {
+        let url = "https://api.openalex.org/works";
+        let msg = rate_limit_message(url, 1, false, Some(Duration::from_secs(35714)));
+        assert!(msg.contains("retry after 35714s"), "{}", msg);
+        assert!(!rate_limit_message(url, 4, false, None).contains("retry after"));
+    }
+
+    #[tokio::test]
+    async fn exhausted_retries_return_the_last_retry_after() {
+        let (result, _) = drive(5, vec![transient(Some(35714))]).await;
+        assert_eq!(result, Err(("rate limited", 1, Some(Duration::from_secs(35714)))));
+        let (result, _) = drive(2, vec![transient(None), transient(None)]).await;
+        assert_eq!(result, Err(("rate limited", 2, None)));
     }
 
     #[test]
     fn is_rate_limited_recognizes_exhausted_429_retries_only() {
-        assert!(is_rate_limited(&rate_limit_message("https://api.openalex.org/works", 4, false)));
+        assert!(is_rate_limited(&rate_limit_message("https://api.openalex.org/works", 4, false, None)));
         assert!(!is_rate_limited("HTTP 503 for https://api.openalex.org/works"));
         assert!(!is_rate_limited("error sending request"));
     }

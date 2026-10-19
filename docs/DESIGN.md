@@ -211,7 +211,7 @@ See README examples.
 - **Invalidation:** `--no-cache` bypasses on a single call.
   No "clear cache" subcommand by design; `lit db rebuild` reconstructs the database from
   `etc/pdf/**/source.yaml` if you need a full reset.
-- **Rate limits:** respected per source. `S2_API_KEY` raises Semantic Scholar's shared-pool limit.
+- **Rate limits:** respected per source. `S2_API_KEY` raises Semantic Scholar's shared-pool limit; `OPENALEX_API_KEY` replaces OpenAlex's per-IP keyless daily budget with the key's own.
 - **`LIT_EMAIL`** is sent to Unpaywall to comply with their terms.
 
 ---
