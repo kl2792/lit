@@ -177,7 +177,8 @@ pub(crate) fn ensure_text(dir: &Path) -> Result<ReadResult, Box<dyn std::error::
 
 /// Find the main .tex file in a directory: the toplevel source arXiv's
 /// `00README.json` names, which may sit in a subdirectory, else a top-level
-/// file with `\documentclass`, else `main.tex` or `paper.tex`.
+/// document root (preferring `main.tex`, then `paper.tex`, then lexical order),
+/// else `main.tex` or `paper.tex` without a document declaration.
 fn find_main_tex(dir: &Path) -> Option<PathBuf> {
     manifest_toplevel(dir).or_else(|| scan_main_tex(dir))
 }
@@ -200,16 +201,28 @@ fn manifest_toplevel(dir: &Path) -> Option<PathBuf> {
 
 /// Find the main .tex file among the top-level files of `dir`.
 fn scan_main_tex(dir: &Path) -> Option<PathBuf> {
-    let tex_files: Vec<PathBuf> = std::fs::read_dir(dir)
+    let mut tex_files: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |e| e == "tex"))
+        .filter(|p| p.is_file() && p.extension().map_or(false, |e| e == "tex"))
         .collect();
 
     if tex_files.is_empty() {
         return None;
     }
+
+    // Publisher templates can be complete documents too. Prefer conventional
+    // manuscript names among document roots, with a stable order for ties.
+    // A named fragment must not displace an unconventional document root.
+    tex_files.sort_by_key(|path| {
+        let priority = match path.file_name().and_then(|name| name.to_str()) {
+            Some("main.tex") => 0,
+            Some("paper.tex") => 1,
+            _ => 2,
+        };
+        (priority, path.clone())
+    });
 
     // Find file with \documentclass (or \documentstyle, its LaTeX 2.09 form)
     tex_files
@@ -364,6 +377,97 @@ mod tests {
         );
         let main = find_main_tex(&dir).expect("should identify \\documentstyle file");
         assert!(main.ends_with("blamecorr.tex"));
+    }
+
+    #[test]
+    fn find_main_tex_prefers_manuscript_over_bundled_templates() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = make_paper_dir(base.path(), "paper", "elsarticle-template-harv.tex", "\\documentclass{elsarticle}\n");
+        std::fs::write(dir.join("elsarticle-template-num.tex"), "\\documentclass{elsarticle}\n").unwrap();
+        std::fs::write(dir.join("paper.tex"), "\\documentclass{article}\n").unwrap();
+        std::fs::write(dir.join("main.tex"), "\\documentclass{elsarticle}\n").unwrap();
+        assert_eq!(find_main_tex(&dir), Some(dir.join("main.tex")));
+    }
+
+    #[test]
+    fn find_main_tex_preserves_unconventional_roots_over_named_fragments() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = make_paper_dir(base.path(), "paper", "body.tex", "\\documentstyle{article}\n");
+        for name in ["main.tex", "paper.tex"] {
+            std::fs::write(dir.join(name), "\\section{Included fragment}\n").unwrap();
+        }
+        assert_eq!(find_main_tex(&dir), Some(dir.join("body.tex")));
+    }
+
+    #[test]
+    fn find_main_tex_prefers_paper_root_over_templates_and_main_fragment() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = make_paper_dir(base.path(), "paper", "example.tex", "\\documentclass{article}\n");
+        std::fs::write(dir.join("main.tex"), "\\input{paper}\n").unwrap();
+        std::fs::write(dir.join("paper.tex"), "\\documentclass{article}\n").unwrap();
+        assert_eq!(find_main_tex(&dir), Some(dir.join("paper.tex")));
+    }
+
+    #[test]
+    fn find_main_tex_does_not_scan_unmanifested_subdirectories() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = make_paper_dir(base.path(), "paper", "fragment.tex", "\\section{Fragment}\n");
+        std::fs::create_dir(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("nested/main.tex"), "\\documentclass{article}\n").unwrap();
+        assert_eq!(find_main_tex(&dir), None);
+    }
+
+    #[test]
+    fn find_main_tex_breaks_document_root_ties_lexically() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = make_paper_dir(base.path(), "paper", "z.tex", "\\documentclass{article}\n");
+        std::fs::write(dir.join("a.tex"), "\\documentclass{article}\n").unwrap();
+        assert_eq!(find_main_tex(&dir), Some(dir.join("a.tex")));
+    }
+
+    #[test]
+    fn find_main_tex_manifest_overrides_conventional_names() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = make_paper_dir(base.path(), "paper", "main.tex", "\\documentclass{article}\n");
+        std::fs::write(dir.join("chosen.tex"), "\\documentclass{article}\n").unwrap();
+        std::fs::write(dir.join("00README.json"), r#"{"sources": [{"usage": "toplevel", "filename": "chosen.tex"}]}"#).unwrap();
+        assert_eq!(find_main_tex(&dir), Some(dir.join("chosen.tex")));
+    }
+
+    #[test]
+    fn find_main_tex_falls_back_to_conventional_names_without_declarations() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = make_paper_dir(base.path(), "paper", "paper.tex", "\\input{body}\n");
+        assert_eq!(find_main_tex(&dir), Some(dir.join("paper.tex")));
+        std::fs::write(dir.join("main.tex"), "\\input{body}\n").unwrap();
+        assert_eq!(find_main_tex(&dir), Some(dir.join("main.tex")));
+    }
+
+    #[test]
+    fn find_main_tex_never_selects_conventionally_named_directories() {
+        let base = tempfile::tempdir().unwrap();
+        for name in ["main.tex", "paper.tex"] {
+            let dir = base.path().join(name.trim_end_matches(".tex"));
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::create_dir(dir.join(name)).unwrap();
+            assert_eq!(find_main_tex(&dir), None);
+        }
+    }
+
+    #[test]
+    fn find_main_tex_directory_does_not_displace_paper_fragment() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = make_paper_dir(base.path(), "paper", "paper.tex", "\\input{body}\n");
+        std::fs::create_dir(dir.join("main.tex")).unwrap();
+        assert_eq!(find_main_tex(&dir), Some(dir.join("paper.tex")));
+    }
+
+    #[test]
+    fn find_main_tex_falls_back_when_a_declaration_file_is_not_utf8() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = make_paper_dir(base.path(), "paper", "main.tex", "\\input{body}\n");
+        std::fs::write(dir.join("body.tex"), b"\\documentclass{article}\n\xff").unwrap();
+        assert_eq!(find_main_tex(&dir), Some(dir.join("main.tex")));
     }
 
     #[test]
