@@ -1,0 +1,43 @@
+cargo test supplements
+   Compiling lit v0.1.0 (/Users/kaizhan/ice/tmp/lit-supplements)
+warning: function `xml_resources` is never used
+  --> src/cmd/supplements.rs:44:4
+   |
+44 | fn xml_resources(_body: &str, _document_url: &str) -> Result<Vec<Resource>, String> { Ok(Vec::new()) }
+   |    ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `lit` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.20s
+     Running unittests src/lib.rs (target/debug/deps/lit-80101318a48fcbbf)
+
+running 9 tests
+test cmd::supplements::tests::mime_magic_validation_rejects_html_and_disagreement ... ok
+test cmd::supplements::tests::xml_declared_relative_uris_resolve_against_document_url ... FAILED
+test cmd::supplements::tests::synthetic_declared_links_preserve_labels_and_deduplicate ... ok
+test cmd::supplements::tests::synthetic_no_links_is_distinct_from_unrecognized_page ... ok
+test cmd::supplements::tests::synthetic_unsafe_links_fail_instead_of_silently_disappearing ... ok
+test cmd::supplements::tests::captured_official_page_requires_further_discovery_and_is_not_no_links ... ok
+test cmd::supplements::tests::content_hash_is_sha256_and_atomic_write_leaves_main_intact ... ok
+test cmd::supplements::tests::acquisition_records_html_disguised_as_image_as_failure ... ok
+test cmd::supplements::tests::acquisition_keeps_partial_success_and_retries_only_failed_or_corrupt_files ... ok
+
+failures:
+
+---- cmd::supplements::tests::xml_declared_relative_uris_resolve_against_document_url stdout ----
+
+thread 'cmd::supplements::tests::xml_declared_relative_uris_resolve_against_document_url' (35468536) panicked at src/cmd/supplements.rs:198:9:
+assertion `left == right` failed
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    cmd::supplements::tests::xml_declared_relative_uris_resolve_against_document_url
+
+test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 670 filtered out; finished in 0.46s
+
+error: test failed, to rerun pass `--lib`
+make: *** [test-supplements] Error 101

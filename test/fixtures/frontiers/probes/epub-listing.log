@@ -1,0 +1,105 @@
+unzip -l 'tmp/frontiers-xml-probes/article.epub'
+Archive:  tmp/frontiers-xml-probes/article.epub
+  Length      Date    Time    Name
+---------  ---------- -----   ----
+       20  02-06-2020 22:46   mimetype
+        0  01-27-2021 21:07   META-INF/
+      246  02-06-2020 22:46   META-INF/container.xml
+        0  01-27-2021 21:07   OPS/
+        0  01-27-2021 21:07   OPS/fonts/
+  1620428  05-04-2009 17:28   OPS/fonts/CharisSILI.ttf
+  1654136  05-04-2009 17:28   OPS/fonts/CharisSILR.ttf
+   310604  08-22-2010 16:51   OPS/fonts/DejaVuSerif-Italic.ttf
+   337444  08-22-2010 16:51   OPS/fonts/DejaVuSerif.ttf
+        0  01-27-2021 21:07   OPS/images/
+    61375  02-06-2020 12:57   OPS/images/cover.jpg
+    20115  09-12-2016 12:51   OPS/images/crossmark.jpg
+    26273  02-06-2020 12:54   OPS/images/fncom-14-00006-g001.gif
+    48065  02-06-2020 12:54   OPS/images/fncom-14-00006-g002.gif
+    50968  02-07-2020 17:50   OPS/images/fncom-14-00006-g003.gif
+    32950  02-06-2020 12:54   OPS/images/fncom-14-00006-g004.gif
+    76850  02-06-2020 12:54   OPS/images/fncom-14-00006-g005.gif
+    94455  02-06-2020 12:54   OPS/images/fncom-14-00006-g006.gif
+    40159  02-06-2020 12:54   OPS/images/fncom-14-00006-g007.gif
+    51564  02-06-2020 12:54   OPS/images/fncom-14-00006-t001.jpg
+      696  02-06-2020 22:46   OPS/images/inline_1.gif
+      744  02-06-2020 22:46   OPS/images/inline_2.gif
+    56934  03-31-2015 16:13   OPS/images/logo.jpg
+     2102  02-06-2020 13:38   OPS/images/math_1.gif
+     4404  02-06-2020 13:41   OPS/images/math_10.gif
+     3025  02-06-2020 13:38   OPS/images/math_2.gif
+     2171  02-06-2020 13:38   OPS/images/math_3.gif
+     2639  02-06-2020 13:39   OPS/images/math_4.gif
+     3121  02-06-2020 13:39   OPS/images/math_5.gif
+     2590  02-06-2020 13:40   OPS/images/math_6.gif
+     4226  02-06-2020 13:40   OPS/images/math_7.gif
+     6134  02-06-2020 13:41   OPS/images/math_8.gif
+     2487  02-06-2020 13:41   OPS/images/math_9.gif
+     3380  02-06-2020 22:47   OPS/package.opf
+        0  01-27-2021 21:07   OPS/styles/
+    10195  02-06-2020 22:50   OPS/styles/stylesheet.css
+     3904  01-27-2021 21:05   OPS/toc.ncx
+        0  01-27-2021 21:07   OPS/xhtml/
+      639  02-06-2020 22:46   OPS/xhtml/cover.xhtml
+    63549  01-27-2021 21:05   OPS/xhtml/fncom-14-00006.xhtml
+     2369  01-27-2021 21:04   OPS/xhtml/Nav.xhtml
+---------                     -------
+  4600961                     41 files
+unzip -p 'tmp/frontiers-xml-probes/article.epub' META-INF/container.xml OPS/package.opf
+<?xml version="1.0" encoding="UTF-8"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+<rootfiles>
+<rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/>
+</rootfiles>
+</container><?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" version="3.0" xml:lang="en" unique-identifier="bookid">
+<metadata>
+<dc:identifier id="bookid">fncom-14-00006</dc:identifier>
+<dc:title>Demystifying Brain Tumor Segmentation Networks</dc:title>
+<dc:language id="pub-language">en</dc:language>
+<dc:date>2020-02-07</dc:date>
+<meta property="dcterms:modified">2020-02-07T10:46:06Z</meta>
+<dc:creator>Ganapathy Krishnamurthi</dc:creator>
+<dc:publisher>Frontiers Media S.A.</dc:publisher>
+<dc:rights>Copyright &#x000A9; 2020 Natekar, Kori and Krishnamurthi</dc:rights>
+<meta name="cover" content="My_Cover"/>
+</metadata>
+<manifest>
+<item href="xhtml/Nav.xhtml" properties="nav" id="toc" media-type="application/xhtml+xml"/>
+<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+<item id="css" href="styles/stylesheet.css" media-type="text/css"/>
+<item id="Cover" href="xhtml/cover.xhtml" media-type="application/xhtml+xml"/>
+<item id="fncom-14-00006" href="xhtml/fncom-14-00006.xhtml" media-type="application/xhtml+xml"/>
+<item id="My_Cover" href="images/cover.jpg" media-type="image/jpeg"/>
+<item id="logo" href="images/logo.jpg" media-type="image/jpeg"/>
+<item id="crossmark" href="images/crossmark.jpg" media-type="image/jpeg"/>
+<item id="image1" href="images/fncom-14-00006-g001.gif" media-type="image/gif"/>
+<item id="image2" href="images/fncom-14-00006-g002.gif" media-type="image/gif"/>
+<item id="image3" href="images/fncom-14-00006-g003.gif" media-type="image/gif"/>
+<item id="image4" href="images/fncom-14-00006-g004.gif" media-type="image/gif"/>
+<item id="image5" href="images/fncom-14-00006-g005.gif" media-type="image/gif"/>
+<item id="image6" href="images/fncom-14-00006-g006.gif" media-type="image/gif"/>
+<item id="image7" href="images/fncom-14-00006-g007.gif" media-type="image/gif"/>
+<item id="image8" href="images/fncom-14-00006-t001.jpg" media-type="image/jpeg"/>
+<item id="image9" href="images/inline_1.gif" media-type="image/gif"/>
+<item id="image10" href="images/inline_2.gif" media-type="image/gif"/>
+<item id="image11" href="images/math_1.gif" media-type="image/gif"/>
+<item id="image12" href="images/math_10.gif" media-type="image/gif"/>
+<item id="image15" href="images/math_2.gif" media-type="image/gif"/>
+<item id="image16" href="images/math_3.gif" media-type="image/gif"/>
+<item id="image17" href="images/math_4.gif" media-type="image/gif"/>
+<item id="image18" href="images/math_5.gif" media-type="image/gif"/>
+<item id="image19" href="images/math_6.gif" media-type="image/gif"/>
+<item id="image20" href="images/math_7.gif" media-type="image/gif"/>
+<item id="image21" href="images/math_8.gif" media-type="image/gif"/>
+<item id="image22" href="images/math_9.gif" media-type="image/gif"/>
+<item id="font1" href="fonts/CharisSILI.ttf" media-type="application/vnd.ms-opentype"/>
+<item id="font2" href="fonts/CharisSILR.ttf" media-type="application/vnd.ms-opentype"/>
+<item id="font3" href="fonts/DejaVuSerif-Italic.ttf" media-type="application/vnd.ms-opentype"/>
+<item id="font4" href="fonts/DejaVuSerif.ttf" media-type="application/vnd.ms-opentype"/>
+</manifest>
+<spine toc="ncx">
+<itemref idref="Cover"/>
+<itemref idref="fncom-14-00006" />
+</spine>
+</package>

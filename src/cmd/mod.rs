@@ -9,6 +9,7 @@ pub mod cites;
 pub mod closure;
 pub mod neighbors;
 pub mod download;
+pub mod supplements;
 pub(crate) mod lock;
 pub mod open;
 pub mod path;

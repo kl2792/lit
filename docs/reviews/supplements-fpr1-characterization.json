@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "finding": "FPR-1",
+  "status": "characterization coverage implemented and tested; fresh independent review pending",
+  "previous_review": {
+    "baseline": "85a131061d735e9658ae6a3a1498c347578d72bb",
+    "owned_blob_count": 38,
+    "full_index_patch_sha256": "ea3648457ebb25774cf951c223bbb8acd983784cacce7c32a5dce6babcc88e4d",
+    "preserved_patch": "tmp/supplements-reviewed-ea364845.patch",
+    "blob_manifest": "/Users/kaizhan/ice/etc/projects/mech/etc/reviews/lit-supplements-fresh-precommit-2026-10-23.json",
+    "preservation": "The patch hash was verified before new staging. Existing Git blobs and prior review manifest remain unchanged. The preservation Make target refuses to overwrite the saved patch."
+  },
+  "chronology": [
+    "Read the complete fresh precommit review, inspected public run, dispatch, cache and artifact lookup contracts, and sent a bounded test plan before editing implementation.",
+    "Wrote public-run characterization tests and Clap contract tests before adding the minimal test client override.",
+    "fpr1-missing-seam.log records an unresolved override_client import. This is missing testability infrastructure, not a behavioral defect or original preimplementation regression evidence.",
+    "Added only cfg(test) client injection, with a non-Send thread-local guard. Characterization then passed without identifying a product defect; fpr1-characterization.log retains that result.",
+    "Added a production CLI dispatch regression that rejects an arXiv input under --supplements with exit1, the expected error, and no stdout before network access.",
+    "The first full check passed the behavior tests but failed the existing module-reachability check because the new test filename differed from its module name. fpr1-full-green.log retains the actual failure despite that original log filename.",
+    "Moved the test file to the conventional supplements/run_tests.rs path without changing production behavior.",
+    "The full Make suite and CLI regression then passed; fpr1-stable-green.log retains the final Rust test output. No production correctness fix was necessary."
+  ],
+  "contracts_exercised": [
+    "Actual public supplements::run with cached Crossref metadata and real HTTPS publisher responses through a local TLS CONNECT fixture.",
+    "Discovery and explicit no-links JSON, canonical parent DOI, supplementary role, publisher labels, declared and resolved URLs, and no supplementary writes in discovery mode.",
+    "Exact captured landing bytes with requested/final URLs, MIME, byte length, SHA256 and retrieval timestamp; HTTP403 bytes and provenance persist before the error.",
+    "DOI ownership locates a parent directory whose name differs from the DOI and leaves a directory naming another work untouched; absence of a parent produces the advertised error.",
+    "Partial acquisition emits the persisted JSON manifest, retains the valid artifact and per-resource failure, preserves main article bytes and source.yaml, and returns the error converted by the child process to exit1.",
+    "Actual production binary download dispatch reaches supplementary DOI validation and its existing error-to-exit1 path without acquiring network bytes.",
+    "Clap rejects --source, --dir and --citekey with --supplements; --capture-discovery requires --supplements; the valid discovery combination preserves parsed flags."
+  ],
+  "test_isolation": "Only cfg(test) can select the custom publisher client. Each public-run scenario executes in a separate child process on a current-thread runtime. A non-Send guard owns and restores the thread-local override. Production trust roots, URL scope, retries and transport are unchanged; no production TLS environment bypass exists.",
+  "final_verification": {
+    "command": "make -C tmp/lit-supplements test-unit test-supplements-cli TEST_LOG=tmp/fpr1-stable-green.log",
+    "exit_code": 0,
+    "library_passed": 691,
+    "library_ignored_child_entry": 1,
+    "binary_passed": 4,
+    "integration_passed": 33,
+    "cli_regression": "passed",
+    "permissions": "Plain Make invocations completed without a pending escalation or permission prompt."
+  },
+  "limits": [
+    "The child harness converts the public run error to exit1; the production binary separately verifies the existing supplementary dispatch and error-exit path with the non-DOI case.",
+    "The earlier acquisition test-order deviation remains recorded and is not reclassified by these later characterization tests.",
+    "Full staged whitespace diagnostics still include preserved publisher CRLF and original validation log whitespace.",
+    "Actual Natekar supplementary bytes remain unavailable through the checked Frontiers XML references and EPUB; this task performs no new external acquisition."
+  ]
+}

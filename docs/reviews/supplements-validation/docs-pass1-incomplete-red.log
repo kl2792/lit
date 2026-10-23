@@ -1,0 +1,81 @@
+   Compiling lit v0.1.0 (/Users/kaizhan/ice/tmp/lit-supplements)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.05s
+     Running unittests src/lib.rs (target/debug/deps/lit-1a193bb8d9dc9c45)
+
+running 18 tests
+test cmd::supplements::run_tests::child ... ignored, invoked only by the isolated public-run characterization driver
+test cmd::supplements::tests::mime_magic_validation_rejects_html_and_disagreement ... ok
+test cmd::supplements::tests::xml_declared_relative_uris_resolve_against_document_url ... ok
+test cmd::supplements::tests::synthetic_declared_links_preserve_labels_and_deduplicate ... ok
+test cmd::supplements::tests::xml_base_is_inherited_and_unsafe_resource_hosts_are_rejected ... ok
+test cmd::supplements::tests::synthetic_no_links_is_distinct_from_unrecognized_page ... ok
+test cmd::supplements::tests::synthetic_unsafe_links_fail_instead_of_silently_disappearing ... ok
+test cmd::supplements::tests::captured_official_page_requires_further_discovery_and_is_not_no_links ... ok
+test cmd::supplements::tests::content_hash_is_sha256_and_atomic_write_leaves_main_intact ... ok
+test cmd::supplements::tests::acquisition_no_response_failure_records_attempt_without_inventing_response ... FAILED
+test cmd::supplements::tests::acquisition_mime_rejection_retains_complete_response_provenance ... FAILED
+test cmd::supplements::tests::acquisition_records_html_disguised_as_image_as_failure ... ok
+test cmd::supplements::tests::acquisition_incomplete_redirect_and_timeout_preserve_only_known_headers ... FAILED
+test cmd::supplements::tests::acquisition_http_denial_retains_complete_response_provenance ... FAILED
+test cmd::supplements::tests::acquisition_storage_failure_retains_complete_response_provenance ... FAILED
+test cmd::supplements::tests::acquisition_over_real_transport_preserves_success_and_rejects_partial_response ... FAILED
+test cmd::supplements::tests::acquisition_keeps_partial_success_and_retries_only_failed_or_corrupt_files ... ok
+test cmd::supplements::run_tests::public_run_discovery_capture_partial_failure_and_parent_lookup ... ok
+
+failures:
+
+---- cmd::supplements::tests::acquisition_no_response_failure_records_attempt_without_inventing_response stdout ----
+
+thread 'cmd::supplements::tests::acquisition_no_response_failure_records_attempt_without_inventing_response' (35831182) panicked at src/cmd/supplements.rs:325:9:
+assertion `left == right` failed
+  left: Null
+ right: "https://www.frontiersin.org/absent.png"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- cmd::supplements::tests::acquisition_mime_rejection_retains_complete_response_provenance stdout ----
+
+thread 'cmd::supplements::tests::acquisition_mime_rejection_retains_complete_response_provenance' (35831181) panicked at src/cmd/supplements.rs:294:9:
+assertion `left == right` failed
+  left: Null
+ right: "https://www.frontiersin.org/declared.png"
+
+---- cmd::supplements::tests::acquisition_incomplete_redirect_and_timeout_preserve_only_known_headers stdout ----
+
+thread 'cmd::supplements::tests::acquisition_incomplete_redirect_and_timeout_preserve_only_known_headers' (35831179) panicked at src/cmd/supplements.rs:350:13:
+assertion `left == right` failed
+  left: Null
+ right: "https://www.frontiersin.org/final.png"
+
+---- cmd::supplements::tests::acquisition_http_denial_retains_complete_response_provenance stdout ----
+
+thread 'cmd::supplements::tests::acquisition_http_denial_retains_complete_response_provenance' (35831178) panicked at src/cmd/supplements.rs:294:9:
+assertion `left == right` failed
+  left: Null
+ right: "https://www.frontiersin.org/declared.png"
+
+---- cmd::supplements::tests::acquisition_storage_failure_retains_complete_response_provenance stdout ----
+
+thread 'cmd::supplements::tests::acquisition_storage_failure_retains_complete_response_provenance' (35831185) panicked at src/cmd/supplements.rs:294:9:
+assertion `left == right` failed
+  left: Null
+ right: "https://www.frontiersin.org/declared.png"
+
+---- cmd::supplements::tests::acquisition_over_real_transport_preserves_success_and_rejects_partial_response stdout ----
+
+thread 'cmd::supplements::tests::acquisition_over_real_transport_preserves_success_and_rejects_partial_response' (35831183) panicked at src/cmd/supplements.rs:377:9:
+assertion `left == right` failed
+  left: Null
+ right: "https://www.frontiersin.org/bad.png"
+
+
+failures:
+    cmd::supplements::tests::acquisition_http_denial_retains_complete_response_provenance
+    cmd::supplements::tests::acquisition_incomplete_redirect_and_timeout_preserve_only_known_headers
+    cmd::supplements::tests::acquisition_mime_rejection_retains_complete_response_provenance
+    cmd::supplements::tests::acquisition_no_response_failure_records_attempt_without_inventing_response
+    cmd::supplements::tests::acquisition_over_real_transport_preserves_success_and_rejects_partial_response
+    cmd::supplements::tests::acquisition_storage_failure_retains_complete_response_provenance
+
+test result: FAILED. 11 passed; 6 failed; 1 ignored; 0 measured; 679 filtered out; finished in 2.06s
+
+error: test failed, to rerun pass `--lib`

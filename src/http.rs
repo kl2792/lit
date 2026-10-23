@@ -10,13 +10,66 @@ use std::time::Duration;
 /// Maximum response body size: 50 MB.
 const MAX_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
 
+#[cfg(test)]
+#[path = "http/publisher_transport_tests.rs"]
+pub(crate) mod publisher_transport_tests;
+
 pub struct Client {
     inner: reqwest::Client,
     db: Arc<Db>,
     no_cache: bool,
 }
 
+/// Uncached publisher response. The caller validates content and persists provenance.
+#[derive(Debug)]
+pub struct PublisherResponse {
+    pub final_url: String,
+    pub status: u16,
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
+
+// A publisher body failure retains headers that arrived, but carries no
+// complete-body count or digest. Other HTTP clients keep their existing errors.
+#[derive(Debug)]
+struct PublisherResponseFailure {
+    final_url: String,
+    status: u16,
+    mime: String,
+    message: String,
+}
+impl std::fmt::Display for PublisherResponseFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(&self.message) }
+}
+impl std::error::Error for PublisherResponseFailure {}
+fn publisher_body_failure(response: &PublisherResponse, message: String) -> Box<dyn std::error::Error> {
+    Box::new(PublisherResponseFailure { final_url: response.final_url.clone(), status: response.status, mime: response.mime.clone(), message })
+}
+pub(crate) fn publisher_failure_headers<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<(&'a str, u16, &'a str)> {
+    error.downcast_ref::<PublisherResponseFailure>().map(|error| (error.final_url.as_str(), error.status, error.mime.as_str()))
+}
+
+/// Frontiers' article and artifact hosts. Exact names prevent suffix spoofing.
+pub fn is_frontiers_url(url: &reqwest::Url) -> bool {
+    url.scheme() == "https" && url.username().is_empty() && url.password().is_none()
+        && url.port_or_known_default() == Some(443)
+        && matches!(url.host_str(), Some("www.frontiersin.org" | "frontiersin.org" | "public-pages-files-2025.frontiersin.org"))
+}
+
 impl Client {
+    /// Scoped binary transport, sharing the HTTP retry budget. Redirects stay
+    /// on explicit publisher hosts; denied pages remain responses for capture.
+    pub async fn get_publisher(&self, url: &str) -> Result<PublisherResponse, Box<dyn std::error::Error>> {
+        #[cfg(test)]
+        if let Some(client) = publisher_transport_tests::current_client() {
+            return publisher_get(&client, url, 1).await;
+        }
+        let client = publisher_client_builder(Duration::from_secs(30)).build()?;
+        let attempts = std::env::var("LIT_MAX_ATTEMPTS").ok()
+            .and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_MAX_ATTEMPTS);
+        publisher_get(&client, url, attempts).await
+    }
     /// Create a new HTTP client backed by the given database.
     ///
     /// When `no_cache` is true, all requests bypass the cache (no reads or writes).
@@ -158,6 +211,72 @@ impl Client {
         }
         Attempt::Done(read_body(resp, url).await)
     }
+}
+
+fn publisher_client_builder(timeout: Duration) -> reqwest::ClientBuilder {
+    reqwest::Client::builder().use_rustls_tls().timeout(timeout).user_agent("lit/1.0")
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 || !is_frontiers_url(attempt.url()) {
+                attempt.error("publisher redirect outside supported scope")
+            } else { attempt.follow() }
+        }))
+}
+
+async fn publisher_get(client: &reqwest::Client, url: &str, attempts: usize) -> Result<PublisherResponse, Box<dyn std::error::Error>> {
+    if !is_frontiers_url(&reqwest::Url::parse(url)?) {
+        return Err(format!("unsupported publisher URL: {url}").into());
+    }
+    let last_response = std::cell::RefCell::new(None);
+    let result = with_retries(attempts, RETRY_BUDGET, || async {
+        // Metadata belongs to the current attempt. A later connection failure
+        // must not masquerade as the preceding attempt's HTTP response.
+        last_response.replace(None);
+        let resp = match client.get(url).send().await {
+            Ok(resp) => resp,
+            Err(err) if err.is_timeout() || err.is_connect() => return Attempt::Retry { err: Transient::Transport(err), retry_after: None },
+            Err(err) => return Attempt::Done(Err(err.into())),
+        };
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS || resp.status().is_server_error() {
+            let retry_after = resp.headers().get(reqwest::header::RETRY_AFTER).and_then(|v| v.to_str().ok()).and_then(parse_retry_after);
+            last_response.replace(Some(PublisherResponseFailure {
+                final_url: resp.url().to_string(), status: resp.status().as_u16(),
+                mime: resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string(),
+                message: String::new(),
+            }));
+            return Attempt::Retry { err: Transient::Status(resp.status()), retry_after };
+        }
+        Attempt::Done(read_publisher(resp).await)
+    }, tokio::time::sleep).await;
+    match result {
+        Ok(response) => response,
+        Err((error, attempts, _)) => {
+            let message = format!("publisher retrieval {url} failed after {attempts} attempts: {error}");
+            if let Some(mut response) = last_response.into_inner() {
+                response.message = message;
+                Err(Box::new(response))
+            } else { Err(message.into()) }
+        }
+    }
+}
+
+async fn read_publisher(mut resp: reqwest::Response) -> Result<PublisherResponse, Box<dyn std::error::Error>> {
+    let mut result = PublisherResponse {
+        final_url: resp.url().to_string(), status: resp.status().as_u16(),
+        mime: resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string(),
+        bytes: Vec::new(),
+    };
+    if resp.content_length().is_some_and(|n| n > MAX_RESPONSE_BYTES as u64) {
+        return Err(publisher_body_failure(&result, format!("publisher response exceeds 50 MB for {}", result.final_url)));
+    }
+    while let Some(chunk) = resp.chunk().await.map_err(|error| {
+        publisher_body_failure(&result, format!("publisher body {} for {}: {error}", if error.is_timeout() { "timeout" } else { "read failed" }, result.final_url))
+    })? {
+        if result.bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(publisher_body_failure(&result, format!("publisher response exceeds 50 MB for {}", result.final_url)));
+        }
+        result.bytes.extend_from_slice(&chunk);
+    }
+    Ok(result)
 }
 
 /// Read a success response's body, rejecting anything over `MAX_RESPONSE_BYTES`.
@@ -337,6 +456,13 @@ mod tests {
     use super::{auth_header, is_rate_limited, parse_retry_after, rate_limit_message, with_retries, Attempt, RETRY_BUDGET};
     use std::cell::RefCell;
     use std::time::Duration;
+    #[test]
+    fn publisher_scope_rejects_host_spoofing_credentials_and_downgrade() {
+        for url in ["http://www.frontiersin.org/a", "https://www.frontiersin.org.evil.test/a", "https://user@www.frontiersin.org/a", "https://www.frontiersin.org:444/a", "file:///a"] {
+            assert!(!super::is_frontiers_url(&reqwest::Url::parse(url).unwrap()), "{url}");
+        }
+        assert!(super::is_frontiers_url(&reqwest::Url::parse("https://www.frontiersin.org/a").unwrap()));
+    }
 
     /// Run `with_retries` over a scripted sequence of attempt outcomes,
     /// recording every sleep instead of sleeping.

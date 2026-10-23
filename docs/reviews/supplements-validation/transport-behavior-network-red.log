@@ -1,0 +1,75 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running unittests src/lib.rs (target/debug/deps/lit-1a193bb8d9dc9c45)
+
+running 6 tests
+test http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes ... FAILED
+test http::publisher_transport_tests::publisher_transport_follows_scoped_redirect_and_records_final_url ... FAILED
+test http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url ... FAILED
+test http::publisher_transport_tests::publisher_transport_rejects_external_redirect_without_contacting_target ... FAILED
+test http::publisher_transport_tests::publisher_transport_timeout_reports_url_and_budget ... FAILED
+test http::publisher_transport_tests::publisher_transport_preserves_denial_response ... FAILED
+
+failures:
+
+---- http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes stdout ----
+
+thread '<unnamed>' (35498904) panicked at src/http/publisher_transport_tests.rs:51:13:
+assertion failed: read_headers(&mut tls).starts_with("GET ")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes' (35498900) panicked at src/http/publisher_transport_tests.rs:131:30:
+called `Result::unwrap()` on an `Err` value: Any { .. }
+
+---- http::publisher_transport_tests::publisher_transport_follows_scoped_redirect_and_records_final_url stdout ----
+
+thread '<unnamed>' (35498906) panicked at src/http/publisher_transport_tests.rs:51:13:
+assertion failed: read_headers(&mut tls).starts_with("GET ")
+
+thread 'http::publisher_transport_tests::publisher_transport_follows_scoped_redirect_and_records_final_url' (35498896) panicked at src/http/publisher_transport_tests.rs:85:57:
+called `Result::unwrap()` on an `Err` value: "publisher retrieval https://www.frontiersin.org/resource.png failed after 1 attempts: connection error"
+
+---- http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url stdout ----
+
+thread '<unnamed>' (35498902) panicked at src/http/publisher_transport_tests.rs:51:13:
+assertion failed: read_headers(&mut tls).starts_with("GET ")
+
+thread 'http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url' (35498898) panicked at src/http/publisher_transport_tests.rs:120:9:
+publisher retrieval https://www.frontiersin.org/resource.png failed after 1 attempts: connection error
+
+---- http::publisher_transport_tests::publisher_transport_rejects_external_redirect_without_contacting_target stdout ----
+
+thread '<unnamed>' (35498903) panicked at src/http/publisher_transport_tests.rs:51:13:
+assertion failed: read_headers(&mut tls).starts_with("GET ")
+
+thread 'http::publisher_transport_tests::publisher_transport_rejects_external_redirect_without_contacting_target' (35498899) panicked at src/http/publisher_transport_tests.rs:94:5:
+assertion failed: publisher_get(&client, URL,
+                    1).await.unwrap_err().to_string().contains("redirect")
+
+---- http::publisher_transport_tests::publisher_transport_timeout_reports_url_and_budget stdout ----
+
+thread '<unnamed>' (35498905) panicked at src/http/publisher_transport_tests.rs:51:13:
+assertion failed: read_headers(&mut tls).starts_with("GET ")
+
+thread 'http::publisher_transport_tests::publisher_transport_timeout_reports_url_and_budget' (35498901) panicked at src/http/publisher_transport_tests.rs:111:5:
+publisher retrieval https://www.frontiersin.org/resource.png failed after 1 attempts: connection error
+
+---- http::publisher_transport_tests::publisher_transport_preserves_denial_response stdout ----
+
+thread '<unnamed>' (35498907) panicked at src/http/publisher_transport_tests.rs:51:13:
+assertion failed: read_headers(&mut tls).starts_with("GET ")
+
+thread 'http::publisher_transport_tests::publisher_transport_preserves_denial_response' (35498897) panicked at src/http/publisher_transport_tests.rs:101:57:
+called `Result::unwrap()` on an `Err` value: "publisher retrieval https://www.frontiersin.org/resource.png failed after 1 attempts: connection error"
+
+
+failures:
+    http::publisher_transport_tests::publisher_transport_follows_scoped_redirect_and_records_final_url
+    http::publisher_transport_tests::publisher_transport_preserves_denial_response
+    http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url
+    http::publisher_transport_tests::publisher_transport_rejects_external_redirect_without_contacting_target
+    http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes
+    http::publisher_transport_tests::publisher_transport_timeout_reports_url_and_budget
+
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 680 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`

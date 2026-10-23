@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "scope": "isolated publisher supplementary acquisition implementation",
+  "retained_log_directory": "docs/reviews/supplements-validation/ contains copies of the original named logs; original scratch files remain under tmp/.",
+  "final_verification": {
+    "command": "make test-unit test-supplements-cli TEST_LOG=tmp/review-stable-green.log",
+    "exit_code": 0,
+    "library_tests_passed": 690,
+    "binary_tests_passed": 3,
+    "integration_tests_passed": 33,
+    "cli_regression": "passed",
+    "diff_check": "git diff --check passed",
+    "source_changes_after_verification": "none"
+  },
+  "deviations": [
+    {
+      "id": "SUP-PROCESS-1",
+      "did": "Wrote the first acquisition implementation before its acquisition tests.",
+      "required": "Root AGENTS.md Trust but verify requires every code change to have tests written before implementation, with regression tests failing on the relevant defect.",
+      "correction": "Retained the acquisition tests as later verification, disclosed their chronology in ADR-009 and the handoff, and added missing transport tests before the transport seam refactor and any corrective behavior changes. Later reruns are not original preimplementation red evidence.",
+      "original_evidence": [
+        "Initial acquisition implementation was added in tool apply_patch result 6e4fd4, before acquisition_keeps_partial_success_and_retries_only_failed_or_corrupt_files was added.",
+        "Original postimplementation acquisition verification remains in tmp/green.log and tmp/final-green.log from the initial handoff.",
+        "Initial CLI red and synthetic discovery red appeared in original tool outputs 36c806 and b70e4d. Those outputs were not originally saved as files; they must not be represented as contemporaneous log files.",
+        "The separate XML relative-URI test-first red remains in tmp/xml-red.log."
+      ]
+    }
+  ],
+  "violation_logging": {
+    "required_tool": "mcp__sessions__log_violation",
+    "availability": "Root checked the current tool list and reported that this tool is unavailable.",
+    "fallback": "This explicit repository audit records did, required and correction. No successful MCP logging call is claimed."
+  },
+  "transport_test_chronology": [
+    "Added local deterministic HTTPS-over-CONNECT tests before extracting publisher_client_builder and publisher_get.",
+    "tmp/transport-missing-seam.log records the initial missing-seam compilation failure; that failure is not evidence of a behavioral regression.",
+    "tmp/transport-behavior-red.log records sandbox denial of loopback socket binding after the seam extraction, not a product defect.",
+    "tmp/transport-behavior-network-red.log and tmp/transport-fixture-diagnosis.log record a macOS fixture problem: accepted sockets inherited nonblocking mode. Only the fixture was changed to restore blocking mode.",
+    "tmp/transport-behavior-real-red.log records four passing transport cases and two genuine failures: body truncation and size-limit errors omitted their URL.",
+    "tmp/transport-body-timeout-red.log adds the genuine missing body-timeout diagnostic regression before correction.",
+    "tmp/acquisition-transport-red.log records the real-transport partial-acquisition regression before correction.",
+    "The corrective production change adds URL context to body and size errors and preserves timeout versus other body-read failure causes. It does not relax publisher scope, accept partial bytes or alter the earlier acquisition test chronology."
+  ]
+}

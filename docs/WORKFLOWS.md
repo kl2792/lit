@@ -322,6 +322,41 @@ With a single id, output and errors are exactly the single-id form above, includ
 
 ---
 
+### Publisher supplementary files
+
+```bash
+lit download 10.3389/fncom.2020.00006 --supplements --url-only --json
+lit download 10.3389/fncom.2020.00006 --supplements --json
+```
+
+The first command discovers explicitly declared download links on a supported publisher page.
+The second stores validated PDF or raster image files in the cached parent article's `supplements/` directory and writes `manifest.json` there.
+Download the main article first; supplementary acquisition never changes its files or `source.yaml`.
+Each manifest entry retains its publisher label, declared, resolved and requested URLs, role and acquisition status.
+Failed fetch attempts retain an error and attempt/failure timestamps.
+Known final URLs, HTTP status and MIME survive acquisition failure.
+Complete received responses also retain byte length, SHA256 and the timestamp when the command records that provenance, even after HTTP, validation or storage rejection.
+Incomplete or unread bodies have no complete-body length, hash or retrieval timestamp; a failure before any response also lacks final URL, HTTP status and MIME.
+The local relative path appears only after validated storage succeeds.
+A partial failure preserves successful files, reports individual errors in the manifest and exits nonzero.
+A repeated call reuses an acquired file only when its recorded hash matches its bytes.
+
+The initial resolver supports Frontiers pages with an explicit supplementary section containing download anchors.
+Unsupported publishers and page layouts fail explicitly; they do not establish that a paper has no supplements.
+The captured Frontiers page for this example names seven supplementary figures but exposes no downloadable supplementary links, so it currently returns `unsupported supplementary layout`.
+Its article XML supplies relative URI references; their availability requires separate retrieval checks against the XML document URL.
+
+For an explicit diagnostic capture, add `--capture-discovery PATH`.
+This writes the landing response and provenance to that directory, including an HTTP denial response when received.
+For an unrecognized page it also captures a publisher XML URL declared in `citation_xml_url`, when present.
+It resolves declared supplementary XML URIs using the document URL and inherited `xml:base`, and records each retrieval response or failure.
+On discovery failure with capture enabled, the command attempts the first anchor whose absolute URL passes the publisher scope check and whose path ends in `/epub`, if execution reaches that stage.
+Earlier XML fetch, decode, parse or write failures that propagate an error stop execution before EPUB selection; missing XML metadata does not block the attempt.
+This diagnostic capture does not validate EPUB contents.
+These diagnostic files remain discovery evidence and do not become acquired supplementary artifacts automatically.
+Without this option, discovery writes no article or supplementary artifacts.
+See ADR-009 for the acquisition contract and remaining verification work.
+
 ## 8. Survey a topic: local vs. remote search
 
 Remote search is the default and hits APIs (slow, but fresh + comprehensive):

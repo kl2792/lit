@@ -1,0 +1,19 @@
+   Compiling lit v0.1.0 (/Users/kaizhan/ice/tmp/lit-supplements)
+error[E0106]: missing lifetime specifiers
+  --> src/http.rs:48:95
+   |
+48 | pub(crate) fn publisher_failure_headers(error: &(dyn std::error::Error + 'static)) -> Option<(&str, u16, &str)> {
+   |                                                ----------------------------------             ^          ^ expected named lifetime parameter
+   |                                                                                               |
+   |                                                                                               expected named lifetime parameter
+   |
+   = help: this function's return type contains a borrowed value, but the signature does not say which one of `error`'s 2 lifetimes it is borrowed from
+help: consider introducing a named lifetime parameter
+   |
+48 | pub(crate) fn publisher_failure_headers<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<(&'a str, u16, &'a str)> {
+   |                                        ++++         ++                                                ++            ++
+
+For more information about this error, try `rustc --explain E0106`.
+error: could not compile `lit` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `lit` (lib test) due to 1 previous error

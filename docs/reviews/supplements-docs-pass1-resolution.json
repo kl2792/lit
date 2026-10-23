@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "status": "implemented and verified; new exact snapshot awaits fresh mechanical/design and document review",
+  "scope": "Publisher acquisition failure provenance and the adjudicated landing/EPUB documentation corrections only",
+  "previous_snapshot": {
+    "owned_blobs": 44,
+    "full_index_binary_patch_sha256": "a2aa2290472d84dafd52c2559ffa4f1b018d57bc56545055f53995cc13efd45c",
+    "preserved_patch": "tmp/supplements-reviewed-a2aa2290.patch",
+    "preservation_check": "SHA256 verified before production correction and after final tests; old logs and earlier ea364845 patch remain untouched"
+  },
+  "adjudication_sources": [
+    "/Users/kaizhan/ice/etc/projects/mech/etc/reviews/supplement-docs-pass1-finding-pool-2026-10-23.json",
+    "/Users/kaizhan/ice/etc/projects/mech/etc/reviews/supplement-docs-pass1-judge1-2026-10-23.json",
+    "/Users/kaizhan/ice/etc/projects/mech/etc/reviews/supplement-docs-pass1-judge2-2026-10-23.json",
+    "/Users/kaizhan/ice/etc/projects/mech/etc/reviews/supplement-docs-pass1-judge3-2026-10-23.json"
+  ],
+  "resolutions": [
+    {
+      "ids": ["SD-P1-F1-001", "SUP-DOC-P1-F2-001", "SD-P1-F3-001"],
+      "category": "DONE",
+      "classification": "SUBSTANTIVE",
+      "decision": "Root selected opt-in persistence, consistent with the existing explicit-capture workflow. ADR discovery now promises JSON metadata on successful discovery, and landing.html/response.json persistence only with --capture-discovery PATH.",
+      "alternatives": "Unconditional persistence would require choosing a default artifact destination and changing ordinary discovery behavior. That expansion was not selected. This revision is an intentional contract clarification, not a mechanical typo or a claim that the old unconditional prose was already satisfied.",
+      "verification": "Public-run default_discovery child case emits discovery JSON and creates neither capture directory nor supplementary artifacts. The explicit discovery case still verifies exact landing bytes and provenance."
+    },
+    {
+      "ids": ["SD-P1-F1-002", "SUP-DOC-P1-F2-002", "SD-P1-F3-002"],
+      "category": "DONE",
+      "classification": "SUBSTANTIVE",
+      "decision": "Complete-response provenance is merged before status/MIME/storage validation. Failed acquisitions retain known requested/final URLs, http_status, MIME, complete byte count/hash and provenance timestamp when available. local_relative_path remains conditional on validated storage.",
+      "incomplete_response": "A private publisher-only error carries known final URL/status/MIME from body failures and the last retryable HTTP response. It carries no complete-body hash/count. Each new fetch records attempted_at; failed acquisitions record failed_at and error. A pre-response failure invents no response fields.",
+      "alternatives": "Success-only documentation was rejected because it would discard known evidence and weaken the intended manifest contract. No generic HTTP error hierarchy, response archive, provider expansion or retry policy change was added.",
+      "verification": "Regression tests cover complete403, MIME rejection, deterministic storage failure, no-response error, redirected truncation, body timeout, and exhausted429 headers. Existing partial acquisition, reuse, corruption detection and main-file preservation remain green."
+    },
+    {
+      "ids": ["SD-P1-F1-003", "SUP-DOC-P1-F2-003", "SD-P1-F3-003"],
+      "category": "DONE",
+      "classification": "PHRASING",
+      "decision": "The workflow describes a conditional diagnostic attempt on discovery failure with capture enabled: first absolute anchor accepted by the publisher URL scope and path ending /epub, if prior diagnostics do not abort. Missing XML metadata does not prevent the attempt. EPUB contents are not validated by this capture.",
+      "verification": "Public-run child cases establish that recognized empty sections skip EPUB; relative-only links are ineligible; the first eligible absolute link is used even without XML metadata; and a propagated XML decode error prevents EPUB capture."
+    }
+  ],
+  "test_chronology": [
+    "Sent the behavior/test plan after reading all three judges and the complete pool; saved and hashed the prior44-blob staged patch before correcting production behavior.",
+    "docs-pass1-provenance-red.log records five real failures before correction: complete denial/MIME/storage evidence loss, missing pre-response attempt identity/timing, and lost incomplete-response headers.",
+    "docs-pass1-incomplete-red.log adds the redirected truncation/body-timeout regression before the publisher-only error correction; six tests fail on the original behavior.",
+    "The initial correction had a missing explicit lifetime annotation. docs-pass1-provenance-green.log, docs-pass1-characterization.log and docs-pass1-retry-headers-red.log retain compilation failures despite their original filenames; none is claimed as a passing or behavioral-red run.",
+    "After that annotation was corrected, docs-pass1-retry-behavior-red.log records one genuine remaining failure: exhausted429 lost known response headers. All other focused cases, including default capture and EPUB characterization, passed.",
+    "A narrow final-response header carrier fixed that retry failure without changing retry budgets or accepting unread bytes as complete. docs-pass1-behavior-green.log records the passing focused suite.",
+    "docs-pass1-full-green.log records the final full Rust suite. The enclosing plain Make command also built the production binary and passed the CLI regression with exit0."
+  ],
+  "final_verification": {
+    "command": "make -C tmp/lit-supplements test-unit test-supplements-cli TEST_LOG=tmp/docs-pass1-full-green.log",
+    "exit_code": 0,
+    "library_passed": 697,
+    "library_ignored_child_entry": 1,
+    "binary_passed": 4,
+    "integration_passed": 33,
+    "authored_diff_whitespace": "passed for the six changed source/Make/docs files; full staged evidence retains previously disclosed publisher/log whitespace",
+    "permissions": "No approval or escalation was pending; all checks used plain Make commands.",
+    "main_dirty_download_sha256": "a210ef4a64964e422edacf82f87225803a2c8aec229514721f398b16e7bd722b"
+  },
+  "written_self_check": {
+    "subjects_and_operations": "Discovery emits JSON; capture persists landing bytes; acquisition records response evidence and storage outcome; diagnostics attempts an eligible EPUB. Each new sentence names one of these operations and its controlling condition.",
+    "field_referents": "requested_url is the attempted resource URL; final_url/http_status/mime_type describe the response available to the final attempt; byte_length/sha256 describe only a completely received body; local_relative_path describes only validated stored bytes; attempted_at/failed_at/retrieved_at are command timestamps in Unix seconds.",
+    "source_fidelity": "Early provenance merge and publisher_failure_headers support the availability distinctions. run's capture_dir branch supports opt-in landing persistence. Its discovery-error branch, first eligible anchor selector and preceding propagated XML errors support EPUB conditions.",
+    "consistency_and_minimum_form": "No sentence equates failed acquisition with absent response evidence, labels partial or unread bytes as complete, promises EPUB capture on recognized pages, or treats XML metadata as mandatory. The earlier acquisition test-order deviation remains unchanged."
+  },
+  "limits": [
+    "New source and prose need fresh independent review; prior certifications bind only their old blobs.",
+    "Complete rejected response bodies are hashed but are not stored as acquired supplementary artifacts.",
+    "Retryable429/5xx bodies are not consumed by the retry path; exhausted retries retain known final-attempt headers, not a complete-body count/hash.",
+    "Actual Natekar acquisition remains unresolved. This task performs no external acquisition, installation, commit or integration."
+  ]
+}

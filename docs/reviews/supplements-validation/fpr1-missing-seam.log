@@ -1,0 +1,10 @@
+   Compiling lit v0.1.0 (/Users/kaizhan/ice/tmp/lit-supplements)
+error[E0432]: unresolved import `crate::http::publisher_transport_tests::override_client`
+ --> src/cmd/supplements_run_tests.rs:4:63
+  |
+4 | use crate::http::publisher_transport_tests::{fixture, Script, override_client};
+  |                                                               ^^^^^^^^^^^^^^^ no `override_client` in `http::publisher_transport_tests`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `lit` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...

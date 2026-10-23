@@ -1,0 +1,40 @@
+   Compiling lit v0.1.0 (/Users/kaizhan/ice/tmp/lit-supplements)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.69s
+     Running unittests src/lib.rs (target/debug/deps/lit-1a193bb8d9dc9c45)
+
+running 7 tests
+test http::publisher_transport_tests::publisher_transport_preserves_denial_response ... ok
+test http::publisher_transport_tests::publisher_transport_rejects_external_redirect_without_contacting_target ... ok
+test http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes ... FAILED
+test http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url ... FAILED
+test http::publisher_transport_tests::publisher_transport_follows_scoped_redirect_and_records_final_url ... ok
+test http::publisher_transport_tests::publisher_transport_body_timeout_reports_url_and_timeout ... FAILED
+test http::publisher_transport_tests::publisher_transport_timeout_reports_url_and_budget ... ok
+
+failures:
+
+---- http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes stdout ----
+
+thread 'http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes' (35504618) panicked at src/http/publisher_transport_tests.rs:148:5:
+error decoding response body
+
+---- http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url stdout ----
+
+thread 'http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url' (35504616) panicked at src/http/publisher_transport_tests.rs:138:9:
+publisher response exceeds 50 MB
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- http::publisher_transport_tests::publisher_transport_body_timeout_reports_url_and_timeout stdout ----
+
+thread 'http::publisher_transport_tests::publisher_transport_body_timeout_reports_url_and_timeout' (35504613) panicked at src/http/publisher_transport_tests.rs:96:5:
+error decoding response body
+
+
+failures:
+    http::publisher_transport_tests::publisher_transport_body_timeout_reports_url_and_timeout
+    http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url
+    http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes
+
+test result: FAILED. 4 passed; 3 failed; 0 ignored; 0 measured; 681 filtered out; finished in 0.17s
+
+error: test failed, to rerun pass `--lib`

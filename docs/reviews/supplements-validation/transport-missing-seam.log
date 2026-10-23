@@ -1,0 +1,84 @@
+cargo test publisher_transport
+   Compiling lit v0.1.0 (/Users/kaizhan/ice/tmp/lit-supplements)
+error[E0425]: cannot find function `publisher_client_builder` in this scope
+  --> src/http/publisher_transport_tests.rs:69:18
+   |
+69 |     let client = publisher_client_builder(timeout)
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `publisher_get` in this scope
+  --> src/http/publisher_transport_tests.rs:85:20
+   |
+85 |     let response = publisher_get(&client, URL, 1).await.unwrap();
+   |                    ^^^^^^^^^^^^^ not found in this scope
+
+error[E0282]: type annotations needed
+  --> src/http/publisher_transport_tests.rs:85:20
+   |
+85 |     let response = publisher_get(&client, URL, 1).await.unwrap();
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot infer type
+
+error[E0425]: cannot find function `publisher_get` in this scope
+  --> src/http/publisher_transport_tests.rs:94:13
+   |
+94 |     assert!(publisher_get(&client, URL, 1).await.unwrap_err().to_string().contains("redirect"));
+   |             ^^^^^^^^^^^^^ not found in this scope
+
+error[E0282]: type annotations needed
+  --> src/http/publisher_transport_tests.rs:94:13
+   |
+94 |     assert!(publisher_get(&client, URL, 1).await.unwrap_err().to_string().contains("redirect"));
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot infer type
+
+error[E0425]: cannot find function `publisher_get` in this scope
+   --> src/http/publisher_transport_tests.rs:101:20
+    |
+101 |     let response = publisher_get(&client, URL, 1).await.unwrap();
+    |                    ^^^^^^^^^^^^^ not found in this scope
+
+error[E0282]: type annotations needed
+   --> src/http/publisher_transport_tests.rs:101:20
+    |
+101 |     let response = publisher_get(&client, URL, 1).await.unwrap();
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot infer type
+
+error[E0425]: cannot find function `publisher_get` in this scope
+   --> src/http/publisher_transport_tests.rs:110:17
+    |
+110 |     let error = publisher_get(&client, URL, 1).await.unwrap_err().to_string();
+    |                 ^^^^^^^^^^^^^ not found in this scope
+
+error[E0282]: type annotations needed
+   --> src/http/publisher_transport_tests.rs:110:17
+    |
+110 |     let error = publisher_get(&client, URL, 1).await.unwrap_err().to_string();
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot infer type
+
+error[E0425]: cannot find function `publisher_get` in this scope
+   --> src/http/publisher_transport_tests.rs:119:21
+    |
+119 |         let error = publisher_get(&client, URL, 1).await.unwrap_err().to_string();
+    |                     ^^^^^^^^^^^^^ not found in this scope
+
+error[E0282]: type annotations needed
+   --> src/http/publisher_transport_tests.rs:119:21
+    |
+119 |         let error = publisher_get(&client, URL, 1).await.unwrap_err().to_string();
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot infer type
+
+error[E0425]: cannot find function `publisher_get` in this scope
+   --> src/http/publisher_transport_tests.rs:129:17
+    |
+129 |     let error = publisher_get(&client, URL, 1).await.unwrap_err().to_string();
+    |                 ^^^^^^^^^^^^^ not found in this scope
+
+error[E0282]: type annotations needed
+   --> src/http/publisher_transport_tests.rs:129:17
+    |
+129 |     let error = publisher_get(&client, URL, 1).await.unwrap_err().to_string();
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot infer type
+
+Some errors have detailed explanations: E0282, E0425.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `lit` (lib test) due to 13 previous errors
+make: *** [test-publisher-transport] Error 101

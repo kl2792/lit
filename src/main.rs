@@ -117,6 +117,12 @@ enum Commands {
         /// Print PDF URL without downloading
         #[arg(long)]
         url_only: bool,
+        /// Discover or acquire publisher-declared supplementary resources
+        #[arg(long, conflicts_with_all = ["source", "dir", "citekey"])]
+        supplements: bool,
+        /// Explicitly capture discovery response bytes and provenance for review
+        #[arg(long, requires = "supplements")]
+        capture_discovery: Option<PathBuf>,
         /// Override output directory for --source
         #[arg(long)]
         dir: Option<PathBuf>,
@@ -381,9 +387,17 @@ async fn main() {
             id,
             source,
             url_only,
+            supplements,
+            capture_discovery,
             dir,
             citekey,
-        }) => cmd::download::run(&ctx, &id, source, url_only, dir.as_deref(), citekey.as_deref()).await,
+        }) => {
+            if supplements {
+                cmd::supplements::run(&ctx, &id, url_only, capture_discovery.as_deref()).await
+            } else {
+                cmd::download::run(&ctx, &id, source, url_only, dir.as_deref(), citekey.as_deref()).await
+            }
+        },
         Some(Commands::Add { input, bib_file, key, force }) => cmd::add::run(&ctx, &input, &bib_file, key.as_deref(), force).await,
         Some(Commands::Verify { bib_file, jobs, keys }) => cmd::verify::run(&ctx, &bib_file, jobs, &keys).await,
         Some(Commands::Clean { bib_file, apply, prune, tex_dirs }) => {
@@ -722,6 +736,18 @@ fn run_attach(
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    #[test]
+    fn supplements_flags_reject_conflicts_and_capture_requires_supplements() {
+        for extra in [vec!["--source"], vec!["--dir", "out"], vec!["--citekey", "key"]] {
+            let mut args = vec!["lit", "download", "10.3389/fncom.2020.00006", "--supplements"];
+            args.extend(extra);
+            assert_eq!(Cli::try_parse_from(args).err().unwrap().kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        assert_eq!(Cli::try_parse_from(["lit", "download", "10.3389/fncom.2020.00006", "--capture-discovery", "capture"]).err().unwrap().kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        let parsed = Cli::try_parse_from(["lit", "download", "10.3389/fncom.2020.00006", "--supplements", "--url-only", "--capture-discovery", "capture", "--json"]).unwrap();
+        assert!(matches!(parsed.command, Some(Commands::Download { supplements: true, url_only: true, capture_discovery: Some(_), .. })));
+        assert!(parsed.json);
+    }
 
     #[test]
     fn version_names_crate_version_and_git_hash() {

@@ -1,0 +1,59 @@
+cargo test publisher_transport
+   Compiling lit v0.1.0 (/Users/kaizhan/ice/tmp/lit-supplements)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.42s
+     Running unittests src/lib.rs (target/debug/deps/lit-1a193bb8d9dc9c45)
+
+running 6 tests
+test http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url ... FAILED
+test http::publisher_transport_tests::publisher_transport_timeout_reports_url_and_budget ... FAILED
+test http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes ... FAILED
+test http::publisher_transport_tests::publisher_transport_follows_scoped_redirect_and_records_final_url ... FAILED
+test http::publisher_transport_tests::publisher_transport_preserves_denial_response ... FAILED
+test http::publisher_transport_tests::publisher_transport_rejects_external_redirect_without_contacting_target ... FAILED
+
+failures:
+
+---- http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url stdout ----
+
+thread 'http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url' (35497161) panicked at src/http/publisher_transport_tests.rs:25:53:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http::publisher_transport_tests::publisher_transport_timeout_reports_url_and_budget stdout ----
+
+thread 'http::publisher_transport_tests::publisher_transport_timeout_reports_url_and_budget' (35497164) panicked at src/http/publisher_transport_tests.rs:25:53:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes stdout ----
+
+thread 'http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes' (35497163) panicked at src/http/publisher_transport_tests.rs:25:53:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http::publisher_transport_tests::publisher_transport_follows_scoped_redirect_and_records_final_url stdout ----
+
+thread 'http::publisher_transport_tests::publisher_transport_follows_scoped_redirect_and_records_final_url' (35497159) panicked at src/http/publisher_transport_tests.rs:25:53:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- http::publisher_transport_tests::publisher_transport_preserves_denial_response stdout ----
+
+thread 'http::publisher_transport_tests::publisher_transport_preserves_denial_response' (35497160) panicked at src/http/publisher_transport_tests.rs:25:53:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+---- http::publisher_transport_tests::publisher_transport_rejects_external_redirect_without_contacting_target stdout ----
+
+thread 'http::publisher_transport_tests::publisher_transport_rejects_external_redirect_without_contacting_target' (35497162) panicked at src/http/publisher_transport_tests.rs:25:53:
+called `Result::unwrap()` on an `Err` value: Os { code: 1, kind: PermissionDenied, message: "Operation not permitted" }
+
+
+failures:
+    http::publisher_transport_tests::publisher_transport_follows_scoped_redirect_and_records_final_url
+    http::publisher_transport_tests::publisher_transport_preserves_denial_response
+    http::publisher_transport_tests::publisher_transport_rejects_declared_and_streamed_oversize_with_url
+    http::publisher_transport_tests::publisher_transport_rejects_external_redirect_without_contacting_target
+    http::publisher_transport_tests::publisher_transport_rejects_truncated_success_without_returning_partial_bytes
+    http::publisher_transport_tests::publisher_transport_timeout_reports_url_and_budget
+
+test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 680 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`
+make: *** [test-publisher-transport] Error 101
