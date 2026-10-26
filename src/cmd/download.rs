@@ -117,7 +117,7 @@ async fn run_doi_pdf(ctx: &Context, doi: &str, url_only: bool, citekey: Option<&
     let oa_result = oa_body.ok().and_then(|b| oa_api::parse_work(&b).ok());
     let oa_pdf = oa_result.as_ref().and_then(|r| r.oa_url.clone());
 
-    let pdf_url = [uw_pdf, s2_pdf, oa_pdf]
+    let pdf_url = [crate::api::anthology::pdf_url(&doi), uw_pdf, s2_pdf, oa_pdf]
         .into_iter()
         .flatten()
         .find(|u| !u.is_empty());
@@ -199,12 +199,25 @@ fn save_pdf(claim: Claim, data: &[u8], yaml: String) -> Result<PathBuf, Box<dyn 
 }
 
 /// Write `data` as `dir/paper.pdf` and its `pdftotext` extraction as
-/// `dir/paper.txt`; a failed extraction leaves the PDF for `lit read` to retry.
+/// `dir/paper.txt`; a failed extraction is warned about and leaves the PDF for
+/// `lit read` to retry.
 fn write_pdf(dir: &Path, data: &[u8]) -> std::io::Result<()> {
     let pdf_path = dir.join("paper.pdf");
     std::fs::write(&pdf_path, data)?;
-    let _ = Command::new("pdftotext").arg(&pdf_path).arg(dir.join("paper.txt")).status();
+    if let Err(e) = extract_text(&pdf_path, &dir.join("paper.txt")) {
+        format::warn(&e);
+    }
     Ok(())
+}
+
+/// Run `pdftotext pdf txt`; the error names the PDF and why extraction failed.
+fn extract_text(pdf: &Path, txt: &Path) -> Result<(), String> {
+    let why = match Command::new("pdftotext").arg(pdf).arg(txt).status() {
+        Ok(status) if status.success() => return Ok(()),
+        Ok(status) => format!("pdftotext {}", status),
+        Err(e) => format!("could not run pdftotext: {}", e),
+    };
+    Err(format!("warning: text extraction failed for {} ({}); `lit read` will retry", pdf.display(), why))
 }
 
 /// Write `yaml` as `dir/source.yaml`, merged with the record already there.
@@ -821,6 +834,23 @@ mod tests {
     use crate::cmd::metadata::MetadataSource;
     use crate::cmd::metadata::tests::MockMetadataFetch;
     use std::cell::RefCell;
+
+    #[test]
+    fn test_extract_text_failure_names_the_pdf() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("paper.pdf");
+        std::fs::write(&pdf, b"not a pdf").unwrap();
+        let err = extract_text(&pdf, &dir.path().join("paper.txt")).unwrap_err();
+        assert!(err.contains(&pdf.display().to_string()), "{err}");
+        assert!(err.contains("lit read"), "{err}");
+    }
+
+    #[test]
+    fn test_write_pdf_keeps_pdf_when_extraction_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        write_pdf(dir.path(), b"not a pdf").unwrap();
+        assert_eq!(std::fs::read(dir.path().join("paper.pdf")).unwrap(), b"not a pdf");
+    }
 
     #[test]
     fn test_extract_lastname_basic() {
