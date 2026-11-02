@@ -1,0 +1,9 @@
+[req]
+distinguished_name = subject
+x509_extensions = extensions
+prompt = no
+[subject]
+CN = www.frontiersin.org
+[extensions]
+subjectAltName = DNS:www.frontiersin.org,DNS:public-pages-files-2025.frontiersin.org,DNS:pmc.ncbi.nlm.nih.gov,DNS:cdn.ncbi.nlm.nih.gov
+basicConstraints = critical,CA:FALSE

@@ -13,6 +13,15 @@ Successful discovery returns publisher labels, declared URLs and response metada
 Landing bytes persist only with `--capture-discovery PATH`, which writes `landing.html` and `response.json` under that path.
 It never guesses supplementary filenames.
 
+An explicit `--supplements-page URL` may name a PMC article page when the publisher route does not expose the needed files.
+The page must confirm the requested DOI and declare the supplementary links for that same PMC article.
+Discovery accepts only HTTPS on the approved PMC repository host, and resource redirects remain within the approved publisher or PMC repository hosts.
+The existing checks of MIME, file signatures, hashes, captures and preservation of the parent article also apply to repository copies.
+No repository URL is inferred from a title, filename or unsuccessful publisher request.
+`--from-discovery PATH` reuses a prior capture without fetching the landing page again.
+The command checks the stored HTML's hash and length, the requested and final page scope, the DOI and the article identity, then extracts and validates the literal asset links again.
+The original discovery provenance remains attached to the acquired resources.
+
 `lit download DOI --supplements --json` stores validated PDF or raster image artifacts under the existing parent directory's `supplements/` directory.
 The main article and its `source.yaml` remain unchanged.
 A manifest records the parent DOI and discovery provenance.

@@ -123,6 +123,12 @@ enum Commands {
         /// Explicitly capture discovery response bytes and provenance for review
         #[arg(long, requires = "supplements")]
         capture_discovery: Option<PathBuf>,
+        /// Explicit PMC article page declaring supplementary files for this DOI
+        #[arg(long, requires = "supplements")]
+        supplements_page: Option<String>,
+        /// Revalidate and reuse landing.html plus response.json from a prior capture
+        #[arg(long, requires = "supplements", conflicts_with_all = ["supplements_page", "capture_discovery"])]
+        from_discovery: Option<PathBuf>,
         /// Override output directory for --source
         #[arg(long)]
         dir: Option<PathBuf>,
@@ -389,11 +395,13 @@ async fn main() {
             url_only,
             supplements,
             capture_discovery,
+            supplements_page,
+            from_discovery,
             dir,
             citekey,
         }) => {
             if supplements {
-                cmd::supplements::run(&ctx, &id, url_only, capture_discovery.as_deref()).await
+                cmd::supplements::run(&ctx, &id, url_only, capture_discovery.as_deref(), supplements_page.as_deref(), from_discovery.as_deref()).await
             } else {
                 cmd::download::run(&ctx, &id, source, url_only, dir.as_deref(), citekey.as_deref()).await
             }
@@ -747,6 +755,21 @@ mod tests {
         let parsed = Cli::try_parse_from(["lit", "download", "10.3389/fncom.2020.00006", "--supplements", "--url-only", "--capture-discovery", "capture", "--json"]).unwrap();
         assert!(matches!(parsed.command, Some(Commands::Download { supplements: true, url_only: true, capture_discovery: Some(_), .. })));
         assert!(parsed.json);
+    }
+
+    #[test]
+    fn supplements_page_requires_supplements_and_preserves_literal_url() {
+        let url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC7025464/";
+        assert!(Cli::try_parse_from(["lit", "download", "10.3389/fncom.2020.00006", "--supplements-page", url]).is_err());
+        let parsed = Cli::try_parse_from(["lit", "download", "10.3389/fncom.2020.00006", "--supplements", "--supplements-page", url, "--url-only"]).unwrap();
+        assert!(matches!(parsed.command, Some(Commands::Download { supplements: true, url_only: true, .. })));
+    }
+    #[test]
+    fn supplements_from_discovery_requires_supplements_and_excludes_live_capture() {
+        assert!(Cli::try_parse_from(["lit", "download", "10.1/test", "--from-discovery", "capture"]).is_err());
+        assert!(Cli::try_parse_from(["lit", "download", "10.1/test", "--supplements", "--from-discovery", "capture", "--capture-discovery", "other"]).is_err());
+        assert!(Cli::try_parse_from(["lit", "download", "10.1/test", "--supplements", "--from-discovery", "capture", "--supplements-page", "https://pmc.ncbi.nlm.nih.gov/articles/PMC1/"]).is_err());
+        assert!(Cli::try_parse_from(["lit", "download", "10.1/test", "--supplements", "--from-discovery", "capture", "--url-only"]).is_ok());
     }
 
     #[test]

@@ -357,6 +357,18 @@ These diagnostic files remain discovery evidence and do not become acquired supp
 Without this option, discovery writes no article or supplementary artifacts.
 See ADR-009 for the acquisition contract and remaining verification work.
 
+When an authoritative repository page has been identified independently, use its literal URL:
+
+```bash
+lit download 10.3389/fncom.2020.00006 --supplements --supplements-page https://pmc.ncbi.nlm.nih.gov/articles/PMC7025464/ --url-only --json
+```
+
+The explicit page option currently supports PMC article pages that confirm the requested DOI and contain a supplementary section.
+Discovery uses the page's declared asset links for that article.
+Omit `--url-only` to acquire the validated files into the cached parent article's existing supplementary directory.
+To reuse an already captured page, replace `--supplements-page URL` with `--from-discovery PATH`.
+The command checks the capture's hash, DOI and article binding before using its declared links, and retains the original discovery provenance.
+
 ## 8. Survey a topic: local vs. remote search
 
 Remote search is the default and hits APIs (slow, but fresh + comprehensive):

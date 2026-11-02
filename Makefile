@@ -23,11 +23,11 @@ test-unit: ## Run Rust unit tests
 test-supplements-cli: build ## Verify supplementary acquisition CLI registration
 	sh test/supplements-cli.sh $(CURDIR)/target/debug/lit
 
-supplements-discover: build ## Discover official Frontiers supplements (DOI=...)
-	./target/debug/lit download '$(DOI)' --supplements --url-only --json $(if $(CAPTURE),--capture-discovery '$(CAPTURE)')
+supplements-discover: build ## Discover declared supplements (DOI=..., optional PAGE=PMC article URL)
+	./target/debug/lit download '$(DOI)' --supplements --url-only --json $(if $(CAPTURE),--capture-discovery '$(CAPTURE)') $(if $(PAGE),--supplements-page '$(PAGE)') $(if $(DISCOVERY),--from-discovery '$(DISCOVERY)')
 
-supplements-download: build ## Acquire official supplements (DOI=...)
-	./target/debug/lit download '$(DOI)' --supplements --json
+supplements-download: build ## Acquire declared supplements (DOI=..., optional PAGE=PMC article URL)
+	./target/debug/lit download '$(DOI)' --supplements --json $(if $(PAGE),--supplements-page '$(PAGE)') $(if $(DISCOVERY),--from-discovery '$(DISCOVERY)')
 
 test-supplements: ## Run supplementary artifact regression tests
 	cargo test supplements $(if $(TEST_LOG),> '$(TEST_LOG)' 2>&1)
@@ -41,7 +41,7 @@ test-publisher-transport: ## Run deterministic scoped publisher transport tests
 	cargo test publisher_transport $(if $(TRANSPORT_LOG),> '$(TRANSPORT_LOG)' 2>&1)
 
 publisher-test-certificate: ## Regenerate the isolated publisher transport test certificate
-	openssl req -x509 -newkey rsa:2048 -nodes -keyout test/fixtures/frontiers/test-key.pem -out test/fixtures/frontiers/test-cert.pem -days 36500 -subj '/CN=www.frontiersin.org' -addext 'subjectAltName=DNS:www.frontiersin.org,DNS:public-pages-files-2025.frontiersin.org' -addext 'basicConstraints=critical,CA:FALSE'
+	openssl req -x509 -newkey rsa:2048 -nodes -config test/fixtures/frontiers/test-cert.cnf -keyout test/fixtures/frontiers/test-key.pem -out test/fixtures/frontiers/test-cert.pem -days 36500
 
 supplements-inspect-package: ## List captured declared EPUB package (CAPTURE=...)
 	unzip -l '$(CAPTURE)/article.epub'

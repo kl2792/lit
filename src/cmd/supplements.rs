@@ -3,7 +3,7 @@ use crate::html;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use crate::http::{PublisherResponse, is_frontiers_url};
+use crate::http::{PublisherResponse, is_frontiers_url, is_pmc_repository_url};
 type Error = Box<dyn std::error::Error>;
 
 #[cfg(test)]
@@ -18,6 +18,7 @@ pub struct Resource {
 
 fn discover(body: &str, landing: &str, doi: &str) -> Result<Vec<Resource>, String> {
     let base = Url::parse(landing).map_err(|e| e.to_string())?;
+    if pmc_article(&base).is_some() { return discover_pmc(body, &base, doi); }
     if !is_frontiers_url(&base) { return Err("unsupported publisher".into()); }
     let nodes = html::parse(body);
     if !html::meta_all(&nodes, "citation_doi").iter().any(|d| d.eq_ignore_ascii_case(doi)) {
@@ -35,6 +36,49 @@ fn discover(body: &str, landing: &str, doi: &str) -> Result<Vec<Resource>, Strin
             url.set_fragment(None);
             if !out.iter().any(|r| r.url == url.as_str()) {
                 out.push(Resource { label: anchor.text(), declared_url: declared.into(), url: url.into() });
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn pmc_article(url: &Url) -> Option<&str> {
+    if !is_pmc_repository_url(url) || url.host_str() != Some("pmc.ncbi.nlm.nih.gov") { return None; }
+    url.path().strip_prefix("/articles/PMC")?.strip_suffix('/')
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn discover_pmc(body: &str, base: &Url, doi: &str) -> Result<Vec<Resource>, String> {
+    let article = pmc_article(base).ok_or("unsupported PMC article URL")?;
+    let nodes = html::parse(body);
+    if !html::meta_all(&nodes, "citation_doi").iter().any(|d| d.eq_ignore_ascii_case(doi)) {
+        return Err("repository page does not confirm requested DOI".into());
+    }
+    let sections = html::find_all(&nodes, &|e| matches!(e.name.as_str(), "section" | "div") && e.children.iter().any(|node| {
+        matches!(node, html::Node::Element(h) if matches!(h.name.as_str(), "h2" | "h3") && matches!(h.text().as_str(), "Supplementary Material" | "Supplementary Materials"))
+    }));
+    if sections.is_empty() { return Err("unsupported supplementary layout".into()); }
+    let mut out: Vec<Resource> = Vec::new();
+    for section in sections {
+        let groups = html::find_all(&section.children, &|e| e.name == "section" && e.has_class("sm"));
+        let groups = if groups.is_empty() { vec![section] } else { groups };
+        for group in groups {
+            let label = html::find(&group.children, &|e| e.name == "div" && e.has_class("caption"))
+                .and_then(|caption| html::find(&caption.children, &|e| e.name == "span")).map(|span| span.text());
+            for anchor in html::find_all(&group.children, &|e| e.name == "a" && e.attr("href").is_some()) {
+                let declared = anchor.attr("href").unwrap();
+                if declared.starts_with('#') { continue; }
+                let mut url = base.join(declared).map_err(|e| e.to_string())?;
+                if is_frontiers_url(&url) { continue; } // The section also links the publisher's landing page.
+                let same_article = [format!("/articles/instance/{article}/bin/"), format!("/articles/PMC{article}/bin/")]
+                    .iter().any(|prefix| url.path().starts_with(prefix));
+                if !is_pmc_repository_url(&url) || url.host_str() != base.host_str() || !same_article {
+                    return Err(format!("unsupported supplementary URL for PMC{article}: {declared}"));
+                }
+                url.set_fragment(None);
+                if !out.iter().any(|r| r.url == url.as_str()) {
+                    out.push(Resource { label: label.clone().unwrap_or_else(|| anchor.text()), declared_url: declared.into(), url: url.into() });
+                }
             }
         }
     }
@@ -78,6 +122,24 @@ fn capture(dir: &Path, response: &PublisherResponse, provenance: &serde_json::Va
     atomic(&dir.join("response.json"), &serde_json::to_vec_pretty(provenance)?)?;
     Ok(())
 }
+fn load_discovery(dir: &Path) -> Result<(PublisherResponse, serde_json::Value), Error> {
+    let bytes = std::fs::read(dir.join("landing.html"))?;
+    let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("response.json"))?)?;
+    if metadata["sha256"].as_str() != Some(hash(&bytes).as_str()) || metadata["byte_length"].as_u64() != Some(bytes.len() as u64) {
+        return Err("discovery capture hash or length mismatch".into());
+    }
+    let requested = Url::parse(metadata["requested_url"].as_str().ok_or("discovery capture lacks requested URL")?)?;
+    let final_url = Url::parse(metadata["final_url"].as_str().ok_or("discovery capture lacks final URL")?)?;
+    if let Some(article) = pmc_article(&requested) {
+        if pmc_article(&final_url) != Some(article) { return Err("discovery capture PMC article mismatch".into()); }
+    } else if !is_frontiers_url(&requested) || !is_frontiers_url(&final_url) {
+        return Err("unsupported discovery capture URL".into());
+    }
+    let status = metadata["http_status"].as_u64().filter(|n| *n <= u16::MAX as u64).ok_or("discovery capture lacks HTTP status")? as u16;
+    let mime = metadata["mime_type"].as_str().ok_or("discovery capture lacks MIME type")?.to_string();
+    if metadata["retrieved_at"].as_u64().is_none() { return Err("discovery capture lacks retrieval time".into()); }
+    Ok((PublisherResponse { final_url: final_url.into(), status, mime, bytes }, metadata))
+}
 fn atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     use std::io::Write;
     let temporary = path.with_extension(format!("{}.{}.tmp", std::process::id(), now()));
@@ -104,21 +166,40 @@ fn validated_extension(mime: &str, bytes: &[u8]) -> Result<&'static str, String>
     Ok(valid)
 }
 
-pub async fn run(ctx: &super::Context, input: &str, url_only: bool, capture_dir: Option<&Path>) -> Result<(), Error> {
+pub async fn run(ctx: &super::Context, input: &str, url_only: bool, capture_dir: Option<&Path>, repository_page: Option<&str>, from_discovery: Option<&Path>) -> Result<(), Error> {
     use super::artifact::{classify, Target, owner_dir};
     let Target::Doi(doi) = classify(input) else { return Err("supplements require a DOI".into()); };
     let client = ctx.client();
-    let metadata_url = crate::api::crossref::doi_url(&doi);
-    let body = client.get_cached(&format!("supplements_crossref:{doi}"), &metadata_url, crate::db::TTL_DOI).await?;
-    let metadata: serde_json::Value = serde_json::from_str(&body)?;
-    let landing = metadata.pointer("/message/resource/primary/URL").and_then(|v| v.as_str())
-        .ok_or("unsupported publisher: metadata has no primary landing URL")?;
-    if !is_frontiers_url(&Url::parse(landing)?) { return Err(format!("unsupported publisher landing URL: {landing}").into()); }
-    let response = client.get_publisher(landing).await?;
-    let discovery = provenance(landing, &response);
-    if let Some(dir) = capture_dir { capture(dir, &response, &discovery)?; }
+    let (response, discovery) = if let Some(dir) = from_discovery {
+        load_discovery(dir)?
+    } else {
+        let landing = if let Some(page) = repository_page {
+            if pmc_article(&Url::parse(page)?).is_none() { return Err(format!("unsupported PMC article URL: {page}").into()); }
+            page.to_string()
+        } else {
+            let metadata_url = crate::api::crossref::doi_url(&doi);
+            let body = client.get_cached(&format!("supplements_crossref:{doi}"), &metadata_url, crate::db::TTL_DOI).await?;
+            let metadata: serde_json::Value = serde_json::from_str(&body)?;
+            let page = metadata.pointer("/message/resource/primary/URL").and_then(|v| v.as_str())
+                .ok_or("unsupported publisher: metadata has no primary landing URL")?;
+            if !is_frontiers_url(&Url::parse(page)?) { return Err(format!("unsupported publisher landing URL: {page}").into()); }
+            page.to_string()
+        };
+        let landing = landing.as_str();
+        let response = client.get_publisher(landing).await?;
+        let discovery = provenance(landing, &response);
+        if let Some(dir) = capture_dir { capture(dir, &response, &discovery)?; }
+        (response, discovery)
+    };
     if !(200..300).contains(&response.status) { return Err(format!("publisher discovery HTTP {} for {}", response.status, response.final_url).into()); }
     if !response.mime.starts_with("text/html") { return Err(format!("unsupported publisher page MIME: {}", response.mime).into()); }
+    if let Some(requested) = repository_page {
+        let requested_url = Url::parse(requested)?;
+        let final_url = Url::parse(&response.final_url)?;
+        if pmc_article(&final_url) != pmc_article(&requested_url) {
+            return Err(format!("PMC article mismatch: requested {requested}, received {}", response.final_url).into());
+        }
+    }
     let landing_body = std::str::from_utf8(&response.bytes)?;
     let resources = match discover(landing_body, &response.final_url, &doi) {
         Ok(resources) => resources,
@@ -251,6 +332,55 @@ mod tests {
     use super::*;
     const LANDING: &str = "https://www.frontiersin.org/articles/10.3389/fncom.2020.00006/full";
     const DOI: &str = "10.3389/fncom.2020.00006";
+    #[test]
+    fn pmc_supplements_use_matching_doi_and_same_article_declared_links() {
+        // Synthetic layout: URLs are test inputs, not claims about live resources.
+        let landing = "https://pmc.ncbi.nlm.nih.gov/articles/PMC7025464/";
+        let body = format!("<meta name='citation_doi' content='{DOI}'><section id='supp'><h2>Supplementary Material</h2><p>Supplementary Figure 1</p><a href='/articles/instance/7025464/bin/Image_1.jpg'>Additional data</a><a href='/articles/instance/7025464/bin/Image_1.jpg'>Duplicate</a><a href='https://www.frontiersin.org/articles/{DOI}/full'>Publisher</a></section>");
+        let resources = discover(&body, landing, DOI).unwrap();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].declared_url, "/articles/instance/7025464/bin/Image_1.jpg");
+        assert_eq!(resources[0].url, "https://pmc.ncbi.nlm.nih.gov/articles/instance/7025464/bin/Image_1.jpg");
+        assert!(discover(&body, landing, "10.1/wrong").is_err());
+        for wrong in ["https://pmc.ncbi.nlm.nih.gov.evil.test/articles/PMC7025464/", "http://pmc.ncbi.nlm.nih.gov/articles/PMC7025464/"] {
+            assert!(discover(&body, wrong, DOI).is_err());
+        }
+        assert!(discover(&body.replace("instance/7025464", "instance/9999999"), landing, DOI).is_err());
+        assert!(discover(&body.replace("/articles/instance/7025464/bin/Image_1.jpg", "https://evil.test/Image_1.jpg"), landing, DOI).is_err());
+        assert!(discover(&format!("<meta name='citation_doi' content='{DOI}'>"), landing, DOI).is_err());
+    }
+    #[test]
+    fn captured_pmc_page_preserves_all_seven_publisher_labels_and_literal_links() {
+        let body = include_str!("../../test/fixtures/pmc/landing.html");
+        let receipt: serde_json::Value = serde_json::from_str(include_str!("../../test/fixtures/pmc/response.json")).unwrap();
+        assert_eq!(hash(body.as_bytes()), receipt["sha256"]);
+        assert_eq!(body.len(), receipt["byte_length"]);
+        let links = discover(body, receipt["final_url"].as_str().unwrap(), DOI).unwrap();
+        assert_eq!(links.len(), 7);
+        for (index, resource) in links.iter().enumerate() {
+            assert_eq!(resource.label, format!("Supplementary Figure {}", index + 1));
+            let ext = if index == 3 { "png" } else { "jpg" };
+            assert_eq!(resource.declared_url, format!("/articles/instance/7025464/bin/Image_{}.{ext}", index + 1));
+        }
+    }
+    #[test]
+    fn captured_pmc_discovery_rejects_changed_article_url_and_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let body = include_bytes!("../../test/fixtures/pmc/landing.html");
+        let mut receipt: serde_json::Value = serde_json::from_str(include_str!("../../test/fixtures/pmc/response.json")).unwrap();
+        std::fs::write(temp.path().join("landing.html"), body).unwrap();
+        std::fs::write(temp.path().join("response.json"), serde_json::to_vec(&receipt).unwrap()).unwrap();
+        let (response, original) = load_discovery(temp.path()).unwrap();
+        assert_eq!(response.bytes, body);
+        assert_eq!(original, receipt);
+        receipt["requested_url"] = "https://pmc.ncbi.nlm.nih.gov/articles/PMC9999999/".into();
+        std::fs::write(temp.path().join("response.json"), serde_json::to_vec(&receipt).unwrap()).unwrap();
+        assert!(load_discovery(temp.path()).unwrap_err().to_string().contains("article mismatch"));
+        receipt["requested_url"] = receipt["final_url"].clone();
+        std::fs::write(temp.path().join("response.json"), serde_json::to_vec(&receipt).unwrap()).unwrap();
+        std::fs::write(temp.path().join("landing.html"), b"tampered").unwrap();
+        assert!(load_discovery(temp.path()).unwrap_err().to_string().contains("hash or length mismatch"));
+    }
     #[test]
     fn xml_declared_relative_uris_resolve_against_document_url() {
         let xml = "<article><supplementary-material xlink:href='Image_1.jpg'><label>Supplementary Figure 1</label></supplementary-material></article>";

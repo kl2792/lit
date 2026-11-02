@@ -56,6 +56,14 @@ pub fn is_frontiers_url(url: &reqwest::Url) -> bool {
         && matches!(url.host_str(), Some("www.frontiersin.org" | "frontiersin.org" | "public-pages-files-2025.frontiersin.org"))
 }
 
+/// PMC's article repository and its image CDN, with exact HTTPS hosts.
+pub fn is_pmc_repository_url(url: &reqwest::Url) -> bool {
+    url.scheme() == "https" && url.username().is_empty() && url.password().is_none()
+        && url.port_or_known_default() == Some(443)
+        && (url.host_str() == Some("pmc.ncbi.nlm.nih.gov") && url.path().starts_with("/articles/")
+            || url.host_str() == Some("cdn.ncbi.nlm.nih.gov") && url.path().starts_with("/pmc/blobs/"))
+}
+
 impl Client {
     /// Scoped binary transport, sharing the HTTP retry budget. Redirects stay
     /// on explicit publisher hosts; denied pages remain responses for capture.
@@ -216,14 +224,15 @@ impl Client {
 fn publisher_client_builder(timeout: Duration) -> reqwest::ClientBuilder {
     reqwest::Client::builder().use_rustls_tls().timeout(timeout).user_agent("lit/1.0")
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 10 || !is_frontiers_url(attempt.url()) {
+            if attempt.previous().len() >= 10 || !(is_frontiers_url(attempt.url()) || is_pmc_repository_url(attempt.url())) {
                 attempt.error("publisher redirect outside supported scope")
             } else { attempt.follow() }
         }))
 }
 
 async fn publisher_get(client: &reqwest::Client, url: &str, attempts: usize) -> Result<PublisherResponse, Box<dyn std::error::Error>> {
-    if !is_frontiers_url(&reqwest::Url::parse(url)?) {
+    let parsed = reqwest::Url::parse(url)?;
+    if !(is_frontiers_url(&parsed) || is_pmc_repository_url(&parsed)) {
         return Err(format!("unsupported publisher URL: {url}").into());
     }
     let last_response = std::cell::RefCell::new(None);

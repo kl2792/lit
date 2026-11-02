@@ -63,7 +63,7 @@ pub(crate) fn fixture(scripts: Vec<Script>, timeout: Duration) -> (reqwest::Clie
             socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             socket.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
             let connect = read_headers(&mut socket);
-            assert!(connect.starts_with("CONNECT www.frontiersin.org:443 ") || connect.starts_with("CONNECT public-pages-files-2025.frontiersin.org:443 "), "{connect}");
+            assert!(["www.frontiersin.org", "public-pages-files-2025.frontiersin.org", "pmc.ncbi.nlm.nih.gov", "cdn.ncbi.nlm.nih.gov"].iter().any(|host| connect.starts_with(&format!("CONNECT {host}:443 "))), "{connect}");
             socket.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").unwrap();
             let connection = rustls::ServerConnection::new(Arc::new(config.clone())).unwrap();
             let mut tls = rustls::StreamOwned::new(connection, socket);
@@ -105,6 +105,28 @@ pub(crate) fn reply(status: &str, extra: &str, body: &[u8]) -> Script {
 
 pub(crate) async fn fetch(client: &reqwest::Client, url: &str) -> Result<PublisherResponse, Box<dyn std::error::Error>> {
     publisher_get(client, url, 1).await
+}
+
+#[tokio::test]
+async fn publisher_transport_accepts_pmc_and_scoped_cdn_redirects() {
+    let url = "https://pmc.ncbi.nlm.nih.gov/articles/instance/7025464/bin/Image_1.jpg";
+    let final_url = "https://cdn.ncbi.nlm.nih.gov/pmc/blobs/fixture/image.jpg";
+    let (client, server) = fixture(vec![reply("302 Found", &format!("Location: {final_url}\r\n"), b""), reply("200 OK", "", b"\x89PNG\r\n\x1a\nimage")], Duration::from_secs(2));
+    let result = publisher_get(&client, url, 1).await;
+    let count = server.join().unwrap();
+    let response = result.unwrap();
+    assert_eq!(response.final_url, final_url);
+    assert_eq!(count, 2);
+}
+
+#[tokio::test]
+async fn publisher_transport_rejects_pmc_external_redirects() {
+    let url = "https://pmc.ncbi.nlm.nih.gov/articles/PMC7025464/";
+    let (client, server) = fixture(vec![reply("302 Found", "Location: https://example.invalid/image.jpg\r\n", b"")], Duration::from_secs(2));
+    let result = publisher_get(&client, url, 1).await;
+    let count = server.join().unwrap();
+    assert!(result.unwrap_err().to_string().contains("redirect"));
+    assert_eq!(count, 1);
 }
 
 #[tokio::test]
