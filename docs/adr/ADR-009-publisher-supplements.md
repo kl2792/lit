@@ -22,6 +22,13 @@ No repository URL is inferred from a title, filename or unsuccessful publisher r
 The command checks the stored HTML's hash and length, the requested and final page scope, the DOI and the article identity, then extracts and validates the literal asset links again.
 The original discovery provenance remains attached to the acquired resources.
 
+`--cloud-metadata PATH` may accompany `--from-discovery PATH` to map verified PMC supplementary links to the official PMC Cloud objects.
+The Cloud capture contains `metadata.json` and `response.json`; the command verifies its hash, DOI, PMCID, version, publication type and license before matching literal `media_urls` to the already identified supplementary basenames.
+Main article figures remain outside that supplementary selection.
+The supported Cloud bucket is `pmc-oa-opendata`, served through HTTPS on `pmc-oa-opendata.s3.amazonaws.com`; every object must remain within the bound article and version prefix.
+The supplied MD5 must match each complete object before storage or reuse, while SHA256 remains the stored artifact identity.
+Cloud objects served as binary data also require the declared file extension and file signature to agree; this does not relax validation for other publishers.
+
 `lit download DOI --supplements --json` stores validated PDF or raster image artifacts under the existing parent directory's `supplements/` directory.
 The main article and its `source.yaml` remain unchanged.
 A manifest records the parent DOI and discovery provenance.

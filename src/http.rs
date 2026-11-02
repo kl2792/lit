@@ -64,6 +64,19 @@ pub fn is_pmc_repository_url(url: &reqwest::Url) -> bool {
             || url.host_str() == Some("cdn.ncbi.nlm.nih.gov") && url.path().starts_with("/pmc/blobs/"))
 }
 
+/// Public PMC Cloud media objects, confined to one article-version directory.
+pub fn is_pmc_cloud_url(url: &reqwest::Url) -> bool {
+    if url.scheme() != "https" || url.host_str() != Some("pmc-oa-opendata.s3.amazonaws.com")
+        || !url.username().is_empty() || url.password().is_some() || url.port_or_known_default() != Some(443)
+        || url.fragment().is_some() { return false; }
+    let parts: Vec<_> = url.path().split('/').collect();
+    if parts.len() != 3 || parts[0] != "" || parts[2].is_empty() || parts[2] == "." || parts[2] == ".."
+        || !parts[2].bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')) { return false; }
+    let Some((article, version)) = parts[1].strip_prefix("PMC").and_then(|v| v.split_once('.')) else { return false; };
+    !article.is_empty() && article.bytes().all(|b| b.is_ascii_digit())
+        && version.bytes().all(|b| b.is_ascii_digit()) && version.parse::<u64>().is_ok_and(|v| v > 0)
+}
+
 impl Client {
     /// Scoped binary transport, sharing the HTTP retry budget. Redirects stay
     /// on explicit publisher hosts; denied pages remain responses for capture.
@@ -224,7 +237,9 @@ impl Client {
 fn publisher_client_builder(timeout: Duration) -> reqwest::ClientBuilder {
     reqwest::Client::builder().use_rustls_tls().timeout(timeout).user_agent("lit/1.0")
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 10 || !(is_frontiers_url(attempt.url()) || is_pmc_repository_url(attempt.url())) {
+            if attempt.previous().len() >= 10
+                || attempt.previous().first().is_some_and(|original| is_pmc_cloud_url(original) && original != attempt.url())
+                || !(is_frontiers_url(attempt.url()) || is_pmc_repository_url(attempt.url()) || is_pmc_cloud_url(attempt.url())) {
                 attempt.error("publisher redirect outside supported scope")
             } else { attempt.follow() }
         }))
@@ -232,7 +247,7 @@ fn publisher_client_builder(timeout: Duration) -> reqwest::ClientBuilder {
 
 async fn publisher_get(client: &reqwest::Client, url: &str, attempts: usize) -> Result<PublisherResponse, Box<dyn std::error::Error>> {
     let parsed = reqwest::Url::parse(url)?;
-    if !(is_frontiers_url(&parsed) || is_pmc_repository_url(&parsed)) {
+    if !(is_frontiers_url(&parsed) || is_pmc_repository_url(&parsed) || is_pmc_cloud_url(&parsed)) {
         return Err(format!("unsupported publisher URL: {url}").into());
     }
     let last_response = std::cell::RefCell::new(None);

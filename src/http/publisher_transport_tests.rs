@@ -63,7 +63,7 @@ pub(crate) fn fixture(scripts: Vec<Script>, timeout: Duration) -> (reqwest::Clie
             socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             socket.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
             let connect = read_headers(&mut socket);
-            assert!(["www.frontiersin.org", "public-pages-files-2025.frontiersin.org", "pmc.ncbi.nlm.nih.gov", "cdn.ncbi.nlm.nih.gov"].iter().any(|host| connect.starts_with(&format!("CONNECT {host}:443 "))), "{connect}");
+            assert!(["www.frontiersin.org", "public-pages-files-2025.frontiersin.org", "pmc.ncbi.nlm.nih.gov", "cdn.ncbi.nlm.nih.gov", "pmc-oa-opendata.s3.amazonaws.com"].iter().any(|host| connect.starts_with(&format!("CONNECT {host}:443 "))), "{connect}");
             socket.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").unwrap();
             let connection = rustls::ServerConnection::new(Arc::new(config.clone())).unwrap();
             let mut tls = rustls::StreamOwned::new(connection, socket);
@@ -105,6 +105,43 @@ pub(crate) fn reply(status: &str, extra: &str, body: &[u8]) -> Script {
 
 pub(crate) async fn fetch(client: &reqwest::Client, url: &str) -> Result<PublisherResponse, Box<dyn std::error::Error>> {
     publisher_get(client, url, 1).await
+}
+
+#[tokio::test]
+async fn publisher_transport_accepts_only_scoped_cloud_objects() {
+    let url = "https://pmc-oa-opendata.s3.amazonaws.com/PMC7025464.1/Image_1.jpg?md5=cfcf3840f5c3b45747ab4b294bc4c002";
+    let (client, server) = fixture(vec![reply("200 OK", "", b"\xff\xd8\xffimage")], Duration::from_secs(2));
+    let result = publisher_get(&client, url, 1).await.unwrap();
+    assert_eq!(server.join().unwrap(), 1);
+    assert_eq!(result.final_url, url);
+    for url in ["https://pmc-oa-opendata.s3.amazonaws.com/README.txt", "https://pmc-oa-opendata.s3.amazonaws.com/metadata/PMC7025464.1.json",
+        "https://pmc-oa-opendata.s3.amazonaws.com/PMC7025464.0/Image.jpg", "https://pmc-oa-opendata.s3.amazonaws.com/PMC7025464.1/sub/Image.jpg",
+        "https://other.s3.amazonaws.com/PMC7025464.1/Image.jpg", "http://pmc-oa-opendata.s3.amazonaws.com/PMC7025464.1/Image.jpg",
+        "https://user@pmc-oa-opendata.s3.amazonaws.com/PMC7025464.1/Image.jpg", "https://pmc-oa-opendata.s3.amazonaws.com:444/PMC7025464.1/Image.jpg"] {
+        assert!(!is_pmc_cloud_url(&reqwest::Url::parse(url).unwrap()), "{url}");
+        assert!(publisher_get(&client, url, 1).await.unwrap_err().to_string().contains("unsupported publisher URL"));
+    }
+}
+
+#[tokio::test]
+async fn publisher_transport_blocks_cloud_redirect_to_allowed_object_and_back() {
+    let url = "https://pmc-oa-opendata.s3.amazonaws.com/PMC7025464.1/Image_1.jpg";
+    for target in ["https://pmc-oa-opendata.s3.amazonaws.com/PMC9999999.1/Image_2.jpg", "https://www.frontiersin.org/other"] {
+        let (client, server) = fixture(vec![reply("302 Found", &format!("Location: {target}\r\n"), b""),
+            reply("302 Found", &format!("Location: {url}\r\n"), b""), reply("200 OK", "", b"image")], Duration::from_secs(2));
+        let result = publisher_get(&client, url, 1).await;
+        let requests = server.join().unwrap();
+        assert!(result.is_err(), "redirect through {target} returned success");
+        assert_eq!(requests, 1, "redirect contacted {target}");
+    }
+}
+
+#[tokio::test]
+async fn publisher_transport_blocks_cloud_redirect_outside_object_scope() {
+    let url = "https://pmc-oa-opendata.s3.amazonaws.com/PMC7025464.1/Image_1.jpg";
+    let (client, server) = fixture(vec![reply("302 Found", "Location: https://pmc-oa-opendata.s3.amazonaws.com/README.txt\r\n", b"")], Duration::from_secs(2));
+    assert!(publisher_get(&client, url, 1).await.unwrap_err().to_string().contains("redirect"));
+    assert_eq!(server.join().unwrap(), 1);
 }
 
 #[tokio::test]

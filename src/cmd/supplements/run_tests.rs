@@ -34,12 +34,12 @@ async fn child() {
         let _override = override_client(client);
         let db = Arc::new(crate::db::Db::open(&root.join("lit.db")).unwrap());
         let ctx = super::super::Context { verbose: false, bib_file: None, bib_stdout: false, json: true, no_cache: false, db };
-        let result = super::run(&ctx, DOI, true, Some(&root.join("capture")), Some(requested), None).await;
+        let result = super::run(&ctx, DOI, true, Some(&root.join("capture")), Some(requested), None, None).await;
         assert_eq!(server.join().unwrap(), 2);
         if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
         return;
     }
-    if case == "pmc_capture" {
+    if matches!(case.as_str(), "pmc_capture" | "pmc_cloud_capture") {
         let landing = "https://pmc.ncbi.nlm.nih.gov/articles/PMC7025464/";
         let body = format!("<meta name='citation_doi' content='{DOI}'><section><h2>Supplementary Material</h2><section class='sm'><div class='caption'><span>Supplementary Figure 1</span></div><a href='/articles/instance/7025464/bin/Image_1.jpg'>Data</a></section></section>");
         let source = root.join("input-capture");
@@ -49,15 +49,32 @@ async fn child() {
         std::fs::write(source.join("response.json"), serde_json::to_vec(&original).unwrap()).unwrap();
         // The script permits exactly the asset request. A landing or metadata
         // request would consume it and make the acquisition fail.
-        let (client, server) = fixture(vec![response("200 OK", "image/png", IMAGE)], std::time::Duration::from_secs(2));
+        let cloud = case == "pmc_cloud_capture";
+        let cloud_dir = root.join("cloud-capture");
+        let image = if cloud { b"\xff\xd8\xfffixture-image".as_slice() } else { IMAGE };
+        if cloud {
+            std::fs::create_dir(&cloud_dir).unwrap();
+            let mut data: serde_json::Value = serde_json::from_str(include_str!("../../../test/fixtures/pmc-cloud/metadata.json")).unwrap();
+            data["media_urls"][0] = format!("s3://pmc-oa-opendata/PMC7025464.1/Image_1.jpg?md5={}", super::cloud::md5(image)).into();
+            let bytes = serde_json::to_vec(&data).unwrap();
+            let mut receipt: serde_json::Value = serde_json::from_str(include_str!("../../../test/fixtures/pmc-cloud/response.json")).unwrap();
+            receipt["sha256"] = hash(&bytes).into(); receipt["byte_length"] = bytes.len().into();
+            std::fs::write(cloud_dir.join("metadata.json"), bytes).unwrap();
+            std::fs::write(cloud_dir.join("response.json"), serde_json::to_vec(&receipt).unwrap()).unwrap();
+        }
+        let (client, server) = fixture(vec![response("200 OK", if cloud { "binary/octet-stream" } else { "image/png" }, image)], std::time::Duration::from_secs(2));
         let _override = override_client(client);
         let db = Arc::new(crate::db::Db::open(&root.join("lit.db")).unwrap());
         let ctx = super::super::Context { verbose: false, bib_file: None, bib_stdout: false, json: true, no_cache: false, db };
-        let result = super::run(&ctx, DOI, false, None, None, Some(&source)).await;
+        let result = super::run(&ctx, DOI, false, None, None, Some(&source), if cloud { Some(&cloud_dir) } else { None }).await;
         assert_eq!(server.join().unwrap(), 1);
         if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
         let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("etc/pdf/owner-with-unrelated-name/supplements/manifest.json")).unwrap()).unwrap();
-        assert_eq!(manifest["discovery"], original);
+        if cloud {
+            assert_eq!(manifest["discovery"]["sha256"], original["sha256"]);
+            assert_eq!(manifest["discovery"]["cloud"]["binding"]["pmcid"], "PMC7025464");
+            assert_eq!(manifest["resources"][0]["md5"], super::cloud::md5(image));
+        } else { assert_eq!(manifest["discovery"], original); }
         assert_eq!(manifest["resources"][0]["label"], "Supplementary Figure 1");
         assert_eq!(manifest["resources"][0]["status"], "acquired");
         return;
@@ -83,7 +100,7 @@ async fn child() {
     db.cache_set(&format!("supplements_crossref:{DOI}"), "crossref fixture", &serde_json::json!({"message":{"resource":{"primary":{"URL":LANDING}}}}).to_string());
     let ctx = super::super::Context { verbose: false, bib_file: None, bib_stdout: false, json: true, no_cache: false, db };
     let capture_dir = root.join("capture");
-    let result = super::run(&ctx, DOI, !matches!(case.as_str(), "partial" | "missing_parent"), if case == "default_discovery" { None } else { Some(&capture_dir) }, None, None).await;
+    let result = super::run(&ctx, DOI, !matches!(case.as_str(), "partial" | "missing_parent"), if case == "default_discovery" { None } else { Some(&capture_dir) }, None, None, None).await;
     assert_eq!(server.join().unwrap(), expected_requests);
     if let Err(error) = result {
         crate::format::error(&error.to_string());
@@ -137,7 +154,7 @@ fn live_pmc_discovery_rejects_redirect_to_frontiers() {
 
 #[test]
 fn public_run_discovery_capture_partial_failure_and_parent_lookup() {
-    for case in ["discovery", "no_links", "denied", "partial", "missing_parent", "default_discovery", "recognized_epub", "unsupported_epub", "unsupported_relative_epub", "unsupported_xml_abort", "pmc_capture"] {
+    for case in ["discovery", "no_links", "denied", "partial", "missing_parent", "default_discovery", "recognized_epub", "unsupported_epub", "unsupported_relative_epub", "unsupported_xml_abort", "pmc_capture", "pmc_cloud_capture"] {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         let owner = root.join("etc/pdf/owner-with-unrelated-name");
@@ -154,7 +171,7 @@ fn public_run_discovery_capture_partial_failure_and_parent_lookup() {
             .env("LIT_PROJECT_ROOT", root).output().unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(if matches!(case, "denied" | "partial" | "missing_parent" | "unsupported_epub" | "unsupported_relative_epub" | "unsupported_xml_abort") { 1 } else { 0 }), "{case}: {stderr}");
-        if case == "pmc_capture" {
+        if matches!(case, "pmc_capture" | "pmc_cloud_capture") {
             assert_eq!(std::fs::read(owner.join("paper.pdf")).unwrap(), b"main article");
             assert_eq!(std::fs::read_to_string(owner.join("source.yaml")).unwrap(), source);
             assert!(!other.join("supplements").exists());

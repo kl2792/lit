@@ -1,0 +1,9 @@
+{
+  "requested_url": "https://pmc-oa-opendata.s3.amazonaws.com/metadata/PMC7025464.1.json",
+  "final_url": "https://pmc-oa-opendata.s3.amazonaws.com/metadata/PMC7025464.1.json",
+  "http_status": 200,
+  "mime_type": "binary/octet-stream",
+  "byte_length": 2035,
+  "sha256": "d8d2604b61b959fe58556b36c9f31225ef247010af1250f5549ac622b9d2b417",
+  "retrieved_at": 1793626251
+}

@@ -129,6 +129,9 @@ enum Commands {
         /// Revalidate and reuse landing.html plus response.json from a prior capture
         #[arg(long, requires = "supplements", conflicts_with_all = ["supplements_page", "capture_discovery"])]
         from_discovery: Option<PathBuf>,
+        /// Verified official PMC Cloud metadata.json plus response.json capture
+        #[arg(long, requires = "from_discovery")]
+        cloud_metadata: Option<PathBuf>,
         /// Override output directory for --source
         #[arg(long)]
         dir: Option<PathBuf>,
@@ -397,11 +400,12 @@ async fn main() {
             capture_discovery,
             supplements_page,
             from_discovery,
+            cloud_metadata,
             dir,
             citekey,
         }) => {
             if supplements {
-                cmd::supplements::run(&ctx, &id, url_only, capture_discovery.as_deref(), supplements_page.as_deref(), from_discovery.as_deref()).await
+                cmd::supplements::run(&ctx, &id, url_only, capture_discovery.as_deref(), supplements_page.as_deref(), from_discovery.as_deref(), cloud_metadata.as_deref()).await
             } else {
                 cmd::download::run(&ctx, &id, source, url_only, dir.as_deref(), citekey.as_deref()).await
             }
@@ -770,6 +774,11 @@ mod tests {
         assert!(Cli::try_parse_from(["lit", "download", "10.1/test", "--supplements", "--from-discovery", "capture", "--capture-discovery", "other"]).is_err());
         assert!(Cli::try_parse_from(["lit", "download", "10.1/test", "--supplements", "--from-discovery", "capture", "--supplements-page", "https://pmc.ncbi.nlm.nih.gov/articles/PMC1/"]).is_err());
         assert!(Cli::try_parse_from(["lit", "download", "10.1/test", "--supplements", "--from-discovery", "capture", "--url-only"]).is_ok());
+    }
+    #[test]
+    fn supplements_cloud_metadata_requires_replayed_discovery() {
+        assert!(Cli::try_parse_from(["lit", "download", "10.1/test", "--supplements", "--cloud-metadata", "cloud"]).is_err());
+        assert!(Cli::try_parse_from(["lit", "download", "10.1/test", "--supplements", "--from-discovery", "page", "--cloud-metadata", "cloud", "--url-only"]).is_ok());
     }
 
     #[test]

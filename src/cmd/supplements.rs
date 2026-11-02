@@ -5,15 +5,27 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use crate::http::{PublisherResponse, is_frontiers_url, is_pmc_repository_url};
 type Error = Box<dyn std::error::Error>;
+mod cloud;
 
 #[cfg(test)]
 mod run_tests;
+#[cfg(test)]
+mod cloud_tests;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Resource {
     pub label: String,
     pub declared_url: String,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud: Option<CloudBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CloudBinding {
+    pub declared_url: String,
+    pub original_url: String,
+    pub expected_md5: String,
 }
 
 fn discover(body: &str, landing: &str, doi: &str) -> Result<Vec<Resource>, String> {
@@ -35,7 +47,7 @@ fn discover(body: &str, landing: &str, doi: &str) -> Result<Vec<Resource>, Strin
             if !is_frontiers_url(&url) { return Err(format!("unsupported supplementary URL: {declared}")); }
             url.set_fragment(None);
             if !out.iter().any(|r| r.url == url.as_str()) {
-                out.push(Resource { label: anchor.text(), declared_url: declared.into(), url: url.into() });
+                out.push(Resource { label: anchor.text(), declared_url: declared.into(), url: url.into(), cloud: None });
             }
         }
     }
@@ -77,7 +89,7 @@ fn discover_pmc(body: &str, base: &Url, doi: &str) -> Result<Vec<Resource>, Stri
                 }
                 url.set_fragment(None);
                 if !out.iter().any(|r| r.url == url.as_str()) {
-                    out.push(Resource { label: label.clone().unwrap_or_else(|| anchor.text()), declared_url: declared.into(), url: url.into() });
+                    out.push(Resource { label: label.clone().unwrap_or_else(|| anchor.text()), declared_url: declared.into(), url: url.into(), cloud: None });
                 }
             }
         }
@@ -101,7 +113,7 @@ fn xml_resources(body: &str, document_url: &str) -> Result<Vec<Resource>, String
                     let url = base.join(declared).map_err(|e| e.to_string())?;
                     if !is_frontiers_url(&url) { return Err(format!("unsupported supplementary XML URL: {url}")); }
                     let label = html::find(&element.children, &|e| e.name == "label").map(|e| e.text()).unwrap_or_default();
-                    output.push(Resource { label, declared_url: declared.into(), url: url.into() });
+                    output.push(Resource { label, declared_url: declared.into(), url: url.into(), cloud: None });
                 }
                 walk(&element.children, &base, output)?;
             }
@@ -123,18 +135,23 @@ fn capture(dir: &Path, response: &PublisherResponse, provenance: &serde_json::Va
     Ok(())
 }
 fn load_discovery(dir: &Path) -> Result<(PublisherResponse, serde_json::Value), Error> {
-    let bytes = std::fs::read(dir.join("landing.html"))?;
-    let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("response.json"))?)?;
-    if metadata["sha256"].as_str() != Some(hash(&bytes).as_str()) || metadata["byte_length"].as_u64() != Some(bytes.len() as u64) {
-        return Err("discovery capture hash or length mismatch".into());
-    }
+    let (response, metadata) = load_capture(dir, "landing.html")?;
     let requested = Url::parse(metadata["requested_url"].as_str().ok_or("discovery capture lacks requested URL")?)?;
-    let final_url = Url::parse(metadata["final_url"].as_str().ok_or("discovery capture lacks final URL")?)?;
+    let final_url = Url::parse(&response.final_url)?;
     if let Some(article) = pmc_article(&requested) {
         if pmc_article(&final_url) != Some(article) { return Err("discovery capture PMC article mismatch".into()); }
     } else if !is_frontiers_url(&requested) || !is_frontiers_url(&final_url) {
         return Err("unsupported discovery capture URL".into());
     }
+    Ok((response, metadata))
+}
+fn load_capture(dir: &Path, filename: &str) -> Result<(PublisherResponse, serde_json::Value), Error> {
+    let bytes = std::fs::read(dir.join(filename))?;
+    let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("response.json"))?)?;
+    if metadata["sha256"].as_str() != Some(hash(&bytes).as_str()) || metadata["byte_length"].as_u64() != Some(bytes.len() as u64) {
+        return Err("discovery capture hash or length mismatch".into());
+    }
+    let final_url = Url::parse(metadata["final_url"].as_str().ok_or("discovery capture lacks final URL")?)?;
     let status = metadata["http_status"].as_u64().filter(|n| *n <= u16::MAX as u64).ok_or("discovery capture lacks HTTP status")? as u16;
     let mime = metadata["mime_type"].as_str().ok_or("discovery capture lacks MIME type")?.to_string();
     if metadata["retrieved_at"].as_u64().is_none() { return Err("discovery capture lacks retrieval time".into()); }
@@ -166,11 +183,12 @@ fn validated_extension(mime: &str, bytes: &[u8]) -> Result<&'static str, String>
     Ok(valid)
 }
 
-pub async fn run(ctx: &super::Context, input: &str, url_only: bool, capture_dir: Option<&Path>, repository_page: Option<&str>, from_discovery: Option<&Path>) -> Result<(), Error> {
+pub async fn run(ctx: &super::Context, input: &str, url_only: bool, capture_dir: Option<&Path>, repository_page: Option<&str>, from_discovery: Option<&Path>, cloud_metadata: Option<&Path>) -> Result<(), Error> {
     use super::artifact::{classify, Target, owner_dir};
     let Target::Doi(doi) = classify(input) else { return Err("supplements require a DOI".into()); };
+    if cloud_metadata.is_some() && from_discovery.is_none() { return Err("Cloud metadata requires a verified discovery capture".into()); }
     let client = ctx.client();
-    let (response, discovery) = if let Some(dir) = from_discovery {
+    let (response, mut discovery) = if let Some(dir) = from_discovery {
         load_discovery(dir)?
     } else {
         let landing = if let Some(page) = repository_page {
@@ -237,6 +255,9 @@ pub async fn run(ctx: &super::Context, input: &str, url_only: bool, capture_dir:
             return Err(error.into());
         }
     };
+    let resources = if let Some(dir) = cloud_metadata {
+        cloud::bind(dir, &doi, &response.final_url, &mut discovery, resources)?
+    } else { resources };
     if url_only {
         println!("{}", serde_json::to_string_pretty(&serde_json::json!({"parent_id":doi,"role":"supplement","status":if resources.is_empty() {"no_links"} else {"discovered"},"discovery":discovery,"resources":resources}))?);
         return Ok(());
@@ -277,8 +298,13 @@ where F: Fn(String) -> Fut, Fut: std::future::Future<Output = Result<PublisherRe
             if let (Some(path), Some(expected)) = (old["local_relative_path"].as_str(), old["sha256"].as_str()) {
                 // Only reuse our content-addressed single-component filenames.
                 if Path::new(path).components().count() == 1 && path.starts_with("resource-") {
-                    if std::fs::read(dir.join(path)).is_ok_and(|b| hash(&b) == expected) {
-                        records.push(old.clone()); continue;
+                    if old.get("cloud") == serde_json::to_value(&resource)?.get("cloud")
+                        && std::fs::read(dir.join(path)).is_ok_and(|b| hash(&b) == expected
+                            && resource.cloud.as_ref().is_none_or(|binding| cloud::md5(&b) == binding.expected_md5)) {
+                        let mut reused = old.clone();
+                        reused["label"] = resource.label.into();
+                        reused["declared_url"] = resource.declared_url.into();
+                        records.push(reused); continue;
                     }
                 }
             }
@@ -295,7 +321,10 @@ where F: Fn(String) -> Fut, Fut: std::future::Future<Output = Result<PublisherRe
                 record[key] = value.clone();
             }
             if !(200..300).contains(&response.status) { return Err(format!("HTTP {} for {}", response.status, response.final_url).into()); }
-            let extension = validated_extension(&response.mime, &response.bytes)?;
+            let extension = if let Some(binding) = &resource.cloud {
+                record["md5"] = cloud::md5(&response.bytes).into();
+                cloud::validate_response(&resource.url, binding, &response)?
+            } else { validated_extension(&response.mime, &response.bytes)? };
             let digest = hash(&response.bytes);
             let filename = format!("resource-{digest}.{extension}");
             atomic(&dir.join(&filename), &response.bytes)?;
@@ -421,10 +450,101 @@ mod tests {
         }
     }
     fn resource(name: &str) -> Resource {
-        Resource { label: name.into(), declared_url: name.into(), url: format!("https://www.frontiersin.org/{name}") }
+        Resource { label: name.into(), declared_url: name.into(), url: format!("https://www.frontiersin.org/{name}"), cloud: None }
     }
     fn response(url: String, bytes: &[u8]) -> PublisherResponse {
         PublisherResponse { final_url: url, status: 200, mime: "image/png".into(), bytes: bytes.into() }
+    }
+    fn cloud_resource(expected_md5: &str) -> Resource {
+        serde_json::from_value(serde_json::json!({
+            "label":"Supplementary Figure", "declared_url":"/articles/instance/7025464/bin/Image.png",
+            "url":"https://pmc-oa-opendata.s3.amazonaws.com/PMC7025464.1/Image.png",
+            "cloud":{"declared_url":"s3://pmc-oa-opendata/PMC7025464.1/Image.png", "original_url":"https://pmc.ncbi.nlm.nih.gov/articles/instance/7025464/bin/Image.png", "expected_md5":expected_md5}
+        })).unwrap()
+    }
+    #[tokio::test]
+    async fn cloud_acquisition_rejects_valid_image_with_wrong_expected_md5() {
+        let temp = tempfile::tempdir().unwrap();
+        let result = acquire(temp.path(), DOI, serde_json::json!({}), vec![cloud_resource("00000000000000000000000000000000")], |url| {
+            std::future::ready(Ok(response(url, b"\x89PNG\r\n\x1a\nimage")))
+        }).await.unwrap();
+        assert_eq!(result["resources"][0]["status"], "failed");
+        assert!(result["resources"][0]["error"].as_str().unwrap().contains("MD5"));
+        assert!(result["resources"][0]["local_relative_path"].is_null());
+    }
+    #[tokio::test]
+    async fn cloud_cache_reuse_refreshes_discovery_fields() {
+        let bytes = b"\x89PNG\r\n\x1a\nimage";
+        let temp = tempfile::tempdir().unwrap();
+        let mut resource = cloud_resource(&cloud::md5(bytes));
+        let first = acquire(temp.path(), DOI, serde_json::json!({"capture":"old"}), vec![resource.clone()], |url| {
+            std::future::ready(Ok(PublisherResponse { final_url:url, status:200, mime:"binary/octet-stream".into(), bytes:bytes.to_vec() }))
+        }).await.unwrap();
+        resource.label = "New label".into();
+        resource.declared_url = "../bin/Image.png".into();
+        let second = acquire(temp.path(), DOI, serde_json::json!({"capture":"new"}), vec![resource], |_| {
+            panic!("verified artifact should be reused");
+            #[allow(unreachable_code)] std::future::ready(Err("unexpected".into()))
+        }).await.unwrap();
+        let old = &first["resources"][0];
+        let new = &second["resources"][0];
+        assert_eq!(new["label"], "New label");
+        assert_eq!(new["declared_url"], "../bin/Image.png");
+        for field in ["sha256", "md5", "local_relative_path", "final_url", "status", "mime"] {
+            assert_eq!(new[field], old[field], "{field}");
+        }
+        assert_eq!(std::fs::read(temp.path().join("supplements").join(new["local_relative_path"].as_str().unwrap())).unwrap(), bytes);
+    }
+    #[tokio::test]
+    async fn cloud_acquisition_accepts_verified_binary_mime_and_preserves_parent() {
+        use md5::{Digest, Md5};
+        let bytes = b"\x89PNG\r\n\x1a\nimage";
+        let expected = format!("{:x}", Md5::digest(bytes));
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("paper.pdf"), b"main").unwrap();
+        std::fs::write(temp.path().join("source.yaml"), b"provenance").unwrap();
+        let resources = vec![cloud_resource(&expected)];
+        let result = acquire(temp.path(), DOI, serde_json::json!({}), resources.clone(), |url| {
+            std::future::ready(Ok(PublisherResponse { final_url:url, status:200, mime:"binary/octet-stream".into(), bytes:bytes.to_vec() }))
+        }).await.unwrap();
+        assert_eq!(result["resources"][0]["status"], "acquired");
+        assert_eq!(result["resources"][0]["md5"], expected);
+        acquire(temp.path(), DOI, serde_json::json!({}), resources, |_| {
+            panic!("intact verified Cloud artifact must be reused");
+            #[allow(unreachable_code)] std::future::ready(Err("unexpected".into()))
+        }).await.unwrap();
+        assert_eq!(std::fs::read(temp.path().join("paper.pdf")).unwrap(), b"main");
+        assert_eq!(std::fs::read(temp.path().join("source.yaml")).unwrap(), b"provenance");
+        assert!(validated_extension("binary/octet-stream", bytes).is_err());
+    }
+    #[tokio::test]
+    async fn cloud_acquisition_rejects_changed_object_mime_magic_and_stale_cache_md5() {
+        let bytes = b"\x89PNG\r\n\x1a\nimage";
+        let expected = cloud::md5(bytes);
+        for (mime, body, changed_object) in [("image/jpeg", bytes.as_slice(), false),
+            ("binary/octet-stream", b"<html>denied</html>".as_slice(), false),
+            ("image/png", bytes.as_slice(), true)] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut resource = cloud_resource(&cloud::md5(body));
+            resource.cloud.as_mut().unwrap().expected_md5 = cloud::md5(body);
+            let result = acquire(temp.path(), DOI, serde_json::json!({}), vec![resource], |url| {
+                std::future::ready(Ok(PublisherResponse { final_url: if changed_object { url.replace("7025464", "9999999") } else { url }, status:200, mime:mime.into(), bytes:body.to_vec() }))
+            }).await.unwrap();
+            assert_eq!(result["resources"][0]["status"], "failed");
+            assert!(result["resources"][0]["local_relative_path"].is_null());
+            assert_eq!(result["resources"][0]["sha256"], hash(body));
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let resources = vec![cloud_resource(&expected)];
+        let mut first = acquire(temp.path(), DOI, serde_json::json!({}), resources.clone(), |url| std::future::ready(Ok(response(url, bytes)))).await.unwrap();
+        let path = first["resources"][0]["local_relative_path"].as_str().unwrap().to_string();
+        let corrupt = b"\x89PNG\r\n\x1a\nother";
+        std::fs::write(temp.path().join("supplements").join(path), corrupt).unwrap();
+        first["resources"][0]["sha256"] = hash(corrupt).into();
+        std::fs::write(temp.path().join("supplements/manifest.json"), serde_json::to_vec(&first).unwrap()).unwrap();
+        let calls = std::cell::Cell::new(0);
+        acquire(temp.path(), DOI, serde_json::json!({}), resources, |url| { calls.set(calls.get() + 1); std::future::ready(Ok(response(url, bytes))) }).await.unwrap();
+        assert_eq!(calls.get(), 1, "current metadata MD5 is checked even when the previous SHA matches cached bytes");
     }
     async fn rejected_response(status: u16, mime: &str, body: &[u8], block_storage: bool) -> serde_json::Value {
         let temp = tempfile::tempdir().unwrap();

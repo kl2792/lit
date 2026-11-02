@@ -24,10 +24,10 @@ test-supplements-cli: build ## Verify supplementary acquisition CLI registration
 	sh test/supplements-cli.sh $(CURDIR)/target/debug/lit
 
 supplements-discover: build ## Discover declared supplements (DOI=..., optional PAGE=PMC article URL)
-	./target/debug/lit download '$(DOI)' --supplements --url-only --json $(if $(CAPTURE),--capture-discovery '$(CAPTURE)') $(if $(PAGE),--supplements-page '$(PAGE)') $(if $(DISCOVERY),--from-discovery '$(DISCOVERY)')
+	./target/debug/lit download '$(DOI)' --supplements --url-only --json $(if $(CAPTURE),--capture-discovery '$(CAPTURE)') $(if $(PAGE),--supplements-page '$(PAGE)') $(if $(DISCOVERY),--from-discovery '$(DISCOVERY)') $(if $(CLOUD_METADATA),--cloud-metadata '$(CLOUD_METADATA)')
 
 supplements-download: build ## Acquire declared supplements (DOI=..., optional PAGE=PMC article URL)
-	./target/debug/lit download '$(DOI)' --supplements --json $(if $(PAGE),--supplements-page '$(PAGE)') $(if $(DISCOVERY),--from-discovery '$(DISCOVERY)')
+	./target/debug/lit download '$(DOI)' --supplements --json $(if $(PAGE),--supplements-page '$(PAGE)') $(if $(DISCOVERY),--from-discovery '$(DISCOVERY)') $(if $(CLOUD_METADATA),--cloud-metadata '$(CLOUD_METADATA)')
 
 test-supplements: ## Run supplementary artifact regression tests
 	cargo test supplements $(if $(TEST_LOG),> '$(TEST_LOG)' 2>&1)

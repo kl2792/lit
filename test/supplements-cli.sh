@@ -4,6 +4,7 @@ set -eu
 "$1" download --help | grep -- --supplements
 "$1" download --help | grep -- --supplements-page
 "$1" download --help | grep -- --from-discovery
+"$1" download --help | grep -- --cloud-metadata
 scratch=$(mktemp -d "$PWD/tmp/supplements-cli.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT HUP INT TERM
 status=0
@@ -33,3 +34,11 @@ LIT_DB_PATH="$scratch/lit.db" "$1" download 10.1/different --supplements --from-
 test "$status" -eq 1
 test ! -s "$scratch/wrong-doi.json"
 grep 'does not confirm requested DOI' "$scratch/wrong-doi.err"
+LIT_DB_PATH="$scratch/lit.db" "$1" download 10.3389/fncom.2020.00006 --supplements --from-discovery "$PWD/test/fixtures/pmc" --cloud-metadata "$PWD/test/fixtures/pmc-cloud" --url-only --json > "$scratch/cloud.json"
+grep 'pmc-oa-opendata.s3.amazonaws.com/PMC7025464.1/Image_7.jpg' "$scratch/cloud.json"
+test "$(grep -c 'expected_md5' "$scratch/cloud.json")" -eq 7
+test "$(grep -c '"label"' "$scratch/cloud.json")" -eq 7
+status=0
+LIT_DB_PATH="$scratch/lit.db" "$1" download 10.3389/fncom.2020.00006 --supplements --cloud-metadata "$PWD/test/fixtures/pmc-cloud" --url-only --json > "$scratch/cloud-without-article.json" 2> "$scratch/cloud-without-article.err" || status=$?
+test "$status" -eq 2
+grep -- --from-discovery "$scratch/cloud-without-article.err"

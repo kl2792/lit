@@ -368,6 +368,9 @@ Discovery uses the page's declared asset links for that article.
 Omit `--url-only` to acquire the validated files into the cached parent article's existing supplementary directory.
 To reuse an already captured page, replace `--supplements-page URL` with `--from-discovery PATH`.
 The command checks the capture's hash, DOI and article binding before using its declared links, and retains the original discovery provenance.
+When the official PMC Cloud JSON supplies the corresponding media objects, add `--cloud-metadata PATH` to that replay command.
+The Cloud capture must contain the original `metadata.json` bytes and a `response.json` receipt with the official metadata URL, status, MIME, byte length, SHA256 and retrieval time.
+The command checks the DOI, PMCID, version and license, selects only the previously identified supplements, and verifies each supplied MD5 before storing or reusing an object.
 
 ## 8. Survey a topic: local vs. remote search
 
