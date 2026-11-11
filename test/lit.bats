@@ -188,6 +188,13 @@ assert papers[0]["hop"] == 0 and papers[0]["id_key"] == "arxiv:2408.01416", pape
     [[ "$output" =~ ^lit\ [0-9]+\.[0-9]+\.[0-9]+\ \([0-9a-f]+\)$ ]]
 }
 
+@test "db path: the pdf store names LIT_PROJECT_ROOT when that set it" {
+    root="$BATS_TEST_TMPDIR/library"
+    run env LIT_PROJECT_ROOT="$root" "$LIT" db path
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"pdf store   $root/etc/pdf  [LIT_PROJECT_ROOT]"* ]]
+}
+
 @test "help flag: -h" {
     run "$LIT" -h
     [[ "$output" =~ "lit" ]]

@@ -17,6 +17,9 @@ const ROOT_ENV: &str = "LIT_PROJECT_ROOT";
 /// Directory whose presence, non-empty, marks a directory as the project root.
 const ARTIFACT_DIR: &str = "etc/pdf";
 
+/// Source label for a project root found by the upward search.
+const ROOT_DEFAULT_SOURCE: &str = "default, found from the working directory";
+
 /// Resolve the main database path and name the source that won.
 ///
 /// `LIT_DB_PATH` wins; otherwise the path is taken relative to the executable,
@@ -42,15 +45,19 @@ pub fn db_path() -> (PathBuf, &'static str) {
     )
 }
 
-/// Resolve the project root from an override and a working directory.
+/// Resolve the project root from an override and a working directory, and name
+/// the source that won.
 ///
 /// `LIT_PROJECT_ROOT` wins; otherwise the search walks up from `cwd` for a
 /// non-empty `etc/pdf/`. Failure is an error rather than the working directory,
 /// because a scan rooted at the wrong place finds no artifacts and reports the
 /// same success as a scan that found everything intact.
-fn resolve_project_root(env_value: Option<PathBuf>, cwd: &Path) -> Result<PathBuf, String> {
+fn resolve_project_root(
+    env_value: Option<PathBuf>,
+    cwd: &Path,
+) -> Result<(PathBuf, &'static str), String> {
     if let Some(root) = env_value {
-        return Ok(root);
+        return Ok((root, ROOT_ENV));
     }
     let mut dir = cwd;
     loop {
@@ -58,7 +65,7 @@ fn resolve_project_root(env_value: Option<PathBuf>, cwd: &Path) -> Result<PathBu
         if artifacts.is_dir()
             && std::fs::read_dir(&artifacts).map(|mut d| d.next().is_some()).unwrap_or(false)
         {
-            return Ok(dir.to_path_buf());
+            return Ok((dir.to_path_buf(), ROOT_DEFAULT_SOURCE));
         }
         match dir.parent() {
             Some(p) => dir = p,
@@ -78,8 +85,11 @@ fn resolve_project_root(env_value: Option<PathBuf>, cwd: &Path) -> Result<PathBu
 /// `lit download`'s output directory is derived from the root rather than
 /// searched for again, so a download lands in the same tree `lit check` scans
 /// whatever directory the command was run from.
-fn resolve_artifact_dir(env_value: Option<PathBuf>, cwd: &Path) -> Result<PathBuf, String> {
-    resolve_project_root(env_value, cwd).map(|root| root.join(ARTIFACT_DIR))
+fn resolve_artifact_dir(
+    env_value: Option<PathBuf>,
+    cwd: &Path,
+) -> Result<(PathBuf, &'static str), String> {
+    resolve_project_root(env_value, cwd).map(|(root, source)| (root.join(ARTIFACT_DIR), source))
 }
 
 /// The override and the working directory, the inputs every root resolver takes.
@@ -92,11 +102,16 @@ fn root_inputs() -> Result<(Option<PathBuf>, PathBuf), String> {
 /// The project root for this process.
 pub fn project_root() -> Result<PathBuf, String> {
     let (env_value, cwd) = root_inputs()?;
-    resolve_project_root(env_value, &cwd)
+    resolve_project_root(env_value, &cwd).map(|(root, _)| root)
 }
 
 /// The artifact directory for this process.
 pub fn artifact_dir() -> Result<PathBuf, String> {
+    artifact_dir_with_source().map(|(dir, _)| dir)
+}
+
+/// The artifact directory for this process, with the source that set it.
+pub fn artifact_dir_with_source() -> Result<(PathBuf, &'static str), String> {
     let (env_value, cwd) = root_inputs()?;
     resolve_artifact_dir(env_value, &cwd)
 }
@@ -138,7 +153,7 @@ mod tests {
     fn project_root_env_override_wins() {
         let tmp = tempfile::tempdir().unwrap();
         let root = resolve_project_root(Some(PathBuf::from("/srv/corpus")), tmp.path()).unwrap();
-        assert_eq!(root, PathBuf::from("/srv/corpus"));
+        assert_eq!(root, (PathBuf::from("/srv/corpus"), "LIT_PROJECT_ROOT"));
     }
 
     #[test]
@@ -150,11 +165,12 @@ mod tests {
         let start = tmp.path().join("a/b/c");
         std::fs::create_dir_all(&start).unwrap();
 
-        let root = resolve_project_root(None, &start).unwrap();
+        let (root, source) = resolve_project_root(None, &start).unwrap();
         assert_eq!(
             std::fs::canonicalize(root).unwrap(),
             std::fs::canonicalize(tmp.path()).unwrap()
         );
+        assert_eq!(source, "default, found from the working directory");
     }
 
     #[test]
@@ -167,8 +183,8 @@ mod tests {
         let start = tmp.path().join("a/b/c");
         std::fs::create_dir_all(&start).unwrap();
 
-        let from_deep = resolve_artifact_dir(None, &start).unwrap();
-        let from_root = resolve_artifact_dir(None, tmp.path()).unwrap();
+        let (from_deep, _) = resolve_artifact_dir(None, &start).unwrap();
+        let (from_root, _) = resolve_artifact_dir(None, tmp.path()).unwrap();
         assert_eq!(from_deep, from_root);
         assert_eq!(from_root, tmp.path().join(ARTIFACT_DIR));
     }
@@ -177,7 +193,7 @@ mod tests {
     fn artifact_dir_follows_the_root_override() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = resolve_artifact_dir(Some(PathBuf::from("/srv/corpus")), tmp.path()).unwrap();
-        assert_eq!(dir, PathBuf::from("/srv/corpus/etc/pdf"));
+        assert_eq!(dir, (PathBuf::from("/srv/corpus/etc/pdf"), "LIT_PROJECT_ROOT"));
     }
 
     /// Falling back to a relative `etc/pdf` would write the artifact under

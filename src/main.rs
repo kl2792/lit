@@ -543,11 +543,8 @@ fn run_db_path(db_path: &std::path::Path, db_path_source: &str) {
         clio_source
     );
 
-    match cmd::read::find_pdf_base() {
-        Ok(p) => println!(
-            "pdf store   {}  [default, found from the working directory]",
-            p.display()
-        ),
+    match paths::artifact_dir_with_source() {
+        Ok((p, source)) => println!("pdf store   {}  [{}]", p.display(), source),
         Err(e) => println!("pdf store   unresolved: {}", e),
     }
 }
