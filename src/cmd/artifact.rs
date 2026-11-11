@@ -179,6 +179,10 @@ pub(crate) fn candidate_names(slug: &str) -> impl Iterator<Item = String> + '_ {
 /// therefore never writes into a directory holding or being written with
 /// another paper, or holding content of unknown provenance.
 pub(crate) fn claim_dir(base: &Path, slug: &str, id: &Target) -> std::io::Result<Claim> {
+    // `base` is etc/pdf/ under a resolved root, so creating it never roots a
+    // library where the user merely stood: only LIT_PROJECT_ROOT names a root
+    // whose etc/pdf/ may not exist yet (ADR-003).
+    std::fs::create_dir_all(base)?;
     if let Some(own) = owner_dir(base, id)? {
         return Ok(Claim { dir: own, lock: None });
     }
@@ -319,6 +323,18 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let id = Target::Arxiv("2502.11447".into());
         assert_eq!(claim_dir(base.path(), "wang2025does", &id).unwrap().dir(), base.path().join("wang2025does"));
+    }
+
+    #[test]
+    fn claim_dir_creates_a_missing_artifact_dir() {
+        // A new LIT_PROJECT_ROOT has no etc/pdf/ yet; the first download failed
+        // with a bare "No such file or directory (os error 2)".
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("etc/pdf");
+        let id = Target::Arxiv("1706.03762".into());
+        let claim = claim_dir(&base, "vaswani2017attention", &id).unwrap();
+        assert_eq!(claim.dir(), base.join("vaswani2017attention"));
+        assert!(claim.dir().is_dir());
     }
 
     #[test]

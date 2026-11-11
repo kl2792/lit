@@ -19,7 +19,7 @@ pub enum ReadError {
     /// A matching directory exists but no main tex file or other readable
     /// content could be identified in it.
     Unreadable { dir: PathBuf, message: String },
-    /// Any other failure (missing etc/pdf root, IO error, ambiguous match).
+    /// Any other failure (IO error, ambiguous match).
     Other(String),
 }
 
@@ -53,6 +53,11 @@ impl std::error::Error for ReadError {}
 /// directory whose source.yaml names other papers is never a match, whatever
 /// its name. Dot-prefixed directories (staging) never match.
 fn find_paper_dir_in(base: &Path, query: &str) -> Result<PathBuf, ReadError> {
+    // A root named by LIT_PROJECT_ROOT may have no etc/pdf/ yet: nothing is
+    // local, so an id is fetched rather than failing on the missing directory.
+    if !base.exists() {
+        return Err(ReadError::NotFound(query.to_string()));
+    }
     let io_err = |e: std::io::Error| ReadError::Other(e.to_string());
     let id = paper_id(query);
     if let Some(id) = &id {
@@ -559,6 +564,19 @@ mod tests {
     }
 
     const MAIN_TEX: (&str, &str) = ("main.tex", "\\documentclass{article}\n");
+
+    #[test]
+    fn a_missing_artifact_dir_is_planned_as_a_fetch() {
+        // A new LIT_PROJECT_ROOT has no etc/pdf/ yet; `lit read <arXiv id>`
+        // failed with a bare "No such file or directory (os error 2)".
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("etc/pdf");
+        assert_eq!(
+            plan_in(&base, "1706.03762", false).unwrap(),
+            Plan::Fetch(Target::Arxiv("1706.03762".into()))
+        );
+        assert!(matches!(plan_in(&base, "nosuchpaper", false), Err(ReadError::NotFound(_))));
+    }
 
     #[test]
     fn a_metadata_only_directory_is_planned_as_a_refetch() {
