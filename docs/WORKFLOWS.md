@@ -348,6 +348,7 @@ Its article XML supplies relative URI references; their availability requires se
 
 For an explicit diagnostic capture, add `--capture-discovery PATH`.
 This writes the landing response and provenance to that directory, including an HTTP denial response when received.
+Captured landing and XML text has credential-shaped strings, such as a publisher's embedded browser API key, replaced by same-length placeholders; the receipt's `sha256` then covers the stored bytes and `credential_redactions` counts the replacements.
 For an unrecognized page it also captures a publisher XML URL declared in `citation_xml_url`, when present.
 It resolves declared supplementary XML URIs using the document URL and inherited `xml:base`, and records each retrieval response or failure.
 On discovery failure with capture enabled, the command attempts the first anchor whose absolute URL passes the publisher scope check and whose path ends in `/epub`, if execution reaches that stage.

@@ -11,6 +11,7 @@ The initial resolver supports Frontiers article HTML only.
 Unsupported publishers, an unrecognized page, a denied response, and a recognized page with no supplementary links have distinct results.
 Successful discovery returns publisher labels, declared URLs and response metadata in JSON.
 Landing bytes persist only with `--capture-discovery PATH`, which writes `landing.html` and `response.json` under that path.
+The capture replaces credential-shaped strings with same-length placeholders so it can be committed as a fixture; `response.json` then hashes the stored bytes and counts the replacements in `credential_redactions`.
 It never guesses supplementary filenames.
 
 An explicit `--supplements-page URL` may name a PMC article page when the publisher route does not expose the needed files.

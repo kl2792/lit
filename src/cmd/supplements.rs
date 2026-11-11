@@ -128,10 +128,22 @@ fn now() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EP
 fn provenance(url: &str, response: &PublisherResponse) -> serde_json::Value {
     serde_json::json!({"requested_url":url,"final_url":response.final_url,"http_status":response.status,"mime_type":response.mime,"byte_length":response.bytes.len(),"sha256":hash(&response.bytes),"retrieved_at":now()})
 }
-fn capture(dir: &Path, response: &PublisherResponse, provenance: &serde_json::Value) -> Result<(), Error> {
+/// Writes captured publisher text as `body` and its provenance receipt as
+/// `receipt` under `dir`. Credential-shaped strings, such as the browser API key
+/// a publisher embeds in its pages, are overwritten by same-length placeholders
+/// so a capture can be committed as a test fixture. When anything is redacted,
+/// the receipt's `sha256` covers the stored bytes, which `--from-discovery`
+/// verifies, and `credential_redactions` counts the replacements.
+fn capture(dir: &Path, body: &str, receipt: &str, bytes: &[u8], provenance: &serde_json::Value) -> Result<(), Error> {
+    let (stored, redactions) = crate::secrets::redact(bytes);
+    let mut provenance = provenance.clone();
+    if redactions > 0 {
+        provenance["sha256"] = hash(&stored).into();
+        provenance["credential_redactions"] = redactions.into();
+    }
     std::fs::create_dir_all(dir)?;
-    atomic(&dir.join("landing.html"), &response.bytes)?;
-    atomic(&dir.join("response.json"), &serde_json::to_vec_pretty(provenance)?)?;
+    atomic(&dir.join(body), &stored)?;
+    atomic(&dir.join(receipt), &serde_json::to_vec_pretty(&provenance)?)?;
     Ok(())
 }
 fn load_discovery(dir: &Path) -> Result<(PublisherResponse, serde_json::Value), Error> {
@@ -206,7 +218,7 @@ pub async fn run(ctx: &super::Context, input: &str, url_only: bool, capture_dir:
         let landing = landing.as_str();
         let response = client.get_publisher(landing).await?;
         let discovery = provenance(landing, &response);
-        if let Some(dir) = capture_dir { capture(dir, &response, &discovery)?; }
+        if let Some(dir) = capture_dir { capture(dir, "landing.html", "response.json", &response.bytes, &discovery)?; }
         (response, discovery)
     };
     if !(200..300).contains(&response.status) { return Err(format!("publisher discovery HTTP {} for {}", response.status, response.final_url).into()); }
@@ -229,8 +241,7 @@ pub async fn run(ctx: &super::Context, input: &str, url_only: bool, capture_dir:
                 let nodes = html::parse(landing_body);
                 if let Some(xml_url) = html::meta_all(&nodes, "citation_xml_url").first() {
                     let xml = client.get_publisher(xml_url).await?;
-                    atomic(&dir.join("article.xml"), &xml.bytes)?;
-                    atomic(&dir.join("xml-response.json"), &serde_json::to_vec_pretty(&provenance(xml_url, &xml))?)?;
+                    capture(dir, "article.xml", "xml-response.json", &xml.bytes, &provenance(xml_url, &xml))?;
                     if (200..300).contains(&xml.status) && xml.mime.starts_with("text/xml") {
                         let resources = xml_resources(std::str::from_utf8(&xml.bytes)?, &xml.final_url)?;
                         atomic(&dir.join("xml-declared-resources.json"), &serde_json::to_vec_pretty(&resources)?)?;
@@ -409,6 +420,35 @@ mod tests {
         std::fs::write(temp.path().join("response.json"), serde_json::to_vec(&receipt).unwrap()).unwrap();
         std::fs::write(temp.path().join("landing.html"), b"tampered").unwrap();
         assert!(load_discovery(temp.path()).unwrap_err().to_string().contains("hash or length mismatch"));
+    }
+    #[test]
+    fn capture_redacts_credentials_and_records_the_stored_hash_for_replay() {
+        let temp = tempfile::tempdir().unwrap();
+        // Built at run time so this file holds no credential-shaped string.
+        let body = format!("<script>window.__NUXT__.config={{public:{{key:\"AIza{}\"}}}}</script><meta name='citation_doi' content='{DOI}'>", "k".repeat(35));
+        let response = PublisherResponse { final_url: LANDING.into(), status: 200, mime: "text/html".into(), bytes: body.clone().into_bytes() };
+        let served = provenance(LANDING, &response);
+        capture(temp.path(), "landing.html", "response.json", &response.bytes, &served).unwrap();
+        let stored = std::fs::read(temp.path().join("landing.html")).unwrap();
+        assert_eq!(stored.len(), body.len());
+        assert!(crate::secrets::find(&stored).is_empty());
+        assert!(String::from_utf8(stored.clone()).unwrap().contains("REDACTED_GOOGLE_API_KEY_"));
+        let (replayed, receipt) = load_discovery(temp.path()).unwrap();
+        assert_eq!(replayed.bytes, stored);
+        assert_eq!(receipt["sha256"], hash(&stored));
+        assert_eq!(receipt["credential_redactions"], 1);
+        assert_eq!(receipt["byte_length"], served["byte_length"]);
+        assert_eq!(receipt["retrieved_at"], served["retrieved_at"]);
+    }
+    #[test]
+    fn capture_without_credentials_stores_exact_bytes_and_unchanged_provenance() {
+        let temp = tempfile::tempdir().unwrap();
+        let response = PublisherResponse { final_url: LANDING.into(), status: 200, mime: "text/html".into(), bytes: b"<p>no keys</p>".to_vec() };
+        let served = provenance(LANDING, &response);
+        capture(temp.path(), "landing.html", "response.json", &response.bytes, &served).unwrap();
+        assert_eq!(std::fs::read(temp.path().join("landing.html")).unwrap(), response.bytes);
+        let (_, receipt) = load_discovery(temp.path()).unwrap();
+        assert_eq!(receipt, served);
     }
     #[test]
     fn xml_declared_relative_uris_resolve_against_document_url() {

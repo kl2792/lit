@@ -10,6 +10,7 @@ pub mod http;
 pub mod mcp;
 pub mod paths;
 pub mod sanitize;
+pub mod secrets;
 
 /// `lit --version` and the `lit_version` that `lit closure` records: crate
 /// version and git short hash of the build.
