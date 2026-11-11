@@ -242,6 +242,8 @@ make test-unit     # cargo test
 make test-bats     # bats test/lit.bats
 ```
 
+`make test` includes `tests/secret_scan.rs`, which fails if any git-tracked file contains a credential-shaped string; known false positives go in `test/secret-scan-allowlist.txt`.
+
 ### Sandboxed olmOCR
 
 `docker/olmocr` runs image-only PDFs through olmOCR 2 on one NVIDIA GPU.
