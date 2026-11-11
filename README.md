@@ -7,14 +7,51 @@ See [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) for worked examples of common tasks
 
 ## Install
 
+Prerequisites, on macOS or Linux:
+
+1. Rust 1.85 or newer, because the crate uses edition 2024. Install it from <https://rustup.rs>.
+2. git and a C compiler (Xcode Command Line Tools on macOS, `build-essential` on Debian or Ubuntu). The build compiles C code, including a bundled SQLite.
+3. `curl`, which every PDF download uses.
+4. `pdftotext` from Poppler (`brew install poppler` or `apt install poppler-utils`). Without it `lit` still saves PDFs but cannot extract their text, so `lit read` fails on papers that have only a PDF.
+5. `tar` and `gzip`, for arXiv LaTeX source. Both ship with macOS and Linux.
+
+Install both binaries, `lit` and the MCP server `lit-mcp`, into `~/.cargo/bin`:
+
 ```
-cargo build --release
-cp target/release/lit /usr/local/bin/lit
+cargo install --locked --git https://github.com/kl2792/lit
 ```
 
-Or: `make install`
+`--locked` builds the dependency versions pinned in `Cargo.lock`.
+Add `--force` to upgrade an existing install.
 
-Requires Rust 1.85+.
+No API key is required.
+Free `S2_API_KEY` and `OPENALEX_API_KEY` keys avoid the shared anonymous rate limits, and `LIT_EMAIL` sets the contact address sent to Unpaywall; see [Environment](#environment).
+The `clio` commands and the Clio and EZProxy download tiers need a Columbia University login; everything else works without one.
+
+### Where lit keeps its data
+
+1. The database, which holds paper metadata and the response cache, defaults to `etc/lit/lit.db` under the parent of the binary's directory. After `cargo install` that is `~/.cargo/etc/lit/lit.db`. Set `LIT_DB_PATH` to put it elsewhere.
+2. Downloaded papers go to `etc/pdf/<citekey>/` under the project root. The project root is `LIT_PROJECT_ROOT` if set, otherwise the nearest directory above the working directory that holds a non-empty `etc/pdf/`. An empty `etc/pdf/` does not count, so set `LIT_PROJECT_ROOT` before the first download in a new project.
+3. `lit db path` prints each resolved path and the setting that chose it.
+
+### Quickstart
+
+```
+export LIT_PROJECT_ROOT="$PWD"             # papers go to ./etc/pdf/
+lit search "attention is all you need" -l 3
+lit read 1706.03762                        # downloads, then prints the file to read
+lit add 1706.03762 refs.bib                # appends the BibTeX entry
+```
+
+### Claude Code
+
+Register the MCP server, which exposes `search`, `lookup`, `read`, `add`, `refs`, `cites`, `path`, `misc` and `clean` as tools:
+
+```
+claude mcp add --transport stdio --env LIT_PROJECT_ROOT="$PWD" lit -- lit-mcp
+```
+
+Claude Code can also call `lit` directly through its Bash tool.
 
 ## Usage
 
