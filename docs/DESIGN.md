@@ -37,7 +37,7 @@ For *what* it does and *how* to invoke it, see [`README.md`](../README.md).
 | Command | Returns | Backed by |
 |---|---|---|
 | `lit <id>` | One record (or error) | Cache, then arXiv/DOI/ISBN-specific API |
-| `lit search <query>` | Ranked list | OpenAlex by default; `--local` restricts to downloaded papers |
+| `lit search <query>` | Ranked list | Semantic Scholar, falling back to OpenAlex and arXiv, then catalogs (ADR-011); `--local` restricts to downloaded papers |
 
 Two commands, not one with a `--mode` flag.
 Lookup is identity-keyed (deterministic input → single result, cache hit rate near 1.0).

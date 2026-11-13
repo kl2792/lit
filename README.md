@@ -33,7 +33,7 @@ lit "attention is all you need"       # search
 ### Commands
 
 ```
-lit search <query> [-l N] [--local | -s oa|ss|cr|dblp|book|philpapers|clio|all]
+lit search <query> [-l N] [--local | -s oa|ss|arxiv|cr|dblp|book|philpapers|clio|all]
                                  Search papers; remote APIs by default, --local
                                  restricts to downloaded papers
 lit refs <id> [--hops N]         Get references of a paper
@@ -106,15 +106,19 @@ See [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) section 2d.
 
 | Flag | Source | Notes |
 |------|--------|-------|
-| `oa` | OpenAlex | Default primary |
+| `oa` | OpenAlex | Keyless requests share a daily budget per IP; set `OPENALEX_API_KEY` |
 | `ss` | Semantic Scholar | |
+| `arxiv` | arXiv API | Pairs of topic words, relevance sorted |
 | `cr` | CrossRef | |
 | `dblp` | DBLP | CS venue papers |
 | `book` | OpenLibrary | Books |
 | `philpapers` | PhilPapers | Philosophy |
 | `clio` | Columbia Clio catalog | Local index; requires `lit clio sync` |
 | `all` | All sources | Merge results |
-| *(none)* | Cascade | OA -> SS -> CR -> books |
+| *(none)* | Cascade | SS -> OA + arXiv together -> CR -> books -> Clio; stops at the first tier with a result holding half the query's topic words in title, abstract or authors; such results rank first, in each backend's order (ADR-011) |
+
+`--json` results carry `source`, the backend that returned each record.
+A search that finds nothing while a source failed exits nonzero and names every source with its error (ADR-011).
 
 ### Environment
 
@@ -124,7 +128,7 @@ See [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) section 2d.
 | `LIT_PROJECT_ROOT` | nearest directory above the working directory holding a non-empty `etc/pdf/` | Root of the artifact library that `check`, `download` and `read` operate on |
 | `LIT_CLIO_DB_PATH` | `etc/lit/clio.db` (nearest `etc/lit/` above the working directory) | Columbia catalog index |
 | `CURL_TIMEOUT` | `15` | HTTP timeout in seconds |
-| `LIT_MAX_ATTEMPTS` | `5` | HTTP attempts before giving up; waits are the server's Retry-After, else 2s, 4s, 8s, 16s plus up to 50% jitter, at most 60s in total (ADR-004) |
+| `LIT_MAX_ATTEMPTS` | `5` | HTTP attempts before giving up; waits are the server's Retry-After, else 2s, 4s, 8s, 16s plus up to 50% jitter, at most 60s in total (ADR-004), 9s per source in the default search cascade (ADR-011) |
 | `NO_COLOR` | *(unset)* | Set to any non-empty value to disable color |
 | `LIT_EMAIL` | `lit-cli@users.noreply.github.com` | Email for Unpaywall API |
 | `S2_API_KEY` | *(unset)* | Semantic Scholar API key (free, avoids shared rate limits) |

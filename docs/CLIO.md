@@ -181,10 +181,10 @@ A database synced before `clio_doi` existed is version 1: the table is empty, an
 
 ### Using the catalog in search
 
-After `lit clio sync`, the Clio index is tried automatically before remote APIs:
+The default cascade reaches Clio last, after the paper APIs and catalogs (ADR-011):
 
 ```bash
-lit search "lord paradox"           # local lit DB → Clio → SS → OA (cascade)
+lit search "lord paradox"           # SS -> OA + arXiv -> CR -> books -> Clio (cascade)
 lit search --source clio "ancova"   # Clio only (instant, offline)
 lit search --source oa "attention"  # OpenAlex only (skips Clio)
 ```

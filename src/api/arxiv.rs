@@ -9,26 +9,84 @@ pub fn query_url(arxiv_id: &str) -> String {
     format!("https://export.arxiv.org/api/query?id_list={}", arxiv_id)
 }
 
+/// Most query words `search_url` pairs; 8 words make 28 clauses.
+const MAX_QUERY_WORDS: usize = 8;
+
+/// Build URL for a relevance-sorted free-text search of up to `limit` papers.
+///
+/// The query ORs every pair of the query's topic words (`query_words`), each
+/// pair ANDed across all fields: `(all:a AND all:b) OR (all:a AND all:c) ...`.
+/// A paper must match two words to appear, and arXiv's relevance score rises
+/// with the number of pairs it matches. ANDing every word returns nothing for
+/// most queries of four or more words; ORing single words ranks papers that
+/// repeat one rare word above papers that match several.
+pub fn search_url(query: &str, limit: usize) -> String {
+    let words: Vec<String> = super::query_words(query).into_iter().take(MAX_QUERY_WORDS).collect();
+    let expr = if words.len() == 1 {
+        format!("all:{}", words[0])
+    } else {
+        let mut pairs = Vec::new();
+        for (i, a) in words.iter().enumerate() {
+            for b in &words[i + 1..] {
+                pairs.push(format!("(all:{} AND all:{})", a, b));
+            }
+        }
+        pairs.join(" OR ")
+    };
+    format!(
+        "https://export.arxiv.org/api/query?search_query={}&sortBy=relevance&max_results={}",
+        super::urlencode(&expr),
+        limit
+    )
+}
+
+/// Parse a search feed into one record per entry, with full abstracts.
+/// An empty feed is no results; arXiv's error entry is an error.
+pub fn parse_search(xml: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
+    parse_feed(xml)
+}
+
 /// Parse an arXiv Atom XML response into a `PaperResult`.
 ///
 /// Extracts title, summary (truncated to 200 chars), published date, authors,
 /// and the PDF link from the first `<entry>` element.
 pub fn parse_entry(xml: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
+    let mut paper = parse_feed(xml)?
+        .into_iter()
+        .next()
+        .ok_or("no entry found in arXiv response")?;
+    if let Some(summary) = paper.abstract_text.as_mut() {
+        if summary.len() > 200 {
+            *summary = format!("{}...", summary[..summary.floor_char_boundary(200)].trim());
+        }
+    }
+    Ok(paper)
+}
+
+/// The fields of one `<entry>` as read so far.
+#[derive(Default)]
+struct EntryFields {
+    title: String,
+    summary: String,
+    published: String,
+    entry_id: String,
+    authors: Vec<String>,
+    pdf_url: Option<String>,
+    categories: Vec<String>,
+}
+
+/// Every titled `<entry>` of an Atom feed, in feed order, with full summaries.
+/// An entry whose id is under `arxiv.org/api/errors` makes the feed an error.
+fn parse_feed(xml: &str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
     let mut reader = Reader::from_str(xml);
+    let mut papers = Vec::new();
 
     // State machine: track where we are in the document
     let mut in_entry = false;
     let mut in_author = false;
     let mut current_tag: Option<EntryTag> = None;
-
-    let mut title = String::new();
-    let mut summary = String::new();
-    let mut published = String::new();
-    let mut entry_id = String::new();
-    let mut authors: Vec<String> = Vec::new();
+    let mut entry = EntryFields::default();
     let mut current_author_name = String::new();
-    let mut pdf_url: Option<String> = None;
-    let mut categories: Vec<String> = Vec::new();
 
     let mut buf = Vec::new();
 
@@ -42,6 +100,7 @@ pub fn parse_entry(xml: &str) -> Result<PaperResult, Box<dyn std::error::Error>>
                 match local {
                     b"entry" if is_atom => {
                         in_entry = true;
+                        entry = EntryFields::default();
                     }
                     b"title" if in_entry && is_atom => {
                         current_tag = Some(EntryTag::Title);
@@ -79,15 +138,15 @@ pub fn parse_entry(xml: &str) -> Result<PaperResult, Box<dyn std::error::Error>>
                             }
                         }
                         if is_pdf {
-                            pdf_url = href;
+                            entry.pdf_url = href;
                         }
                     }
                     b"category" if in_entry => {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"term" {
                                 let term = String::from_utf8_lossy(attr.value.as_ref()).to_string();
-                                if !categories.contains(&term) {
-                                    categories.push(term);
+                                if !entry.categories.contains(&term) {
+                                    entry.categories.push(term);
                                 }
                             }
                         }
@@ -99,10 +158,10 @@ pub fn parse_entry(xml: &str) -> Result<PaperResult, Box<dyn std::error::Error>>
                 if let Some(ref tag) = current_tag {
                     let text = e.unescape().unwrap_or_default();
                     match tag {
-                        EntryTag::Title => title.push_str(&text),
-                        EntryTag::Summary => summary.push_str(&text),
-                        EntryTag::Published => published.push_str(&text),
-                        EntryTag::Id => entry_id.push_str(&text),
+                        EntryTag::Title => entry.title.push_str(&text),
+                        EntryTag::Summary => entry.summary.push_str(&text),
+                        EntryTag::Published => entry.published.push_str(&text),
+                        EntryTag::Id => entry.entry_id.push_str(&text),
                         EntryTag::AuthorName => current_author_name.push_str(&text),
                     }
                 }
@@ -111,10 +170,19 @@ pub fn parse_entry(xml: &str) -> Result<PaperResult, Box<dyn std::error::Error>>
                 let name = e.name();
                 let local = local_name(name.as_ref());
                 match local {
-                    b"entry" => break, // only parse first entry
+                    b"entry" if in_entry => {
+                        in_entry = false;
+                        let fields = std::mem::take(&mut entry);
+                        if fields.entry_id.contains("arxiv.org/api/errors") {
+                            return Err(format!("arXiv API error: {}", fields.summary.trim()).into());
+                        }
+                        if !fields.title.trim().is_empty() {
+                            papers.push(entry_to_paper(fields));
+                        }
+                    }
                     b"author" => {
                         if !current_author_name.is_empty() {
-                            authors.push(current_author_name.trim().to_string());
+                            entry.authors.push(current_author_name.trim().to_string());
                         }
                         in_author = false;
                         current_tag = None;
@@ -131,49 +199,38 @@ pub fn parse_entry(xml: &str) -> Result<PaperResult, Box<dyn std::error::Error>>
         }
         buf.clear();
     }
+    Ok(papers)
+}
 
-    if title.is_empty() {
-        return Err("no entry found in arXiv response".into());
-    }
-
-    // Clean up title: collapse whitespace
-    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
-
-    // Truncate abstract to 200 chars
-    let abstract_text = if summary.len() > 200 {
-        let truncated = &summary[..summary.floor_char_boundary(200)];
-        Some(format!("{}...", truncated.trim()))
-    } else {
-        Some(summary.trim().to_string())
-    };
+/// One entry's fields as a record: whitespace in the title collapsed, the
+/// summary trimmed, year and date cut from `published`, the id unversioned.
+fn entry_to_paper(e: EntryFields) -> PaperResult {
+    let title = e.title.split_whitespace().collect::<Vec<_>>().join(" ");
 
     // Extract year from published date (format: "2020-06-19T...")
-    let year = published.get(..4).unwrap_or("?").to_string();
+    let year = e.published.get(..4).unwrap_or("?").to_string();
 
     // Extract published date (first 10 chars: "2020-06-19")
-    let published_date = if published.len() >= 10 {
-        Some(published[..10].to_string())
-    } else if !published.is_empty() {
-        Some(published.clone())
+    let published_date = if e.published.len() >= 10 {
+        Some(e.published[..10].to_string())
+    } else if !e.published.is_empty() {
+        Some(e.published.clone())
     } else {
         None
     };
 
-    // Extract clean arxiv_id from the entry id URL, stripping version
-    // e.g. "http://arxiv.org/abs/2006.11239v2" -> "2006.11239"
-    let arxiv_id = extract_arxiv_id(&entry_id);
-
-    Ok(PaperResult {
+    PaperResult {
         title,
-        authors,
+        authors: e.authors,
         year,
-        arxiv_id: Some(arxiv_id),
-        pdf_url,
-        abstract_text,
+        // e.g. "http://arxiv.org/abs/2006.11239v2" -> "2006.11239"
+        arxiv_id: Some(extract_arxiv_id(&e.entry_id)),
+        pdf_url: e.pdf_url,
+        abstract_text: Some(e.summary.trim().to_string()),
         published_date,
-        categories,
+        categories: e.categories,
         ..Default::default()
-    })
+    }
 }
 
 /// Tags we track inside an `<entry>`.
@@ -376,6 +433,65 @@ mod tests {
 </feed>"#;
         let result = parse_entry(xml).unwrap();
         assert_eq!(result.title, "Multi Line Title");
+    }
+
+    /// Recorded 2026-11-13 from `search_url("dropout Shapley value hidden units", 25)`.
+    const DROPOUT_SHAPLEY: &str = include_str!("../../test/search/arxiv-dropout-shapley.xml");
+
+    #[test]
+    fn parse_search_reads_every_entry_with_full_abstracts() {
+        let papers = parse_search(DROPOUT_SHAPLEY).unwrap();
+        assert_eq!(papers.len(), 25);
+        let first = &papers[0];
+        assert_eq!(first.title, "Shapley Value as Principled Metric for Structured Network Pruning");
+        assert!(first.arxiv_id.as_deref().is_some_and(|id| !id.contains('v')), "{:?}", first.arxiv_id);
+        assert!(!first.authors.is_empty());
+        assert!(first.year.len() == 4 && first.year.starts_with("20"), "{}", first.year);
+        assert!(first.abstract_text.as_deref().is_some_and(|a| a.len() > 200 && !a.ends_with("...")));
+        assert!(papers.iter().all(|p| !p.title.is_empty() && !p.title.contains("arXiv Query")));
+    }
+
+    #[test]
+    fn parse_search_empty_feed_is_no_results() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>arXiv Query: x</title><id>http://arxiv.org/api/q</id></feed>"#;
+        assert!(parse_search(xml).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_search_error_feed_is_an_error() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/api/errors#incorrect_id_format_for_x</id>
+    <title>Error</title>
+    <summary>incorrect id format for x</summary>
+  </entry>
+</feed>"#;
+        let err = parse_search(xml).unwrap_err().to_string();
+        assert!(err.contains("incorrect id format"), "{}", err);
+    }
+
+    #[test]
+    fn search_url_ors_every_pair_of_content_words() {
+        let url = search_url("dropout of the Shapley value", 25);
+        assert!(url.starts_with("https://export.arxiv.org/api/query?search_query="), "{}", url);
+        assert!(url.ends_with("&sortBy=relevance&max_results=25"), "{}", url);
+        let q = url.split("search_query=").nth(1).unwrap().split('&').next().unwrap();
+        assert_eq!(
+            q,
+            super::super::urlencode(
+                "(all:dropout AND all:shapley) OR (all:dropout AND all:value) OR (all:shapley AND all:value)"
+            )
+        );
+    }
+
+    #[test]
+    fn search_url_single_word_and_word_cap() {
+        let one = search_url("dropout", 5);
+        assert!(one.contains(&format!("search_query={}&", super::super::urlencode("all:dropout"))), "{}", one);
+        let many = search_url("a1 b2 c3 d4 e5 f6 g7 h8 i9 j10", 5);
+        assert!(many.contains("h8") && !many.contains("i9"), "{}", many);
     }
 
     #[test]

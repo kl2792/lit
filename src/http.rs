@@ -127,13 +127,24 @@ impl Client {
         url: &str,
         ttl: u64,
     ) -> Result<String, Box<dyn std::error::Error>> {
+        self.get_cached_within(cache_key, url, ttl, RETRY_BUDGET).await
+    }
+
+    /// `get_cached` with at most `budget` of total sleep across retries.
+    pub async fn get_cached_within(
+        &self,
+        cache_key: &str,
+        url: &str,
+        ttl: u64,
+        budget: Duration,
+    ) -> Result<String, Box<dyn std::error::Error>> {
         if !self.no_cache {
             if let Some(cached) = self.db.cache_get(cache_key, ttl) {
                 return Ok(cached);
             }
         }
 
-        let body = self.get(url).await?;
+        let body = self.get_within(url, budget).await?;
         if !self.no_cache && looks_valid(&body) {
             self.db.cache_set(cache_key, url, &body);
         }
@@ -176,6 +187,11 @@ impl Client {
     ///
     /// Timeouts, connection errors, 429 and 5xx are retried under `with_retries`.
     pub async fn get(&self, url: &str) -> Result<String, Box<dyn std::error::Error>> {
+        self.get_within(url, RETRY_BUDGET).await
+    }
+
+    /// `get` with at most `budget` of total sleep across retries.
+    async fn get_within(&self, url: &str, budget: Duration) -> Result<String, Box<dyn std::error::Error>> {
         let max_attempts = std::env::var("LIT_MAX_ATTEMPTS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -183,7 +199,7 @@ impl Client {
             .unwrap_or(DEFAULT_MAX_ATTEMPTS);
         let outcome = with_retries(
             max_attempts,
-            RETRY_BUDGET,
+            budget,
             || self.attempt(url),
             tokio::time::sleep,
         )
@@ -322,7 +338,13 @@ const DEFAULT_MAX_ATTEMPTS: usize = 5;
 
 /// Longest total sleep across one request's retries. A provider that stays
 /// unavailable longer is treated as down, so callers can fall back elsewhere.
-const RETRY_BUDGET: Duration = Duration::from_secs(60);
+pub const RETRY_BUDGET: Duration = Duration::from_secs(60);
+
+/// Retry budget for a request whose caller has another source to try, such as
+/// one tier of the search cascade: the 2s and 4s backoffs fit with any jitter
+/// (at most 3s + 6s), and a longer Retry-After ends the retries at once, so
+/// the next source answers within about ten seconds.
+pub const FALLBACK_RETRY_BUDGET: Duration = Duration::from_secs(9);
 
 /// A failure worth retrying.
 enum Transient {
@@ -477,7 +499,7 @@ fn looks_valid(body: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{auth_header, is_rate_limited, parse_retry_after, rate_limit_message, with_retries, Attempt, RETRY_BUDGET};
+    use super::{auth_header, is_rate_limited, parse_retry_after, rate_limit_message, with_retries, Attempt, FALLBACK_RETRY_BUDGET, RETRY_BUDGET};
     use std::cell::RefCell;
     use std::time::Duration;
     #[test]
@@ -494,11 +516,20 @@ mod tests {
         max_attempts: usize,
         script: Vec<Attempt<&'static str, &'static str>>,
     ) -> (Result<&'static str, (&'static str, usize, Option<Duration>)>, Vec<Duration>) {
+        drive_within(RETRY_BUDGET, max_attempts, script).await
+    }
+
+    /// `drive` under total sleep budget `budget`.
+    async fn drive_within(
+        budget: Duration,
+        max_attempts: usize,
+        script: Vec<Attempt<&'static str, &'static str>>,
+    ) -> (Result<&'static str, (&'static str, usize, Option<Duration>)>, Vec<Duration>) {
         let script = RefCell::new(script.into_iter());
         let sleeps = RefCell::new(Vec::new());
         let result = with_retries(
             max_attempts,
-            RETRY_BUDGET,
+            budget,
             || std::future::ready(script.borrow_mut().next().expect("script exhausted")),
             |d| {
                 sleeps.borrow_mut().push(d);
@@ -544,6 +575,19 @@ mod tests {
         let (result, sleeps) = drive(50, (0..50).map(|_| transient(None)).collect()).await;
         assert!(result.is_err());
         assert!(sleeps.iter().sum::<Duration>() <= RETRY_BUDGET);
+    }
+
+    #[tokio::test]
+    async fn fallback_budget_gives_up_within_ten_seconds_and_honors_short_retry_after() {
+        let (result, sleeps) = drive_within(FALLBACK_RETRY_BUDGET, 5, (0..5).map(|_| transient(None)).collect()).await;
+        assert!(result.is_err());
+        assert!(FALLBACK_RETRY_BUDGET <= Duration::from_secs(10));
+        assert!(sleeps.iter().sum::<Duration>() <= FALLBACK_RETRY_BUDGET, "{:?}", sleeps);
+        let (result, sleeps) = drive_within(FALLBACK_RETRY_BUDGET, 5, vec![transient(Some(3)), Attempt::Done("body")]).await;
+        assert_eq!((result, sleeps), (Ok("body"), vec![Duration::from_secs(3)]));
+        let (result, sleeps) = drive_within(FALLBACK_RETRY_BUDGET, 5, vec![transient(Some(30))]).await;
+        assert_eq!(result, Err(("rate limited", 1, Some(Duration::from_secs(30)))));
+        assert!(sleeps.is_empty(), "a longer Retry-After falls back at once");
     }
 
     #[tokio::test]

@@ -57,6 +57,8 @@ enum SearchSource {
     Philpapers,
     /// Columbia Clio catalog (local index, requires clio-sync)
     Clio,
+    /// arXiv API (title, abstract and author search)
+    Arxiv,
     /// All sources, merge results
     All,
 }
@@ -369,6 +371,7 @@ async fn main() {
                     SearchSource::Book => cmd::search::Source::Book,
                     SearchSource::Philpapers => cmd::search::Source::PhilPapers,
                     SearchSource::Clio => cmd::search::Source::Clio,
+                    SearchSource::Arxiv => cmd::search::Source::Arxiv,
                     SearchSource::All => cmd::search::Source::All,
                 });
                 cmd::search::run(&ctx, &q, limit, src).await

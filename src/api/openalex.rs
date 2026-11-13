@@ -343,6 +343,20 @@ mod tests {
         assert_eq!(results[0].doi.as_deref(), Some("10.1234/test"));
     }
 
+    /// Recorded 2026-11-13 from `search_url("dropout Shapley value hidden units", 10)`,
+    /// trimmed with jq to the fields `work_to_paper` reads.
+    const DROPOUT_SHAPLEY: &str = include_str!("../../test/search/openalex-dropout-shapley.json");
+
+    #[test]
+    fn parse_search_reads_recorded_free_text_reply() {
+        let papers = parse_search(DROPOUT_SHAPLEY).unwrap();
+        assert_eq!(papers.len(), 10);
+        assert_eq!(papers[0].title, "L-Shapley and C-Shapley: Efficient Model Interpretation for Structured Data");
+        assert_eq!(papers[0].year, "2018");
+        assert!(papers.iter().all(|p| !p.authors.is_empty() && p.authors.iter().all(|a| !a.contains(' '))));
+        assert!(papers.iter().filter(|p| p.abstract_text.is_some()).count() >= 8);
+    }
+
     #[test]
     fn test_parse_work_graph_shortens_ids() {
         let body = r#"{

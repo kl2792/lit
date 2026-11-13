@@ -3,6 +3,9 @@ use crate::api::PaperResult;
 use crate::db;
 use crate::format;
 use crate::http;
+use futures_util::future::join_all;
+use std::future::Future;
+use std::time::Duration;
 
 /// Search source selection.
 #[derive(Clone, Copy, PartialEq)]
@@ -15,104 +18,167 @@ pub enum Source {
     PhilPapers,
     /// Columbia Clio catalog (live JSON API — no sync required)
     Clio,
+    Arxiv,
     All,
 }
 
-/// A searchable API backend. Each variant knows its cache prefix, URL builder, and parser.
+/// A searchable API backend.
 struct Backend {
+    /// Name in notes and errors.
     name: &'static str,
+    /// Cache key prefix.
     prefix: &'static str,
+    /// Value of `source` in `--json` output; `s2` and `openalex` match `lit refs` and `lit cites`.
+    label: &'static str,
     url: fn(&str, usize) -> String,
     parse: fn(&str) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>>,
 }
 
-const BACKENDS: &[Backend] = &[
-    Backend {
-        name: "Semantic Scholar",
-        prefix: "ss",
-        url: crate::api::semantic_scholar::search_url,
-        parse: crate::api::semantic_scholar::parse_search,
-    },
-    Backend {
-        name: "OpenAlex",
-        prefix: "oa",
-        url: crate::api::openalex::search_url,
-        parse: crate::api::openalex::parse_search,
-    },
-    Backend {
-        name: "CrossRef",
-        prefix: "cr",
-        url: crate::api::crossref::search_url,
-        parse: crate::api::crossref::parse_search,
-    },
-    Backend {
-        name: "DBLP",
-        prefix: "dblp",
-        url: crate::api::dblp::search_url,
-        parse: crate::api::dblp::parse_search,
-    },
-    Backend {
-        name: "OpenLibrary",
-        prefix: "book",
-        url: crate::api::openlibrary::search_url,
-        parse: crate::api::openlibrary::parse_search,
-    },
-    Backend {
-        name: "PhilPapers",
-        prefix: "philpapers",
-        url: crate::api::philpapers::search_url,
-        parse: crate::api::philpapers::parse_search,
-    },
-    Backend {
-        name: "Clio",
-        prefix: "clio",
-        url: crate::api::clio::search_url,
-        parse: crate::api::clio::parse_search,
-    },
-];
+const SEMANTIC_SCHOLAR: Backend = Backend {
+    name: "Semantic Scholar",
+    prefix: "ss",
+    label: "s2",
+    url: crate::api::semantic_scholar::search_url,
+    parse: crate::api::semantic_scholar::parse_search,
+};
+const OPENALEX: Backend = Backend {
+    name: "OpenAlex",
+    prefix: "oa",
+    label: "openalex",
+    url: crate::api::openalex::search_url,
+    parse: crate::api::openalex::parse_search,
+};
+const ARXIV: Backend = Backend {
+    name: "arXiv",
+    prefix: "arxiv",
+    label: "arxiv",
+    url: crate::api::arxiv::search_url,
+    parse: crate::api::arxiv::parse_search,
+};
+const CROSSREF: Backend = Backend {
+    name: "CrossRef",
+    prefix: "cr",
+    label: "crossref",
+    url: crate::api::crossref::search_url,
+    parse: crate::api::crossref::parse_search,
+};
+const DBLP: Backend = Backend {
+    name: "DBLP",
+    prefix: "dblp",
+    label: "dblp",
+    url: crate::api::dblp::search_url,
+    parse: crate::api::dblp::parse_search,
+};
+const OPENLIBRARY: Backend = Backend {
+    name: "OpenLibrary",
+    prefix: "book",
+    label: "openlibrary",
+    url: crate::api::openlibrary::search_url,
+    parse: crate::api::openlibrary::parse_search,
+};
+const PHILPAPERS: Backend = Backend {
+    name: "PhilPapers",
+    prefix: "philpapers",
+    label: "philpapers",
+    url: crate::api::philpapers::search_url,
+    parse: crate::api::philpapers::parse_search,
+};
+const CLIO: Backend = Backend {
+    name: "Clio",
+    prefix: "clio",
+    label: "clio",
+    url: crate::api::clio::search_url,
+    parse: crate::api::clio::parse_search,
+};
+
+/// Every backend, queried together by `--source all`.
+const BACKENDS: &[&Backend] = &[&SEMANTIC_SCHOLAR, &OPENALEX, &ARXIV, &CROSSREF, &DBLP, &OPENLIBRARY, &PHILPAPERS, &CLIO];
 
 fn backend_for(source: Source) -> &'static Backend {
     match source {
-        Source::Ss => &BACKENDS[0],
-        Source::Oa => &BACKENDS[1],
-        Source::Cr => &BACKENDS[2],
-        Source::Dblp => &BACKENDS[3],
-        Source::Book => &BACKENDS[4],
-        Source::PhilPapers => &BACKENDS[5],
-        Source::Clio => &BACKENDS[6],
+        Source::Ss => &SEMANTIC_SCHOLAR,
+        Source::Oa => &OPENALEX,
+        Source::Arxiv => &ARXIV,
+        Source::Cr => &CROSSREF,
+        Source::Dblp => &DBLP,
+        Source::Book => &OPENLIBRARY,
+        Source::PhilPapers => &PHILPAPERS,
+        Source::Clio => &CLIO,
         Source::All => unreachable!(),
     }
 }
 
-/// Default cascade: SS -> OA -> CR -> books -> Clio.
-/// Clio is last — it covers books/physical items the others miss, but has lower relevance ranking.
-const CASCADE: &[Source] = &[Source::Ss, Source::Oa, Source::Cr, Source::Book, Source::Clio];
+/// The default cascade (ADR-011), one tier at a time; a tier's backends are
+/// queried together and their results merged. Semantic Scholar, OpenAlex and
+/// arXiv rank title and abstract matches, so they come first; the catalogs
+/// match titles only and are reached when no earlier tier has a good match.
+/// Clio is last: it covers books the others miss but ranks loosely.
+const CASCADE: &[&[&Backend]] = &[
+    &[&SEMANTIC_SCHOLAR],
+    &[&OPENALEX, &ARXIV],
+    &[&CROSSREF],
+    &[&OPENLIBRARY],
+    &[&CLIO],
+];
 
-/// Minimum relevance score (0.0-1.0) for the top result to be considered "good enough"
-/// to stop the cascade. Below this threshold, we try the next source.
-const RELEVANCE_THRESHOLD: f64 = 0.3;
+/// Share of the query's topic words a result must contain in its title,
+/// abstract or authors to be on topic. On-topic results rank first, and a
+/// tier with one ends the cascade.
+const ON_TOPIC_SHARE: f64 = 0.5;
 
-/// Run a search and return structured results.
+/// Fewest results asked of each backend, so local ranking chooses the
+/// top `--limit` from a pool larger than a short limit.
+const MIN_POOL: usize = 25;
+
+/// One search result and the label of the backend that returned it.
+#[derive(Debug, Clone)]
+pub struct Hit {
+    pub paper: PaperResult,
+    pub source: &'static str,
+}
+
+/// What querying some backends produced.
+#[derive(Debug, Default)]
+struct Outcome {
+    hits: Vec<Hit>,
+    /// Backends that failed, by name, with the error each reported.
+    failures: Vec<(&'static str, String)>,
+    /// Backends that answered with no results, by name.
+    empty: Vec<&'static str>,
+}
+
+/// Run a search and return ranked results.
+///
+/// Fails when no result was found and some source failed, naming every
+/// source consulted, so an outage never reads as zero hits.
 pub async fn run_data(
     ctx: &Context,
     query: &str,
     limit: usize,
     source: Option<Source>,
-) -> Result<Vec<PaperResult>, Box<dyn std::error::Error>> {
+) -> Result<Vec<Hit>, Box<dyn std::error::Error>> {
     if query.is_empty() {
         return Err("Usage: lit search <query> [-l N] [-s source]".into());
     }
 
     let client = ctx.client();
-    let results = match source {
-        Some(Source::All) => fetch_all(&client, query, limit).await,
-        Some(src) => fetch_single(&client, query, limit, src).await,
-        None => fetch_cascade(&client, ctx, query, limit).await,
+    let pool = limit.max(MIN_POOL);
+    let outcome = match source {
+        None => {
+            let fetch = |b| fetch_backend(&client, b, query, pool, http::FALLBACK_RETRY_BUDGET);
+            cascade(CASCADE, query, fetch).await
+        }
+        Some(Source::All) => {
+            fetch_tier(BACKENDS, |b| fetch_backend(&client, b, query, pool, http::RETRY_BUDGET)).await
+        }
+        Some(src) => {
+            fetch_tier(&[backend_for(src)], |b| fetch_backend(&client, b, query, pool, http::RETRY_BUDGET)).await
+        }
     };
 
-    let mut results = rerank(results, query);
-    results.truncate(limit);
-    Ok(results)
+    let mut hits = finish(outcome, query)?;
+    hits.truncate(limit);
+    Ok(hits)
 }
 
 /// Run a search with optional source selection.
@@ -122,145 +188,134 @@ pub async fn run(
     limit: usize,
     source: Option<Source>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let results = run_data(ctx, query, limit, source).await?;
-    print_results(ctx, &results);
+    let hits = run_data(ctx, query, limit, source).await?;
+    print_results(ctx, &hits);
     Ok(())
 }
 
-/// Search and return the top result. Used by `lit add` for query resolution.
+/// Search and return the best title match (`best_title_match`). Used by
+/// `lit add` for query resolution.
 pub async fn resolve_top(
     ctx: &Context,
     query: &str,
 ) -> Result<PaperResult, Box<dyn std::error::Error>> {
-    let client = ctx.client();
-    let results = fetch_cascade(&client, ctx, query, 5).await;
-    let results = rerank(results, query);
-    results
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("No results found for: {}", query).into())
+    let hits = run_data(ctx, query, MIN_POOL, None).await?;
+    best_title_match(hits, &query_terms(query)).ok_or_else(|| format!("No results found for: {}", query).into())
 }
 
-/// Fetch from a single backend.
-async fn fetch_single(
-    client: &http::Client,
-    query: &str,
-    limit: usize,
-    source: Source,
-) -> Vec<PaperResult> {
-    let b = backend_for(source);
-    fetch_backend(client, b, query, limit).await
-}
-
-/// Cascade through backends, stopping when we get a good-enough result.
-async fn fetch_cascade(
-    client: &http::Client,
-    ctx: &Context,
-    query: &str,
-    limit: usize,
-) -> Vec<PaperResult> {
-    let query_tokens = tokenize(query);
-    let mut all_results: Vec<PaperResult> = Vec::new();
-
-    for &src in CASCADE {
-        let b = backend_for(src);
-        let results = fetch_backend(client, b, query, limit).await;
-
-        if ctx.verbose {
-            format::info(&format!("Trying {}...", b.name));
-        }
-
-        if results.is_empty() {
-            continue;
-        }
-
-        // Check if the top result is relevant enough to stop
-        let top_score = if is_book_review(&results[0].title) {
-            0.0 // Book review false-positive: keep cascading
-        } else {
-            relevance_score(&results[0], &query_tokens)
-        };
-        if top_score >= RELEVANCE_THRESHOLD {
-            if ctx.verbose {
-                format::info(&format!(
-                    "{}: top result relevance {:.0}%",
-                    b.name,
-                    top_score * 100.0
-                ));
-            }
-            return results;
-        }
-
-        // Low relevance -- collect and try next source
-        if ctx.verbose {
-            format::warn(&format!(
-                "{}: top result relevance {:.0}% (below threshold), trying next source...",
-                b.name,
-                top_score * 100.0
-            ));
-        }
-        eprintln!(
-            "note: {} results may be imprecise, trying other sources",
-            b.name
-        );
-        all_results.extend(results);
-    }
-
-    // All sources had low relevance -- return everything we collected
-    all_results
-}
-
-/// Fetch from all backends concurrently and merge (includes Clio).
-async fn fetch_all(
-    client: &http::Client,
-    query: &str,
-    limit: usize,
-) -> Vec<PaperResult> {
-    let (r0, r1, r2, r3, r4, r5, r6) = tokio::join!(
-        fetch_backend(client, &BACKENDS[0], query, limit),
-        fetch_backend(client, &BACKENDS[1], query, limit),
-        fetch_backend(client, &BACKENDS[2], query, limit),
-        fetch_backend(client, &BACKENDS[3], query, limit),
-        fetch_backend(client, &BACKENDS[4], query, limit),
-        fetch_backend(client, &BACKENDS[5], query, limit),
-        fetch_backend(client, &BACKENDS[6], query, limit),
-    );
-    let mut all = Vec::new();
-    all.extend(r0);
-    all.extend(r1);
-    all.extend(r2);
-    all.extend(r3);
-    all.extend(r4);
-    all.extend(r5);
-    all.extend(r6);
-    all
-}
-
-/// Fetch and parse results from a single backend.
+/// Fetch and parse one backend's results for `query`, retrying for at most `budget`.
 async fn fetch_backend(
     client: &http::Client,
-    backend: &Backend,
+    backend: &'static Backend,
     query: &str,
-    limit: usize,
-) -> Vec<PaperResult> {
+    pool: usize,
+    budget: Duration,
+) -> Result<Vec<PaperResult>, String> {
     let key = db::Db::cache_key(backend.prefix, query);
-    let url = (backend.url)(query, limit);
-    match client.get_cached(&key, &url, db::TTL_SEARCH).await {
-        Ok(body) => match (backend.parse)(&body) {
-            Ok(results) => results,
-            Err(e) => {
-                eprintln!("{}", cascade_note(backend.name, &e));
-                Vec::new()
-            }
-        },
-        Err(e) => {
-            eprintln!("{}", cascade_note(backend.name, &e));
-            Vec::new()
-        }
-    }
+    let url = (backend.url)(query, pool);
+    let body = client
+        .get_cached_within(&key, &url, db::TTL_SEARCH, budget)
+        .await
+        .map_err(|e| e.to_string())?;
+    (backend.parse)(&body).map_err(|e| e.to_string())
 }
 
-// --- Relevance scoring ---
+/// Query every backend of `tier` concurrently through `fetch`.
+async fn fetch_tier<F, Fut>(tier: &[&'static Backend], mut fetch: F) -> Outcome
+where
+    F: FnMut(&'static Backend) -> Fut,
+    Fut: Future<Output = Result<Vec<PaperResult>, String>>,
+{
+    let results = join_all(tier.iter().map(|&b| fetch(b))).await;
+    tier_outcome(tier, results)
+}
+
+/// Sort each backend's reply into hits, failures and empty answers; hits are
+/// interleaved by rank, so equally scored results keep their backends' order.
+fn tier_outcome(tier: &[&'static Backend], results: Vec<Result<Vec<PaperResult>, String>>) -> Outcome {
+    let mut outcome = Outcome::default();
+    let mut lists: Vec<std::vec::IntoIter<Hit>> = Vec::new();
+    for (b, result) in tier.iter().zip(results) {
+        match result {
+            Ok(papers) if papers.is_empty() => outcome.empty.push(b.name),
+            Ok(papers) => lists.push(
+                papers
+                    .into_iter()
+                    .map(|paper| Hit { paper, source: b.label })
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            ),
+            Err(e) => {
+                eprintln!("{}", cascade_note(b.name, &e));
+                outcome.failures.push((b.name, e));
+            }
+        }
+    }
+    while !lists.is_empty() {
+        lists.retain_mut(|list| match list.next() {
+            Some(hit) => {
+                outcome.hits.push(hit);
+                true
+            }
+            None => false,
+        });
+    }
+    outcome
+}
+
+/// Query `tiers` in order through `fetch` until a tier returns an on-topic
+/// result (`on_topic`); that tier's ranked results are the answer. When no
+/// tier does, the answer is every tier's results, in tier order.
+/// Failures and empty answers of every tier queried are kept for reporting.
+async fn cascade<F, Fut>(tiers: &[&[&'static Backend]], query: &str, mut fetch: F) -> Outcome
+where
+    F: FnMut(&'static Backend) -> Fut,
+    Fut: Future<Output = Result<Vec<PaperResult>, String>>,
+{
+    let terms = query_terms(query);
+    let mut seen = Outcome::default();
+    for tier in tiers {
+        let mut outcome = fetch_tier(tier, &mut fetch).await;
+        seen.failures.append(&mut outcome.failures);
+        seen.empty.append(&mut outcome.empty);
+        if outcome.hits.is_empty() {
+            continue;
+        }
+        let ranked = rank(outcome.hits, query);
+        let top = &ranked[0].paper;
+        if !is_book_review(&top.title) && on_topic(top, &terms) {
+            seen.hits = ranked;
+            return seen;
+        }
+        let names: Vec<&str> = tier.iter().map(|b| b.name).collect();
+        eprintln!("note: {} results may be imprecise, trying other sources", names.join(" + "));
+        seen.hits.extend(ranked);
+    }
+    seen
+}
+
+/// The ranked hits of `outcome`, or an error when there are none and some
+/// source failed: the error names each source consulted and what it returned.
+fn finish(outcome: Outcome, query: &str) -> Result<Vec<Hit>, Box<dyn std::error::Error>> {
+    if outcome.hits.is_empty() && !outcome.failures.is_empty() {
+        let mut msg = format!(
+            "search for \"{}\" found nothing: {} of {} sources failed",
+            query,
+            outcome.failures.len(),
+            outcome.failures.len() + outcome.empty.len()
+        );
+        for (name, error) in &outcome.failures {
+            msg.push_str(&format!("\n  {}: {}", name, error));
+        }
+        for name in &outcome.empty {
+            msg.push_str(&format!("\n  {}: no results", name));
+        }
+        return Err(msg.into());
+    }
+    Ok(rank(outcome.hits, query))
+}
+
+// --- Relevance ranking ---
 
 /// Tokenize a string into lowercase alphanumeric words.
 fn tokenize(s: &str) -> Vec<String> {
@@ -270,87 +325,141 @@ fn tokenize(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// Score how relevant a paper result is to the query (0.0 - 1.0).
-/// Uses Jaccard-like overlap of query tokens with title + author tokens.
-fn relevance_score(paper: &PaperResult, query_tokens: &[String]) -> f64 {
-    if query_tokens.is_empty() {
-        return 0.0;
+/// Matching form of a lowercase word: a trailing plural `s` dropped
+/// (`units` matches `unit`), except after `s` (`loss`) and in short words.
+fn fold(word: &str) -> String {
+    if word.len() > 3 && word.ends_with('s') && !word.ends_with("ss") {
+        word[..word.len() - 1].to_string()
+    } else {
+        word.to_string()
     }
-
-    let mut paper_tokens: Vec<String> = tokenize(&paper.title);
-    for author in &paper.authors {
-        paper_tokens.extend(tokenize(author));
-    }
-
-    let matches = query_tokens
-        .iter()
-        .filter(|qt| paper_tokens.iter().any(|pt| pt == *qt))
-        .count();
-
-    matches as f64 / query_tokens.len() as f64
 }
 
-/// Rerank results by relevance to the query, then by citation count.
-fn rerank(mut results: Vec<PaperResult>, query: &str) -> Vec<PaperResult> {
-    if results.is_empty() {
-        return results;
-    }
-
-    let query_tokens = tokenize(query);
-
-    // Deduplicate by DOI (keep first occurrence, which may have more metadata)
-    let mut seen_dois = std::collections::HashSet::new();
-    results.retain(|p| {
-        if let Some(ref doi) = p.doi {
-            let key = doi.to_lowercase();
-            seen_dois.insert(key)
-        } else {
-            true
+/// The query's topic words (`query_words`) in matching form, without repeats.
+fn query_terms(query: &str) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
+    for t in crate::api::query_words(query).iter().map(|w| fold(w)) {
+        if !terms.contains(&t) {
+            terms.push(t);
         }
-    });
+    }
+    terms
+}
 
-    // Sort by: relevance score (desc), then citation count (desc)
-    results.sort_by(|a, b| {
-        let sa = relevance_score(a, &query_tokens);
-        let sb = relevance_score(b, &query_tokens);
-        sb.partial_cmp(&sa)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                let ca = a.citations.unwrap_or(0);
-                let cb = b.citations.unwrap_or(0);
-                cb.cmp(&ca)
-            })
-    });
+/// Share (0.0 to 1.0) of `terms` found among the words of the paper's title and
+/// authors, and also of its abstract when `with_abstract`.
+fn coverage(paper: &PaperResult, terms: &[String], with_abstract: bool) -> f64 {
+    if terms.is_empty() {
+        return 0.0;
+    }
+    let mut words: Vec<String> = tokenize(&paper.title);
+    for author in &paper.authors {
+        words.extend(tokenize(author));
+    }
+    if with_abstract {
+        words.extend(tokenize(paper.abstract_text.as_deref().unwrap_or_default()));
+    }
+    let words: std::collections::HashSet<String> = words.iter().map(|w| fold(w)).collect();
+    terms.iter().filter(|t| words.contains(*t)).count() as f64 / terms.len() as f64
+}
 
-    results
+/// Lowercase alphanumeric words of a title joined by single spaces.
+fn normalized_title(title: &str) -> String {
+    tokenize(title).join(" ")
+}
+
+/// Whether two records are the same work, judged by the strongest identifier
+/// both carry: DOI, then arXiv id, then normalized title.
+fn same_work(a: &PaperResult, b: &PaperResult) -> bool {
+    if let (Some(x), Some(y)) = (&a.doi, &b.doi) {
+        return x.eq_ignore_ascii_case(y);
+    }
+    if let (Some(x), Some(y)) = (&a.arxiv_id, &b.arxiv_id) {
+        return crate::detect::normalize_arxiv(x) == crate::detect::normalize_arxiv(y);
+    }
+    let title = normalized_title(&a.title);
+    !title.is_empty() && title == normalized_title(&b.title)
+}
+
+/// Fill the fields `kept` lacks from `other`, a record of the same work.
+fn absorb(kept: &mut PaperResult, other: PaperResult) {
+    kept.doi = kept.doi.take().or(other.doi);
+    kept.arxiv_id = kept.arxiv_id.take().or(other.arxiv_id);
+    kept.abstract_text = kept.abstract_text.take().or(other.abstract_text);
+    kept.venue = kept.venue.take().or(other.venue);
+    kept.citations = kept.citations.or(other.citations);
+    kept.pdf_url = kept.pdf_url.take().or(other.pdf_url);
+    kept.s2_id = kept.s2_id.take().or(other.s2_id);
+}
+
+/// Whether `paper` holds `ON_TOPIC_SHARE` of `terms` in its title, abstract or authors.
+fn on_topic(paper: &PaperResult, terms: &[String]) -> bool {
+    coverage(paper, terms, true) >= ON_TOPIC_SHARE
+}
+
+/// Merge records of the same work (`same_work`; the earlier record and its
+/// source are kept), then put on-topic results (`on_topic`) before the rest.
+/// Each group keeps the order the backends ranked it: their relevance scores
+/// weight rare words over common ones, which a count of matched words cannot.
+fn rank(hits: Vec<Hit>, query: &str) -> Vec<Hit> {
+    let terms = query_terms(query);
+    let mut kept: Vec<Hit> = Vec::with_capacity(hits.len());
+    for hit in hits {
+        match kept.iter_mut().find(|k| same_work(&k.paper, &hit.paper)) {
+            Some(k) => absorb(&mut k.paper, hit.paper),
+            None => kept.push(hit),
+        }
+    }
+    let (mut ranked, rest): (Vec<Hit>, Vec<Hit>) = kept.into_iter().partition(|h| on_topic(&h.paper, &terms));
+    ranked.extend(rest);
+    ranked
+}
+
+/// The first hit with the largest share of `terms` in its title and authors:
+/// a query naming a title resolves to that title, not to the top-ranked
+/// paper that discusses it.
+fn best_title_match(hits: Vec<Hit>, terms: &[String]) -> Option<PaperResult> {
+    let mut best: Option<(f64, PaperResult)> = None;
+    for hit in hits {
+        let score = coverage(&hit.paper, terms, false);
+        if best.as_ref().is_none_or(|(s, _)| score > *s) {
+            best = Some((score, hit.paper));
+        }
+    }
+    best.map(|(_, paper)| paper)
 }
 
 // --- Output ---
 
+/// `paper_to_json` plus the `source` label of the backend that returned the hit.
+fn hit_to_json(hit: &Hit) -> serde_json::Value {
+    let mut json = super::paper_to_json(&hit.paper);
+    json["source"] = serde_json::Value::String(hit.source.into());
+    json
+}
+
 /// Print search results in JSON, concise, or verbose format.
-fn print_results(ctx: &Context, results: &[PaperResult]) {
-    if results.is_empty() {
+fn print_results(ctx: &Context, hits: &[Hit]) {
+    if hits.is_empty() {
         println!("No results found");
         return;
     }
 
     if ctx.json {
-        let arr: Vec<serde_json::Value> = results
-            .iter()
-            .map(|p| super::paper_to_json(p))
-            .collect();
+        let arr: Vec<serde_json::Value> = hits.iter().map(hit_to_json).collect();
         println!("{}", serde_json::to_string_pretty(&arr).unwrap());
         return;
     }
 
-    for (i, p) in results.iter().enumerate() {
+    for (i, hit) in hits.iter().enumerate() {
+        let p = &hit.paper;
         let rank = i + 1;
         let author = p.authors.first().map(|s| s.as_str()).unwrap_or("?");
 
         if ctx.verbose {
             let cites = p.citations.map(|c| c.to_string()).unwrap_or_default();
             println!("{}. {} ({})", rank, p.title, p.year);
-            println!("   Author: {} | Citations: {}", author, cites);
+            println!("   Author: {} | Citations: {} | Source: {}", author, cites, hit.source);
             if let Some(ref arxiv) = p.arxiv_id {
                 println!("   arXiv: {}", arxiv);
             }
@@ -394,6 +503,211 @@ fn cascade_note(source: &str, error: &dyn std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::{arxiv, crossref, openalex};
+    use std::cell::RefCell;
+
+    const QUERY: &str = "dropout Shapley value hidden units";
+    /// Recorded 2026-11-13; see the parser tests in `api::openalex`, `api::arxiv`.
+    const OA_REPLY: &str = include_str!("../../test/search/openalex-dropout-shapley.json");
+    const ARXIV_REPLY: &str = include_str!("../../test/search/arxiv-dropout-shapley.xml");
+    /// Recorded 2026-11-13 from `crossref::search_url(QUERY, 10)`.
+    const CROSSREF_REPLY: &str = include_str!("../../test/search/crossref-dropout-shapley.json");
+    /// On topic for `QUERY`: Shapley values of hidden units, used to prune them.
+    const ON_TOPIC: &str = "Shapley Value as Principled Metric for Structured Network Pruning";
+    const S2_429: &str = "HTTP 429 Too Many Requests for https://api.semanticscholar.org/graph/v1/paper/search after 3 attempts";
+
+    /// A backend fetch serving the recorded replies, with Semantic Scholar
+    /// rate limited; records the label of every backend asked.
+    fn recorded<'a>(
+        asked: &'a RefCell<Vec<&'static str>>,
+    ) -> impl FnMut(&'static Backend) -> std::future::Ready<Result<Vec<PaperResult>, String>> + 'a {
+        move |b| {
+            asked.borrow_mut().push(b.label);
+            let reply = match b.label {
+                "s2" => Err(S2_429.to_string()),
+                "openalex" => openalex::parse_search(OA_REPLY).map_err(|e| e.to_string()),
+                "arxiv" => arxiv::parse_search(ARXIV_REPLY).map_err(|e| e.to_string()),
+                "crossref" => crossref::parse_search(CROSSREF_REPLY).map_err(|e| e.to_string()),
+                _ => Ok(Vec::new()),
+            };
+            std::future::ready(reply)
+        }
+    }
+
+    fn paper(title: &str) -> PaperResult {
+        PaperResult { title: title.to_string(), ..Default::default() }
+    }
+
+    fn hit(paper: PaperResult, source: &'static str) -> Hit {
+        Hit { paper, source }
+    }
+
+    fn titles(hits: &[Hit]) -> Vec<&str> {
+        hits.iter().map(|h| h.paper.title.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn s2_rate_limit_falls_back_to_openalex_and_arxiv_before_any_catalog() {
+        let asked = RefCell::new(Vec::new());
+        let outcome = cascade(CASCADE, QUERY, recorded(&asked)).await;
+        assert_eq!(asked.into_inner(), vec!["s2", "openalex", "arxiv"]);
+        assert_eq!(outcome.failures, vec![("Semantic Scholar", S2_429.to_string())]);
+        assert!(outcome.hits.iter().any(|h| h.source == "openalex"));
+        assert!(outcome.hits.iter().any(|h| h.source == "arxiv"));
+        assert!(outcome.hits.iter().all(|h| h.source == "openalex" || h.source == "arxiv"));
+    }
+
+    /// Regression: on 2026-11-13 this fallback answered with CrossRef's
+    /// game-theory chapters ("Power and the Shapley Value", ...), whose titles
+    /// share two of the five query words, and dropped every other source.
+    #[tokio::test]
+    async fn free_text_fallback_puts_the_on_topic_paper_in_the_top_five() {
+        let asked = RefCell::new(Vec::new());
+        let hits = finish(cascade(CASCADE, QUERY, recorded(&asked)).await, QUERY).unwrap();
+        let top: Vec<&str> = titles(&hits).into_iter().take(5).collect();
+        assert!(top.contains(&ON_TOPIC), "top five: {:#?}", top);
+        assert!(hits.iter().take(5).all(|h| h.source != "crossref"), "top five: {:#?}", top);
+    }
+
+    #[tokio::test]
+    async fn an_s2_answer_covering_the_query_ends_the_cascade() {
+        let asked = RefCell::new(Vec::new());
+        let on_topic = PaperResult {
+            abstract_text: Some("Shapley values of hidden units under dropout.".to_string()),
+            ..paper(ON_TOPIC)
+        };
+        let outcome = cascade(CASCADE, QUERY, |b: &'static Backend| {
+            asked.borrow_mut().push(b.label);
+            std::future::ready(Ok(vec![on_topic.clone()]))
+        })
+        .await;
+        assert_eq!(asked.into_inner(), vec!["s2"]);
+        assert_eq!(outcome.hits[0].source, "s2");
+    }
+
+    #[tokio::test]
+    async fn every_source_failing_is_an_error_naming_each_source_and_its_error() {
+        let outcome = cascade(CASCADE, QUERY, |b: &'static Backend| {
+            std::future::ready(Err(format!("HTTP 503 from {}", b.label)))
+        })
+        .await;
+        let err = finish(outcome, QUERY).unwrap_err().to_string();
+        assert!(err.contains("6 of 6 sources failed"), "{}", err);
+        for (name, label) in [
+            ("Semantic Scholar", "s2"),
+            ("OpenAlex", "openalex"),
+            ("arXiv", "arxiv"),
+            ("CrossRef", "crossref"),
+            ("OpenLibrary", "openlibrary"),
+            ("Clio", "clio"),
+        ] {
+            assert!(err.contains(&format!("{}: HTTP 503 from {}", name, label)), "{}", err);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failure_among_empty_answers_is_an_error_not_zero_hits() {
+        let outcome = cascade(CASCADE, QUERY, |b: &'static Backend| {
+            std::future::ready(if b.label == "s2" { Err(S2_429.to_string()) } else { Ok(Vec::new()) })
+        })
+        .await;
+        let err = finish(outcome, QUERY).unwrap_err().to_string();
+        assert!(err.contains("1 of 6 sources failed"), "{}", err);
+        assert!(err.contains("Semantic Scholar: HTTP 429"), "{}", err);
+        assert!(err.contains("arXiv: no results"), "{}", err);
+    }
+
+    #[test]
+    fn every_source_answering_empty_is_zero_hits() {
+        let outcome = Outcome { empty: vec!["Semantic Scholar", "OpenAlex"], ..Default::default() };
+        assert!(finish(outcome, QUERY).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tier_outcome_interleaves_sources_by_rank_and_sorts_out_failures() {
+        let results = vec![
+            Ok(vec![paper("O1"), paper("O2"), paper("O3")]),
+            Ok(vec![paper("A1")]),
+        ];
+        let outcome = tier_outcome(&[&OPENALEX, &ARXIV], results);
+        assert_eq!(titles(&outcome.hits), vec!["O1", "A1", "O2", "O3"]);
+        assert_eq!(outcome.hits[1].source, "arxiv");
+        let outcome = tier_outcome(&[&OPENALEX, &ARXIV], vec![Err("HTTP 429".into()), Ok(vec![])]);
+        assert_eq!(outcome.failures, vec![("OpenAlex", "HTTP 429".to_string())]);
+        assert_eq!(outcome.empty, vec!["arXiv"]);
+    }
+
+    #[test]
+    fn same_work_compares_the_strongest_identifier_both_records_carry() {
+        let with = |doi: Option<&str>, arxiv: Option<&str>, title: &str| PaperResult {
+            doi: doi.map(String::from),
+            arxiv_id: arxiv.map(String::from),
+            ..paper(title)
+        };
+        assert!(same_work(&with(Some("10.1/ABC"), None, "X"), &with(Some("10.1/abc"), None, "Y")));
+        assert!(!same_work(&with(Some("10.1/a"), None, "Same"), &with(Some("10.1/b"), None, "Same")));
+        assert!(same_work(&with(Some("10.1/a"), Some("2001.00001"), "X"), &with(None, Some("2001.00001v2"), "Y")));
+        assert!(!same_work(&with(None, Some("2001.00001"), "Same"), &with(None, Some("2001.00002"), "Same")));
+        assert!(same_work(&with(Some("10.1/a"), None, "Attention Is All You Need."), &with(None, Some("1706.03762"), "attention is all you need")));
+        assert!(!same_work(&paper(""), &paper("")));
+    }
+
+    #[test]
+    fn rank_merges_duplicates_keeping_the_first_source_and_filling_its_gaps() {
+        let oa = PaperResult { doi: Some("10.1/x".into()), ..paper("Concrete Dropout") };
+        let ax = PaperResult {
+            arxiv_id: Some("1705.07832".into()),
+            abstract_text: Some("Dropout probabilities tuned by gradient.".into()),
+            ..paper("Concrete dropout")
+        };
+        let ranked = rank(vec![hit(oa, "openalex"), hit(ax, "arxiv")], "concrete dropout");
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].source, "openalex");
+        assert_eq!(ranked[0].paper.doi.as_deref(), Some("10.1/x"));
+        assert_eq!(ranked[0].paper.arxiv_id.as_deref(), Some("1705.07832"));
+        assert!(ranked[0].paper.abstract_text.is_some());
+    }
+
+    /// Regression: sorting by the share of topic words put papers matching
+    /// "stochastic rate uniform distribution" above arXiv's dropout papers for
+    /// "stochastic dropout rate uniform distribution" (live check, 2026-11-13).
+    #[test]
+    fn rank_puts_on_topic_results_first_and_keeps_backend_order_within_each_group() {
+        let off_first = paper("Dropout A"); // 1 of 5 topic words
+        let on_three = paper("Dropout and the Shapley value"); // 3 of 5
+        let off_two = paper("The Shapley value"); // 2 of 5
+        let on_five = PaperResult {
+            abstract_text: Some("We relate dropout to the Shapley value of hidden units.".into()),
+            ..paper("Ensembles of subnetworks")
+        };
+        let ranked = rank(
+            vec![hit(off_first, "s2"), hit(on_three, "s2"), hit(off_two, "s2"), hit(on_five, "s2")],
+            QUERY,
+        );
+        assert_eq!(
+            titles(&ranked),
+            vec!["Dropout and the Shapley value", "Ensembles of subnetworks", "Dropout A", "The Shapley value"]
+        );
+    }
+
+    #[test]
+    fn best_title_match_takes_the_first_hit_with_the_most_query_words_in_its_title() {
+        let hits = vec![
+            hit(PaperResult { abstract_text: Some("attention need".into()), ..paper("A survey") }, "s2"),
+            hit(paper("Attention Is All You Need"), "s2"),
+            hit(paper("Attention is all you need (reprint)"), "openalex"),
+        ];
+        let best = best_title_match(hits, &query_terms("attention is all you need")).unwrap();
+        assert_eq!(best.title, "Attention Is All You Need");
+        assert!(best_title_match(Vec::new(), &query_terms("x")).is_none());
+    }
+
+    #[test]
+    fn hit_json_carries_its_source() {
+        let json = hit_to_json(&hit(paper("T"), "arxiv"));
+        assert_eq!(json["source"], "arxiv");
+        assert_eq!(json["title"], "T");
+    }
 
     #[test]
     fn cascade_note_includes_error() {
@@ -414,14 +728,21 @@ mod tests {
     }
 
     #[test]
+    fn fold_drops_plural_s_only() {
+        assert_eq!(fold("units"), "unit");
+        assert_eq!(fold("masks"), "mask");
+        assert_eq!(fold("loss"), "loss");
+        assert_eq!(fold("gas"), "gas");
+    }
+
+    #[test]
     fn relevance_exact_title_match() {
         let paper = PaperResult {
             title: "Attention Is All You Need".to_string(),
             authors: vec!["Ashish Vaswani".to_string()],
             ..Default::default()
         };
-        let query_tokens = tokenize("attention is all you need");
-        let score = relevance_score(&paper, &query_tokens);
+        let score = coverage(&paper, &query_terms("attention is all you need"), true);
         assert!(score >= 0.9, "exact title match should score high: {}", score);
     }
 
@@ -432,9 +753,8 @@ mod tests {
             authors: vec!["Scott M. Lundberg".to_string()],
             ..Default::default()
         };
-        let query_tokens = tokenize("SHAP lundberg unified approach");
-        let score = relevance_score(&paper, &query_tokens);
         // "lundberg", "unified", "approach" match (3/4 = 0.75). "shap" doesn't match title/author.
+        let score = coverage(&paper, &query_terms("SHAP lundberg unified approach"), true);
         assert!(score >= 0.5, "author+title partial match: {}", score);
     }
 
@@ -445,13 +765,12 @@ mod tests {
             authors: vec!["Eric Edmonds".to_string()],
             ..Default::default()
         };
-        let query_tokens = tokenize("mesnard counterfactual credit assignment");
-        let score = relevance_score(&paper, &query_tokens);
+        let score = coverage(&paper, &query_terms("mesnard counterfactual credit assignment"), true);
         assert!(score < 0.2, "unrelated paper should score low: {}", score);
     }
 
     #[test]
-    fn rerank_puts_relevant_first() {
+    fn rank_puts_relevant_first() {
         let good = PaperResult {
             title: "Proximal Policy Optimization Algorithms".to_string(),
             authors: vec!["John Schulman".to_string()],
@@ -464,8 +783,8 @@ mod tests {
             citations: Some(10),
             ..Default::default()
         };
-        let results = rerank(vec![bad, good], "PPO proximal policy optimization schulman");
-        assert_eq!(results[0].title, "Proximal Policy Optimization Algorithms");
+        let ranked = rank(vec![hit(bad, "s2"), hit(good, "s2")], "PPO proximal policy optimization schulman");
+        assert_eq!(ranked[0].paper.title, "Proximal Policy Optimization Algorithms");
     }
 
     #[test]
@@ -479,18 +798,9 @@ mod tests {
     }
 
     #[test]
-    fn rerank_deduplicates_by_doi() {
-        let a = PaperResult {
-            title: "Paper A".to_string(),
-            doi: Some("10.1234/test".to_string()),
-            ..Default::default()
-        };
-        let b = PaperResult {
-            title: "Paper A".to_string(),
-            doi: Some("10.1234/test".to_string()),
-            ..Default::default()
-        };
-        let results = rerank(vec![a, b], "paper");
-        assert_eq!(results.len(), 1);
+    fn rank_deduplicates_by_doi() {
+        let a = PaperResult { doi: Some("10.1234/test".to_string()), ..paper("Paper A") };
+        let b = PaperResult { doi: Some("10.1234/test".to_string()), ..paper("Paper A") };
+        assert_eq!(rank(vec![hit(a, "s2"), hit(b, "openalex")], "paper").len(), 1);
     }
 }

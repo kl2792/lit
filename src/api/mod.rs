@@ -86,9 +86,43 @@ pub(crate) fn urlencode(s: &str) -> String {
     encoded
 }
 
+/// Function words that say nothing about a paper's topic.
+const STOPWORDS: &[&str] = &[
+    "a", "about", "all", "an", "and", "are", "as", "at", "be", "by", "can", "do", "for", "from",
+    "how", "in", "into", "is", "it", "its", "of", "on", "or", "our", "that", "the", "their", "this",
+    "to", "using", "via", "we", "what", "when", "which", "why", "with", "you",
+];
+
+/// The words of a free-text query that carry its topic: lowercase alphanumeric
+/// tokens without stopwords or repeats, in query order. A query made only of
+/// stopwords keeps all its tokens, so it still matches something.
+pub fn query_words(query: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    for t in query.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()) {
+        let t = t.to_lowercase();
+        if !tokens.contains(&t) {
+            tokens.push(t);
+        }
+    }
+    let content: Vec<String> = tokens.iter().filter(|t| !STOPWORDS.contains(&t.as_str())).cloned().collect();
+    if content.is_empty() { tokens } else { content }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_words_drop_stopwords_repeats_and_punctuation() {
+        assert_eq!(query_words("The Shapley value of the dropout: Shapley!"), vec!["shapley", "value", "dropout"]);
+        assert_eq!(query_words("attention is all you need"), vec!["attention", "need"]);
+    }
+
+    #[test]
+    fn query_words_of_only_stopwords_keep_every_token() {
+        assert_eq!(query_words("what is it"), vec!["what", "is", "it"]);
+        assert!(query_words("  ").is_empty());
+    }
 
     #[test]
     fn test_extract_year_from_date() {

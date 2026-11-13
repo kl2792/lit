@@ -1,0 +1,624 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/rC5Ir3SkXBLFU0X884S9WdlEPEQ</id>
+  <title>arXiv Query: search_query=(all:dropout AND all:shapley) OR (all:dropout AND all:value) OR (all:dropout AND all:hidden) OR (all:dropout AND all:units) OR (all:shapley AND all:value) OR (all:shapley AND all:hidden) OR (all:shapley AND all:units) OR (all:value AND all:hidden) OR (all:value AND all:units) OR (all:hidden AND all:units)&amp;id_list=&amp;start=0&amp;max_results=25</title>
+  <updated>2026-11-13T19:06:04Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=(all:dropout+AND+all:shapley)+OR+((all:dropout+AND+all:value)+OR+((all:dropout+AND+all:hidden)+OR+((all:dropout+AND+all:units)+OR+((all:shapley+AND+all:value)+OR+((all:shapley+AND+all:hidden)+OR+((all:shapley+AND+all:units)+OR+((all:value+AND+all:hidden)+OR+((all:value+AND+all:units)+OR+(all:hidden+AND+all:units)))))))))&amp;start=0&amp;max_results=25&amp;id_list=" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>25</opensearch:itemsPerPage>
+  <opensearch:totalResults>16212</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/2006.01795v1</id>
+    <title>Shapley Value as Principled Metric for Structured Network Pruning</title>
+    <updated>2020-06-02T17:26:49Z</updated>
+    <link href="https://arxiv.org/abs/2006.01795v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2006.01795v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Structured pruning is a well-known technique to reduce the storage size and inference cost of neural networks. The usual pruning pipeline consists of ranking the network internal filters and activations with respect to their contributions to the network performance, removing the units with the lowest contribution, and fine-tuning the network to reduce the harm induced by pruning. Recent results showed that random pruning performs on par with other metrics, given enough fine-tuning resources. In this work, we show that this is not true on a low-data regime when fine-tuning is either not possible or not effective. In this case, reducing the harm caused by pruning becomes crucial to retain the performance of the network. First, we analyze the problem of estimating the contribution of hidden units with tools suggested by cooperative game theory and propose Shapley values as a principled ranking metric for this task. We compare with several alternatives proposed in the literature and discuss how Shapley values are theoretically preferable. Finally, we compare all ranking metrics on the challenging scenario of low-data pruning, where we demonstrate how Shapley values outperform other heuristics.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CV" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2020-06-02T17:26:49Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Marco Ancona</name>
+    </author>
+    <author>
+      <name>Cengiz Öztireli</name>
+    </author>
+    <author>
+      <name>Markus Gross</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2412.04836v1</id>
+    <title>Adaptive Dropout for Pruning Conformers</title>
+    <updated>2024-12-06T08:05:02Z</updated>
+    <link href="https://arxiv.org/abs/2412.04836v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2412.04836v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>This paper proposes a method to effectively perform joint training-and-pruning based on adaptive dropout layers with unit-wise retention probabilities. The proposed method is based on the estimation of a unit-wise retention probability in a dropout layer. A unit that is estimated to have a small retention probability can be considered to be prunable. The retention probability of the unit is estimated using back-propagation and the Gumbel-Softmax technique. This pruning method is applied at several application points in Conformers such that the effective number of parameters can be significantly reduced. Specifically, adaptive dropout layers are introduced in three locations in each Conformer block: (a) the hidden layer of the feed-forward-net component, (b) the query vectors and the value vectors of the self-attention component, and (c) the input vectors of the LConv component. The proposed method is evaluated by conducting a speech recognition experiment on the LibriSpeech task. It was shown that this approach could simultaneously achieve a parameter reduction and accuracy improvement. The word error rates improved by approx 1% while reducing the number of parameters by 54%.</summary>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="eess.AS" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-12-06T08:05:02Z</published>
+    <arxiv:primary_category term="cs.CL"/>
+    <author>
+      <name>Yotaro Kubo</name>
+    </author>
+    <author>
+      <name>Xingyu Cai</name>
+    </author>
+    <author>
+      <name>Michiel Bacchiani</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2202.05594v2</id>
+    <title>The Shapley Value in Machine Learning</title>
+    <updated>2022-05-26T14:41:37Z</updated>
+    <link href="https://arxiv.org/abs/2202.05594v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2202.05594v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Over the last few years, the Shapley value, a solution concept from cooperative game theory, has found numerous applications in machine learning. In this paper, we first discuss fundamental concepts of cooperative game theory and axiomatic properties of the Shapley value. Then we give an overview of the most important applications of the Shapley value in machine learning: feature selection, explainability, multi-agent reinforcement learning, ensemble pruning, and data valuation. We examine the most crucial limitations of the Shapley value and point out directions for future research.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.GT" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2022-02-11T13:25:11Z</published>
+    <arxiv:comment>https://github.com/AstraZeneca/awesome-shapley-value</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Benedek Rozemberczki</name>
+    </author>
+    <author>
+      <name>Lauren Watson</name>
+    </author>
+    <author>
+      <name>Péter Bayer</name>
+    </author>
+    <author>
+      <name>Hao-Tsung Yang</name>
+    </author>
+    <author>
+      <name>Olivér Kiss</name>
+    </author>
+    <author>
+      <name>Sebastian Nilsson</name>
+    </author>
+    <author>
+      <name>Rik Sarkar</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1412.5429v1</id>
+    <title>The Shapley group value</title>
+    <updated>2014-12-17T15:11:06Z</updated>
+    <link href="https://arxiv.org/abs/1412.5429v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1412.5429v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Following the original interpretation of the Shapley value (Shapley, 1953a) as a priori evaluation of the prospects of a player in a multi-person interaction situation, we propose a group value, which we call the Shapley group value, as a priori evaluation of the prospects of a group of players in a coalitional game when acting as a unit. We study its properties and we give an axiomatic characterization. Relaying on this valuation we analyze the profitability of a group. We motivate our proposal by means of some relevant applications of the Shapley group value, when it is used as an objective function by a decisionmaker who is trying to identify an optimal group of agents in a framework in which agents interact and the attained benefit can be modeled bymeans of a transferable utility game. As an illustrative examplewe analyze the problem of identifying the set of key agents in a terrorist network.</summary>
+    <category term="math.OC" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.GT" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2014-12-17T15:11:06Z</published>
+    <arxiv:comment>29 pages, 4 figures</arxiv:comment>
+    <arxiv:primary_category term="math.OC"/>
+    <author>
+      <name>Ramón Flores</name>
+    </author>
+    <author>
+      <name>Elisenda Molina</name>
+    </author>
+    <author>
+      <name>Juan Tejada</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2303.17243v1</id>
+    <title>Shapley Chains: Extending Shapley Values to Classifier Chains</title>
+    <updated>2023-03-30T09:19:24Z</updated>
+    <link href="https://arxiv.org/abs/2303.17243v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2303.17243v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>In spite of increased attention on explainable machine learning models, explaining multi-output predictions has not yet been extensively addressed. Methods that use Shapley values to attribute feature contributions to the decision making are one of the most popular approaches to explain local individual and global predictions. By considering each output separately in multi-output tasks, these methods fail to provide complete feature explanations. We propose Shapley Chains to overcome this issue by including label interdependencies in the explanation design process. Shapley Chains assign Shapley values as feature importance scores in multi-output classification using classifier chains, by separating the direct and indirect influence of these feature scores. Compared to existing methods, this approach allows to attribute a more complete feature contribution to the predictions of multi-output classification tasks. We provide a mechanism to distribute the hidden contributions of the outputs with respect to a given chaining order of these outputs. Moreover, we show how our approach can reveal indirect feature contributions missed by existing approaches. Shapley Chains help to emphasize the real learning factors in multi-output applications and allows a better understanding of the flow of information through output interdependencies in synthetic and real-world datasets.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2023-03-30T09:19:24Z</published>
+    <arxiv:comment>DS22</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Célia Wafa Ayad</name>
+    </author>
+    <author>
+      <name>Thomas Bonnier</name>
+    </author>
+    <author>
+      <name>Benjamin Bosch</name>
+    </author>
+    <author>
+      <name>Jesse Read</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1606.01305v4</id>
+    <title>Zoneout: Regularizing RNNs by Randomly Preserving Hidden Activations</title>
+    <updated>2017-09-22T20:43:09Z</updated>
+    <link href="https://arxiv.org/abs/1606.01305v4" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1606.01305v4" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We propose zoneout, a novel method for regularizing RNNs. At each timestep, zoneout stochastically forces some hidden units to maintain their previous values. Like dropout, zoneout uses random noise to train a pseudo-ensemble, improving generalization. But by preserving instead of dropping hidden units, gradient information and state information are more readily propagated through time, as in feedforward stochastic depth networks. We perform an empirical investigation of various RNN regularizers, and find that zoneout gives significant performance improvements across tasks. We achieve competitive results with relatively simple models in character- and word-level language modelling on the Penn Treebank and Text8 datasets, and combining with recurrent batch normalization yields state-of-the-art results on permuted sequential MNIST.</summary>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2016-06-03T23:31:47Z</published>
+    <arxiv:comment>David Krueger and Tegan Maharaj contributed equally to this work</arxiv:comment>
+    <arxiv:primary_category term="cs.NE"/>
+    <author>
+      <name>David Krueger</name>
+    </author>
+    <author>
+      <name>Tegan Maharaj</name>
+    </author>
+    <author>
+      <name>János Kramár</name>
+    </author>
+    <author>
+      <name>Mohammad Pezeshki</name>
+    </author>
+    <author>
+      <name>Nicolas Ballas</name>
+    </author>
+    <author>
+      <name>Nan Rosemary Ke</name>
+    </author>
+    <author>
+      <name>Anirudh Goyal</name>
+    </author>
+    <author>
+      <name>Yoshua Bengio</name>
+    </author>
+    <author>
+      <name>Aaron Courville</name>
+    </author>
+    <author>
+      <name>Chris Pal</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2404.01078v4</id>
+    <title>Energy-Based Model for Accurate Estimation of Shapley Values in Feature Attribution</title>
+    <updated>2025-11-04T02:35:38Z</updated>
+    <link href="https://arxiv.org/abs/2404.01078v4" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2404.01078v4" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Shapley value is a widely used tool in explainable artificial intelligence (XAI), as it provides a principled way to attribute contributions of input features to model outputs. However, estimation of Shapley value requires capturing conditional dependencies among all feature combinations, which poses significant challenges in complex data environments. In this article, EmSHAP (Energy-based model for Shapley value estimation), an accurate Shapley value estimation method, is proposed to estimate the expectation of Shapley contribution function under the arbitrary subset of features given the rest. By utilizing the ability of energy-based model (EBM) to model complex distributions, EmSHAP provides an effective solution for estimating the required conditional probabilities. To further improve estimation accuracy, a GRU (Gated Recurrent Unit)-coupled partition function estimation method is introduced. The GRU network captures long-term dependencies with a lightweight parameterization and maps input features into a latent space to mitigate the influence of feature ordering. Additionally, a dynamic masking mechanism is incorporated to further enhance the robustness and accuracy by progressively increasing the masking rate. Theoretical analysis on the error bound as well as application to four case studies verified the higher accuracy and better scalability of EmSHAP in contrast to competitive methods.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2024-04-01T12:19:33Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Cheng Lu</name>
+    </author>
+    <author>
+      <name>Jiusun Zeng</name>
+    </author>
+    <author>
+      <name>Yu Xia</name>
+    </author>
+    <author>
+      <name>Jinhui Cai</name>
+    </author>
+    <author>
+      <name>Shihua Luo</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1706.06859v1</id>
+    <title>Analysis of dropout learning regarded as ensemble learning</title>
+    <updated>2017-06-20T04:19:57Z</updated>
+    <link href="https://arxiv.org/abs/1706.06859v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1706.06859v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Deep learning is the state-of-the-art in fields such as visual object recognition and speech recognition. This learning uses a large number of layers, huge number of units, and connections. Therefore, overfitting is a serious problem. To avoid this problem, dropout learning is proposed. Dropout learning neglects some inputs and hidden units in the learning process with a probability, p, and then, the neglected inputs and hidden units are combined with the learned network to express the final output. We find that the process of combining the neglected hidden units with the learned network can be regarded as ensemble learning, so we analyze dropout learning from this point of view.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2017-06-20T04:19:57Z</published>
+    <arxiv:comment>9 pages, 8 figures, submitted to Conference</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <arxiv:journal_ref>A. E. P. VIlla et al. (Eds.): ICANN 2016 ( Part II, LNCS 9887, pp. 1-8, 2016)</arxiv:journal_ref>
+    <author>
+      <name>Kazuyuki Hara</name>
+    </author>
+    <author>
+      <name>Daisuke Saitoh</name>
+    </author>
+    <author>
+      <name>Hayaru Shouno</name>
+    </author>
+    <arxiv:doi>10.1007/978-3-319-44781-0_9</arxiv:doi>
+    <link rel="related" href="https://doi.org/10.1007/978-3-319-44781-0_9" title="doi"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1502.02478v1</id>
+    <title>Efficient batchwise dropout training using submatrices</title>
+    <updated>2015-02-09T13:29:48Z</updated>
+    <link href="https://arxiv.org/abs/1502.02478v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1502.02478v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Dropout is a popular technique for regularizing artificial neural networks. Dropout networks are generally trained by minibatch gradient descent with a dropout mask turning off some of the units---a different pattern of dropout is applied to every sample in the minibatch. We explore a very simple alternative to the dropout mask. Instead of masking dropped out units by setting them to zero, we perform matrix multiplication using a submatrix of the weight matrix---unneeded hidden units are never calculated. Performing dropout batchwise, so that one pattern of dropout is used for each sample in a minibatch, we can substantially reduce training times. Batchwise dropout can be used with fully-connected and convolutional neural networks.</summary>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CV" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2015-02-09T13:29:48Z</published>
+    <arxiv:primary_category term="cs.NE"/>
+    <author>
+      <name>Ben Graham</name>
+    </author>
+    <author>
+      <name>Jeremy Reizenstein</name>
+    </author>
+    <author>
+      <name>Leigh Robinson</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1611.06148v2</id>
+    <title>Compacting Neural Network Classifiers via Dropout Training</title>
+    <updated>2017-05-24T12:26:43Z</updated>
+    <link href="https://arxiv.org/abs/1611.06148v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1611.06148v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We introduce dropout compaction, a novel method for training feed-forward neural networks which realizes the performance gains of training a large model with dropout regularization, yet extracts a compact neural network for run-time efficiency. In the proposed method, we introduce a sparsity-inducing prior on the per unit dropout retention probability so that the optimizer can effectively prune hidden units during training. By changing the prior hyperparameters, we can control the size of the resulting network. We performed a systematic comparison of dropout compaction and competing methods on several real-world speech recognition tasks and found that dropout compaction achieved comparable accuracy with fewer than 50% of the hidden units, translating to a 2.5x speedup in run-time.</summary>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2016-11-18T16:20:41Z</published>
+    <arxiv:comment>Submitted to AISTATS 2017 (Short-version is accepted to NIPS Workshop on Efficient Methods for Deep Neural Networks)</arxiv:comment>
+    <arxiv:primary_category term="stat.ML"/>
+    <author>
+      <name>Yotaro Kubo</name>
+    </author>
+    <author>
+      <name>George Tucker</name>
+    </author>
+    <author>
+      <name>Simon Wiesler</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1301.7274v1</id>
+    <title>Network Inference with Hidden Units</title>
+    <updated>2013-01-30T16:27:01Z</updated>
+    <link href="https://arxiv.org/abs/1301.7274v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1301.7274v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>We derive learning rules for finding the connections between units in stochastic dynamical networks from the recorded history of a ``visible'' subset of the units. We consider two models. In both of them, the visible units are binary and stochastic. In one model the ``hidden'' units are continuous-valued, with sigmoidal activation functions, and in the other they are binary and stochastic like the visible ones. We derive exact learning rules for both cases. For the stochastic case, performing the exact calculation requires, in general, repeated summations over an number of configurations that grows exponentially with the size of the system and the data length, which is not feasible for large systems. We derive a mean field theory, based on a factorized ansatz for the distribution of hidden-unit states, which offers an attractive alternative for large systems. We present the results of some numerical calculations that illustrate key features of the two models and, for the stochastic case, the exact and approximate calculations.</summary>
+    <category term="cond-mat.dis-nn" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="physics.data-an" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2013-01-30T16:27:01Z</published>
+    <arxiv:primary_category term="cond-mat.dis-nn"/>
+    <arxiv:journal_ref>Math Biosci Eng (2014), 11(1):149-65</arxiv:journal_ref>
+    <author>
+      <name>Joanna Tyrcha</name>
+    </author>
+    <author>
+      <name>John Hertz</name>
+    </author>
+    <arxiv:doi>10.3934/mbe.2014.11.149</arxiv:doi>
+    <link rel="related" href="https://doi.org/10.3934/mbe.2014.11.149" title="doi"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2301.04727v4</id>
+    <title>A Quantum Algorithm for Shapley Value Estimation</title>
+    <updated>2024-11-03T12:11:33Z</updated>
+    <link href="https://arxiv.org/abs/2301.04727v4" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2301.04727v4" rel="related" type="application/pdf" title="pdf"/>
+    <summary>In the classical context, the cooperative game theory concept of the Shapley value has been adapted for post hoc explanations of machine learning models. However, this approach does not easily translate to eXplainable Quantum ML (XQML). Finding Shapley values can be highly computationally complex. We propose quantum algorithms which can extract Shapley values within some confidence interval. Our results perform in polynomial time. We demonstrate the validity of each approach under specific examples of cooperative voting games.</summary>
+    <category term="cs.ET" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CR" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="math.QA" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2023-01-11T21:32:59Z</published>
+    <arxiv:comment>9 pages, 4 figures, 24 references, preprint of QCE 2023 (IEEE International Conference on Quantum Computing and Engineering) Technical Paper (Quantum Algorithms for Shapley Value Calculation), available at https://doi.org/10.1109/QCE57702.2023.00024</arxiv:comment>
+    <arxiv:primary_category term="cs.ET"/>
+    <author>
+      <name>Iain Burge</name>
+    </author>
+    <author>
+      <name>Michel Barbeau</name>
+    </author>
+    <author>
+      <name>Joaquin Garcia-Alfaro</name>
+    </author>
+    <arxiv:doi>10.1109/QCE57702.2023.00024</arxiv:doi>
+    <link rel="related" href="https://doi.org/10.1109/QCE57702.2023.00024" title="doi"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2502.12295v1</id>
+    <title>On the Computational Tractability of the (Many) Shapley Values</title>
+    <updated>2025-02-17T20:08:03Z</updated>
+    <link href="https://arxiv.org/abs/2502.12295v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2502.12295v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Recent studies have examined the computational complexity of computing Shapley additive explanations (also known as SHAP) across various models and distributions, revealing their tractability or intractability in different settings. However, these studies primarily focused on a specific variant called Conditional SHAP, though many other variants exist and address different limitations. In this work, we analyze the complexity of computing a much broader range of such variants, including Conditional, Interventional, and Baseline SHAP, while exploring both local and global computations. We show that both local and global Interventional and Baseline SHAP can be computed in polynomial time for various ML models under Hidden Markov Model distributions, extending popular algorithms such as TreeSHAP beyond empirical distributions. On the downside, we prove intractability results for these variants over a wide range of neural networks and tree ensembles. We believe that our results emphasize the intricate diversity of computing Shapley values, demonstrating how their complexity is substantially shaped by both the specific SHAP variant, the model type, and the distribution.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CC" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LO" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2025-02-17T20:08:03Z</published>
+    <arxiv:comment>To appear in AISTATS 2025</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Reda Marzouk</name>
+    </author>
+    <author>
+      <name>Shahaf Bassan</name>
+    </author>
+    <author>
+      <name>Guy Katz</name>
+    </author>
+    <author>
+      <name>Colin de la Higuera</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/q-bio/0506034v2</id>
+    <title>The Shapley Value of Phylogenetic Trees</title>
+    <updated>2007-08-28T00:34:31Z</updated>
+    <link href="https://arxiv.org/abs/q-bio/0506034v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/q-bio/0506034v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>  Every weighted tree corresponds naturally to a cooperative game that we call a "tree game"; it assigns to each subset of leaves the sum of the weights of the minimal subtree spanned by those leaves. In the context of phylogenetic trees, the leaves are species and this assignment captures the diversity present in the coalition of species considered. We consider the Shapley value of tree games and suggest a biological interpretation. We determine the linear transformation M that shows the dependence of the Shapley value on the edge weights of the tree, and we also compute a null space basis of M. Both depend on the "split counts" of the tree. Finally, we characterize the Shapley value on tree games by four axioms, a counterpart to Shapley's original theorem on the larger class of cooperative games.</summary>
+    <category term="q-bio.QM" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.GT" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="math.CO" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="q-bio.PE" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2005-06-22T15:47:33Z</published>
+    <arxiv:comment>References added, and a section (calculating the Shapley value of a tree game from its subtrees) was removed for length reasons (request of referee) and may appear in another paper. 16 pages; related work at http://www.math.hmc.edu/~su/papers.html. Journal of Mathematical Biology, to appear. The original article is available at http://www.springerlink.com</arxiv:comment>
+    <arxiv:primary_category term="q-bio.QM"/>
+    <arxiv:journal_ref>J. Mathematical Biology 56 (2008), 479--497</arxiv:journal_ref>
+    <author>
+      <name>Claus-Jochen Haake</name>
+    </author>
+    <author>
+      <name>Akemi Kashiwada</name>
+    </author>
+    <author>
+      <name>Francis Edward Su</name>
+    </author>
+    <arxiv:doi>10.1007/s00285-007-0126-2</arxiv:doi>
+    <link rel="related" href="https://doi.org/10.1007/s00285-007-0126-2" title="doi"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2101.02153v2</id>
+    <title>The Shapley Value of Classifiers in Ensemble Games</title>
+    <updated>2021-06-10T20:38:54Z</updated>
+    <link href="https://arxiv.org/abs/2101.02153v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2101.02153v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>What is the value of an individual model in an ensemble of binary classifiers? We answer this question by introducing a class of transferable utility cooperative games called \textit{ensemble games}. In machine learning ensembles, pre-trained models cooperate to make classification decisions. To quantify the importance of models in these ensemble games, we define \textit{Troupe} -- an efficient algorithm which allocates payoffs based on approximate Shapley values of the classifiers. We argue that the Shapley value of models in these games is an effective decision metric for choosing a high performing subset of models from the ensemble. Our analytical findings prove that our Shapley value estimation scheme is precise and scalable; its performance increases with size of the dataset and ensemble. Empirical results on real world graph classification tasks demonstrate that our algorithm produces high quality estimates of the Shapley value. We find that Shapley values can be utilized for ensemble pruning, and that adversarial models receive a low valuation. Complex classifiers are frequently found to be responsible for both correct and incorrect classification decisions.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.DS" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.GT" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2021-01-06T17:40:23Z</published>
+    <arxiv:comment>Source code is available here: https://github.com/benedekrozemberczki/shapley</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Benedek Rozemberczki</name>
+    </author>
+    <author>
+      <name>Rik Sarkar</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2107.11357v2</id>
+    <title>Joint Shapley values: a measure of joint feature importance</title>
+    <updated>2022-02-10T11:45:29Z</updated>
+    <link href="https://arxiv.org/abs/2107.11357v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2107.11357v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>The Shapley value is one of the most widely used measures of feature importance partly as it measures a feature's average effect on a model's prediction. We introduce joint Shapley values, which directly extend Shapley's axioms and intuitions: joint Shapley values measure a set of features' average contribution to a model's prediction. We prove the uniqueness of joint Shapley values, for any order of explanation. Results for games show that joint Shapley values present different insights from existing interaction indices, which assess the effect of a feature within a set of features. The joint Shapley values provide intuitive results in ML attribution problems. With binary features, we present a presence-adjusted global value that is more consistent with local intuitions than the usual approach.</summary>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2021-07-23T17:22:37Z</published>
+    <arxiv:comment>Source code available at https://github.com/harris-chris/joint-shapley-values</arxiv:comment>
+    <arxiv:primary_category term="stat.ML"/>
+    <author>
+      <name>Chris Harris</name>
+    </author>
+    <author>
+      <name>Richard Pymar</name>
+    </author>
+    <author>
+      <name>Colin Rowat</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1710.03487v1</id>
+    <title>An Analysis of Dropout for Matrix Factorization</title>
+    <updated>2017-10-10T10:03:43Z</updated>
+    <link href="https://arxiv.org/abs/1710.03487v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1710.03487v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Dropout is a simple yet effective algorithm for regularizing neural networks by randomly dropping out units through Bernoulli multiplicative noise, and for some restricted problem classes, such as linear or logistic regression, several theoretical studies have demonstrated the equivalence between dropout and a fully deterministic optimization problem with data-dependent Tikhonov regularization. This work presents a theoretical analysis of dropout for matrix factorization, where Bernoulli random variables are used to drop a factor, thereby attempting to control the size of the factorization. While recent work has demonstrated the empirical effectiveness of dropout for matrix factorization, a theoretical understanding of the regularization properties of dropout in this context remains elusive. This work demonstrates the equivalence between dropout and a fully deterministic model for matrix factorization in which the factors are regularized by the sum of the product of the norms of the columns. While the resulting regularizer is closely related to a variational form of the nuclear norm, suggesting that dropout may limit the size of the factorization, we show that it is possible to trivially lower the objective value by doubling the size of the factorization. We show that this problem is caused by the use of a fixed dropout rate, which motivates the use of a rate that increases with the size of the factorization. Synthetic experiments validate our theoretical findings.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2017-10-10T10:03:43Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Jacopo Cavazza</name>
+    </author>
+    <author>
+      <name>Connor Lane</name>
+    </author>
+    <author>
+      <name>Benjamin D. Haeffele</name>
+    </author>
+    <author>
+      <name>Vittorio Murino</name>
+    </author>
+    <author>
+      <name>René Vidal</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2108.06628v2</id>
+    <title>Investigating the Relationship Between Dropout Regularization and Model Complexity in Neural Networks</title>
+    <updated>2021-08-26T00:45:46Z</updated>
+    <link href="https://arxiv.org/abs/2108.06628v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2108.06628v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Dropout Regularization, serving to reduce variance, is nearly ubiquitous in Deep Learning models. We explore the relationship between the dropout rate and model complexity by training 2,000 neural networks configured with random combinations of the dropout rate and the number of hidden units in each dense layer, on each of the three data sets we selected. The generated figures, with binary cross entropy loss and binary accuracy on the z-axis, question the common assumption that adding depth to a dense layer while increasing the dropout rate will certainly enhance performance. We also discover a complex correlation between the two hyperparameters that we proceed to quantify by building additional machine learning and Deep Learning models which predict the optimal dropout rate given some hidden units in each dense layer. Linear regression and polynomial logistic regression require the use of arbitrary thresholds to select the cost data points included in the regression and to assign the cost data points a binary classification, respectively. These machine learning models have mediocre performance because their naive nature prevented the modeling of complex decision boundaries. Turning to Deep Learning models, we build neural networks that predict the optimal dropout rate given the number of hidden units in each dense layer, the desired cost, and the desired accuracy of the model. Though, this attempt encounters a mathematical error that can be attributed to the failure of the vertical line test. The ultimate Deep Learning model is a neural network whose decision boundary represents the 2,000 previously generated data points. This final model leads us to devise a promising method for tuning hyperparameters to minimize computational expense yet maximize performance. The strategy can be applied to any model hyperparameters, with the prospect of more efficient tuning in industrial models.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2021-08-14T23:49:33Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Christopher Sun</name>
+    </author>
+    <author>
+      <name>Jai Sharma</name>
+    </author>
+    <author>
+      <name>Milind Maiti</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2101.01761v1</id>
+    <title>AutoDropout: Learning Dropout Patterns to Regularize Deep Networks</title>
+    <updated>2021-01-05T19:54:22Z</updated>
+    <link href="https://arxiv.org/abs/2101.01761v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2101.01761v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Neural networks are often over-parameterized and hence benefit from aggressive regularization. Conventional regularization methods, such as Dropout or weight decay, do not leverage the structures of the network's inputs and hidden states. As a result, these conventional methods are less effective than methods that leverage the structures, such as SpatialDropout and DropBlock, which randomly drop the values at certain contiguous areas in the hidden states and setting them to zero. Although the locations of dropout areas random, the patterns of SpatialDropout and DropBlock are manually designed and fixed. Here we propose to learn the dropout patterns. In our method, a controller learns to generate a dropout pattern at every channel and layer of a target network, such as a ConvNet or a Transformer. The target network is then trained with the dropout pattern, and its resulting validation performance is used as a signal for the controller to learn from. We show that this method works well for both image recognition on CIFAR-10 and ImageNet, as well as language modeling on Penn Treebank and WikiText-2. The learned dropout patterns also transfers to different tasks and datasets, such as from language model on Penn Treebank to Engligh-French translation on WMT 2014. Our code will be available.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CL" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CV" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2021-01-05T19:54:22Z</published>
+    <arxiv:comment>Accepted to AAAI 2021</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Hieu Pham</name>
+    </author>
+    <author>
+      <name>Quoc V. Le</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2511.22208v2</id>
+    <title>On Computing the Shapley Value in Bankruptcy Games -llustrated by Rectified Linear Function Game-</title>
+    <updated>2025-12-28T00:59:27Z</updated>
+    <link href="https://arxiv.org/abs/2511.22208v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2511.22208v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>In this research, we discuss a problem of calculating the Shapley value in bankruptcy games. We show that the decision problem of computing the Shapley value in bankruptcy games is NP-complete. We also investigate the relationship between the Shapley value of bankruptcy games and the Shapley-Shubik index in weighted voting games. The relation naturally implies a dynamic programming technique for calculating the Shapley value. We also present two recursive algorithms for computing the Shapley value: the first is the recursive completion method originally proposed by O'Neill, and the second is our novel contribution based on the dual game formulation. These recursive approaches offer conceptual clarity and computational efficiency, especially when combined with memoisation technique. Finally, we propose a Fully Polynomial-Time Randomized Approximation Scheme (FPRAS) based on Monte Carlo sampling, providing an efficient approximation method for large-scale instances.</summary>
+    <category term="cs.GT" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2025-11-27T08:22:56Z</published>
+    <arxiv:comment>20 pages. An implementation of the proposed algorithms is available at https://github.com/shunaaaaabbbbb/shapley-banckruptcy</arxiv:comment>
+    <arxiv:primary_category term="cs.GT"/>
+    <author>
+      <name>Shunta Yamazaki</name>
+    </author>
+    <author>
+      <name>Tomomi Matsui</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1905.13678v5</id>
+    <title>Learning Sparse Networks Using Targeted Dropout</title>
+    <updated>2019-09-09T11:27:36Z</updated>
+    <link href="https://arxiv.org/abs/1905.13678v5" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1905.13678v5" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Neural networks are easier to optimise when they have many more weights than are required for modelling the mapping from inputs to outputs. This suggests a two-stage learning procedure that first learns a large net and then prunes away connections or hidden units. But standard training does not necessarily encourage nets to be amenable to pruning. We introduce targeted dropout, a method for training a neural network so that it is robust to subsequent pruning. Before computing the gradients for each weight update, targeted dropout stochastically selects a set of units or weights to be dropped using a simple self-reinforcing sparsity criterion and then computes the gradients for the remaining weights. The resulting network is robust to post hoc pruning of weights or units that frequently occur in the dropped sets. The method improves upon more complicated sparsifying regularisers while being simple to implement and easy to tune.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2019-05-31T15:40:36Z</published>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Aidan N. Gomez</name>
+    </author>
+    <author>
+      <name>Ivan Zhang</name>
+    </author>
+    <author>
+      <name>Siddhartha Rao Kamalakara</name>
+    </author>
+    <author>
+      <name>Divyam Madaan</name>
+    </author>
+    <author>
+      <name>Kevin Swersky</name>
+    </author>
+    <author>
+      <name>Yarin Gal</name>
+    </author>
+    <author>
+      <name>Geoffrey E. Hinton</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1902.08673v1</id>
+    <title>Ising-Dropout: A Regularization Method for Training and Compression of Deep Neural Networks</title>
+    <updated>2019-02-07T02:21:40Z</updated>
+    <link href="https://arxiv.org/abs/1902.08673v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1902.08673v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Overfitting is a major problem in training machine learning models, specifically deep neural networks. This problem may be caused by imbalanced datasets and initialization of the model parameters, which conforms the model too closely to the training data and negatively affects the generalization performance of the model for unseen data. The original dropout is a regularization technique to drop hidden units randomly during training. In this paper, we propose an adaptive technique to wisely drop the visible and hidden units in a deep neural network using Ising energy of the network. The preliminary results show that the proposed approach can keep the classification performance competitive to the original network while eliminating optimization of unnecessary network parameters in each training cycle. The dropout state of units can also be applied to the trained (inference) model. This technique could compress the network in terms of number of parameters up to 41.18% and 55.86% for the classification task on the MNIST and Fashion-MNIST datasets, respectively.</summary>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2019-02-07T02:21:40Z</published>
+    <arxiv:comment>This paper is accepted at 44th IEEE International Conference on Acoustics, Speech and Signal Processing (IEEE ICASSP), 2019</arxiv:comment>
+    <arxiv:primary_category term="cs.NE"/>
+    <author>
+      <name>Hojjat Salehinejad</name>
+    </author>
+    <author>
+      <name>Shahrokh Valaee</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/1402.0915v1</id>
+    <title>Learning Ordered Representations with Nested Dropout</title>
+    <updated>2014-02-05T00:41:58Z</updated>
+    <link href="https://arxiv.org/abs/1402.0915v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1402.0915v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>In this paper, we study ordered representations of data in which different dimensions have different degrees of importance. To learn these representations we introduce nested dropout, a procedure for stochastically removing coherent nested sets of hidden units in a neural network. We first present a sequence of theoretical results in the simple case of a semi-linear autoencoder. We rigorously show that the application of nested dropout enforces identifiability of the units, which leads to an exact equivalence with PCA. We then extend the algorithm to deep models and demonstrate the relevance of ordered representations to a number of applications. Specifically, we use the ordered property of the learned codes to construct hash-based data structures that permit very fast retrieval, achieving retrieval in time logarithmic in the database size and independent of the dimensionality of the representation. This allows codes that are hundreds of times longer than currently feasible for retrieval. We therefore avoid the diminished quality associated with short codes, while still performing retrieval that is competitive in speed with existing methods. We also show that ordered representations are a promising way to learn adaptive compression for efficient online data reconstruction.</summary>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2014-02-05T00:41:58Z</published>
+    <arxiv:comment>11 pages, 5 figures. Submitted for publication</arxiv:comment>
+    <arxiv:primary_category term="stat.ML"/>
+    <author>
+      <name>Oren Rippel</name>
+    </author>
+    <author>
+      <name>Michael A. Gelbart</name>
+    </author>
+    <author>
+      <name>Ryan P. Adams</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2010.14592v3</id>
+    <title>Shapley Flow: A Graph-based Approach to Interpreting Model Predictions</title>
+    <updated>2021-02-26T15:49:29Z</updated>
+    <link href="https://arxiv.org/abs/2010.14592v3" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2010.14592v3" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Many existing approaches for estimating feature importance are problematic because they ignore or hide dependencies among features. A causal graph, which encodes the relationships among input variables, can aid in assigning feature importance. However, current approaches that assign credit to nodes in the causal graph fail to explain the entire graph. In light of these limitations, we propose Shapley Flow, a novel approach to interpreting machine learning models. It considers the entire causal graph, and assigns credit to \textit{edges} instead of treating nodes as the fundamental unit of credit assignment. Shapley Flow is the unique solution to a generalization of the Shapley value axioms to directed acyclic graphs. We demonstrate the benefit of using Shapley Flow to reason about the impact of a model's input on its output. In addition to maintaining insights from existing approaches, Shapley Flow extends the flat, set-based, view prevalent in game theory based explanation methods to a deeper, \textit{graph-based}, view. This graph-based view enables users to understand the flow of importance through a system, and reason about potential interventions.</summary>
+    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="stat.ML" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2020-10-27T20:21:00Z</published>
+    <arxiv:comment>camera ready version for AISTATS 2021</arxiv:comment>
+    <arxiv:primary_category term="cs.LG"/>
+    <author>
+      <name>Jiaxuan Wang</name>
+    </author>
+    <author>
+      <name>Jenna Wiens</name>
+    </author>
+    <author>
+      <name>Scott Lundberg</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2112.14889v2</id>
+    <title>Few-shot Backdoor Defense Using Shapley Estimation</title>
+    <updated>2022-10-21T07:40:54Z</updated>
+    <link href="https://arxiv.org/abs/2112.14889v2" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/2112.14889v2" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Deep neural networks have achieved impressive performance in a variety of tasks over the last decade, such as autonomous driving, face recognition, and medical diagnosis. However, prior works show that deep neural networks are easily manipulated into specific, attacker-decided behaviors in the inference stage by backdoor attacks which inject malicious small hidden triggers into model training, raising serious security threats. To determine the triggered neurons and protect against backdoor attacks, we exploit Shapley value and develop a new approach called Shapley Pruning (ShapPruning) that successfully mitigates backdoor attacks from models in a data-insufficient situation (1 image per class or even free of data). Considering the interaction between neurons, ShapPruning identifies the few infected neurons (under 1% of all neurons) and manages to protect the model's structure and accuracy after pruning as many infected neurons as possible. To accelerate ShapPruning, we further propose discarding threshold and $ε$-greedy strategy to accelerate Shapley estimation, making it possible to repair poisoned models with only several minutes. Experiments demonstrate the effectiveness and robustness of our method against various attacks and tasks compared to existing methods.</summary>
+    <category term="cs.CR" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.CV" scheme="http://arxiv.org/schemas/atom"/>
+    <category term="cs.NE" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2021-12-30T02:27:03Z</published>
+    <arxiv:primary_category term="cs.CR"/>
+    <author>
+      <name>Jiyang Guan</name>
+    </author>
+    <author>
+      <name>Zhuozhuo Tu</name>
+    </author>
+    <author>
+      <name>Ran He</name>
+    </author>
+    <author>
+      <name>Dacheng Tao</name>
+    </author>
+  </entry>
+</feed>

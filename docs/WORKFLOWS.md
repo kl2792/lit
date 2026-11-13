@@ -412,14 +412,20 @@ lit search --local "shapley xai"
 `--local` and `--source` are mutually exclusive: `--source` names a remote
 backend, so the pair has no meaning and `lit` rejects it rather than picking one.
 
+Without `--source`, search tries Semantic Scholar, then OpenAlex and arXiv
+together, then the catalogs (ADR-011). Each `--json` result names its
+backend in `source`. A search that finds nothing while a source failed exits
+nonzero and lists each source's error, so an outage never reads as zero hits.
+
 `--source` is the lever for recall vs. precision vs. latency:
-- `oa` (default) — broad, fast.
-- `ss` — best citation-graph quality.
-- `cr` — DOI-authoritative; canonical for journals.
-- `dblp` — CS conferences OA tends to miss.
-- `philpapers` — philosophy coverage.
-- `clio` — Columbia catalog (local index, requires `lit clio sync`).
-- `all` — merge across sources.
+- `oa`: broad; keyless requests share a daily budget per IP (`OPENALEX_API_KEY`).
+- `ss`: best citation-graph quality.
+- `arxiv`: CS, ML, physics and math preprints; titles, abstracts and authors.
+- `cr`: DOI-authoritative; canonical for journals.
+- `dblp`: CS conferences OA tends to miss.
+- `philpapers`: philosophy coverage.
+- `clio`: Columbia catalog (local index, requires `lit clio sync`).
+- `all`: merge across sources.
 
 For **more than three** remote searches in one task, delegate to a background
 subagent. The raw API output is bulky and shouldn't sit in main context.

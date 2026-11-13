@@ -314,10 +314,13 @@ pub async fn handle_search(ctx: &cmd::Context, args: &Value) -> Result<String, S
     let brief = args["brief"].as_bool().unwrap_or(true);
 
     if !local {
-        let results = cmd::search::run_data(ctx, query, limit, None)
+        let papers: Vec<crate::PaperResult> = cmd::search::run_data(ctx, query, limit, None)
             .await
-            .map_err(|e| e.to_string())?;
-        papers_to_json_string(&results, brief)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|hit| hit.paper)
+            .collect();
+        papers_to_json_string(&papers, brief)
     } else {
         let rows = ctx.db.search_local(query, limit).map_err(|e| e.to_string())?;
         if rows.is_empty() {
