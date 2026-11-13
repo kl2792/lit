@@ -624,10 +624,11 @@ async fn read_one(
     ctx: &cmd::Context,
     id: &str,
 ) -> Result<cmd::read::ReadResult, Box<dyn std::error::Error>> {
-    if cmd::web::is_page_url(id) {
-        return cmd::web::read(ctx, id).await;
+    match cmd::read::route(id) {
+        cmd::read::Route::Proceedings => cmd::proceedings::read(ctx, id).await,
+        cmd::read::Route::WebPage => cmd::web::read(ctx, id).await,
+        cmd::read::Route::Paper => Ok(cmd::read::read_or_fetch(ctx, id).await?.0),
     }
-    Ok(cmd::read::read_or_fetch(ctx, id).await?.0)
 }
 
 /// Run `lit remove`: delete an entry from a .bib file by citekey.

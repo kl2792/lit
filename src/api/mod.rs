@@ -7,6 +7,7 @@ pub mod dblp;
 pub mod openalex;
 pub mod openlibrary;
 pub mod philpapers;
+pub mod proceedings;
 pub mod semantic_scholar;
 pub mod unpaywall;
 pub mod web;

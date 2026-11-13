@@ -323,13 +323,62 @@ pub(crate) fn plan_in(base: &Path, query: &str, no_cache: bool) -> Result<Plan, 
     }
 }
 
+/// Which reader `lit read` hands one argument to.
+#[derive(Debug, PartialEq)]
+pub enum Route {
+    /// A URL a proceedings rule accepts (ADR-010).
+    Proceedings,
+    /// Any other page URL; ADR-005's allowlist decides.
+    WebPage,
+    /// An id, a directory name, a citekey or a title.
+    Paper,
+}
+
+/// Route one `lit read` argument.
+pub fn route(id: &str) -> Route {
+    if !super::web::is_page_url(id) {
+        Route::Paper
+    } else if super::proceedings::handles(id) {
+        Route::Proceedings
+    } else {
+        Route::WebPage
+    }
+}
+
+/// The error for a lookup that found no local artifact and no open-access
+/// copy: the directory searched and each remote source with its outcome.
+fn not_found_anywhere(query: &str, base: &Path, tried: &[String]) -> String {
+    let lines: Vec<String> = tried.iter().map(|t| format!("  {}", t)).collect();
+    format!(
+        "paper '{}' not found locally in {} and no open-access copy was found:\n{}",
+        query,
+        base.display(),
+        lines.join("\n")
+    )
+}
+
 /// Locate `query`'s readable text, fetching the paper first when `plan_in`
-/// says so. Returns the result and whether a fetch ran.
+/// says so. A title or Semantic Scholar id that names no local artifact is
+/// looked up as an open-access copy (ADR-010 decision 6). Returns the result
+/// and whether a fetch ran.
 pub async fn read_or_fetch(ctx: &Context, query: &str) -> Result<(ReadResult, bool), Box<dyn std::error::Error>> {
+    use super::proceedings::{lookup_of, open_access, Live};
+
     let base = find_pdf_base()?;
-    match plan_in(&base, query, ctx.no_cache)? {
-        Plan::Read(dir) => Ok((read_dir(dir)?, false)),
-        Plan::Fetch(id) => Ok((read_dir(super::download::fetch(ctx, &id).await?)?, true)),
+    match plan_in(&base, query, ctx.no_cache) {
+        Ok(Plan::Read(dir)) => Ok((read_dir(dir)?, false)),
+        Ok(Plan::Fetch(id)) => Ok((read_dir(super::download::fetch(ctx, &id).await?)?, true)),
+        Err(ReadError::NotFound(missing)) => {
+            let Some(lookup) = lookup_of(query) else {
+                return Err(ReadError::NotFound(missing).into());
+            };
+            let live = Live { ctx, root: base.clone() };
+            match open_access(&ctx.client(), &live, &lookup).await {
+                Ok(dir) => Ok((read_dir(dir)?, true)),
+                Err(tried) => Err(not_found_anywhere(query, &base, &tried).into()),
+            }
+        }
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -610,6 +659,21 @@ mod tests {
             err.to_string(),
             "paper 'nosuchpaper' not found locally. Download it first with an arXiv ID or DOI."
         );
+    }
+
+    #[test]
+    fn a_proceedings_pdf_url_is_routed_to_the_proceedings_reader_not_rejected_as_a_web_host() {
+        // `lit read` of this NeurIPS 2013 PDF failed with "unsupported host
+        // 'proceedings.neurips.cc'" because every page URL went to ADR-005's
+        // web reader.
+        let url = "https://proceedings.neurips.cc/paper/2013/file/7b5b23f4aadf9513306bcd59afb6e4c9-Paper.pdf";
+        assert_eq!(route(url), Route::Proceedings);
+        assert_eq!(route("https://dl.acm.org/doi/10.1145/3292500.3330701"), Route::Proceedings);
+        assert_eq!(route("https://distill.pub/2020/circuits/zoom-in/"), Route::WebPage);
+        assert_eq!(route("https://example.com/post"), Route::WebPage);
+        for id in ["2106.09685", "https://arxiv.org/abs/2106.09685", "Adaptive dropout for training deep neural networks"] {
+            assert_eq!(route(id), Route::Paper, "{}", id);
+        }
     }
 
     #[test]

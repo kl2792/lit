@@ -113,7 +113,28 @@ Any other page becomes `@misc` with the site name as `howpublished` and the cano
 Forum authors are display names, often usernames, so check the generated key and pass `--key` for a better one; `--key` also names the artifact directory when the page is new.
 
 Only these hosts are supported: alignmentforum.org, lesswrong.com, greaterwrong.com, distill.pub and transformer-circuits.pub.
-Any other URL is an error naming them (ADR-005); for other pages, save the text yourself and use `lit misc`.
+Any other URL that is not on a proceedings host (section 2d) is an error naming both host lists (ADR-005); for other pages, save the text yourself and use `lit misc`.
+
+---
+
+## 2d. Read a paper from open-access proceedings
+
+A NeurIPS, PMLR, JMLR, OpenReview, ACL Anthology, AAAI, CVF, ECVA or IJCAI paper often has no DOI or arXiv id.
+Pass its PDF or landing-page URL, or its title:
+
+```bash
+lit read https://proceedings.neurips.cc/paper/2013/file/7b5b23f4aadf9513306bcd59afb6e4c9-Paper.pdf
+# → /abs/path/to/etc/pdf/ba2013adaptive/paper.txt
+lit read "Adaptive dropout for training deep neural networks"
+# → the same path, read locally once stored
+```
+
+Each host has one rule in `src/api/proceedings.rs` that maps the URL to the paper's canonical PDF and landing URLs, so every spelling of one paper shares one artifact.
+The landing page's `citation_*` tags give the title, authors, year and DOI; a PDF without a landing page, such as an IJCAI or ECVA PDF URL, is stored without metadata under `<rule id>-<file stem>`.
+A dl.acm.org URL is read as its DOI.
+A title (any query with a space) or Semantic Scholar id that matches no local artifact is looked up on Semantic Scholar, whose arXiv id, DOI or open-access PDF is fetched, then on OpenAlex, whose location URLs on a proceedings host are fetched; a title match must be exact up to case and punctuation.
+When nothing is found, the error names the local directory and each source tried.
+OpenReview and AAAI serve bot challenges to non-browser clients from some networks; such a fetch fails with the host's answer, and the PDF can be saved by hand and ingested with `lit misc --pdf` (ADR-010).
 
 ---
 

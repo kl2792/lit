@@ -48,15 +48,37 @@ fn work_names_arxiv_id(w: &Value, want: &str) -> bool {
             .and_then(|d| crate::detect::arxiv_id_from_doi(&d))
             .is_some_and(|id| id == want)
     });
-    let locations = w["locations"].as_array().into_iter().flatten();
-    let located = locations.chain([&w["primary_location"], &w["best_oa_location"]]);
-    let url_matches = located.flat_map(|l| [&l["landing_page_url"], &l["pdf_url"]]).any(|u| {
-        u.as_str().is_some_and(|u| {
-            let u = u.trim_end_matches('/');
-            (u.contains("arxiv.org/abs/") || u.contains("arxiv.org/pdf/")) && crate::detect::normalize_arxiv(u) == want
-        })
+    let url_matches = location_urls(w).iter().any(|u| {
+        let u = u.trim_end_matches('/');
+        (u.contains("arxiv.org/abs/") || u.contains("arxiv.org/pdf/")) && crate::detect::normalize_arxiv(u) == want
     });
     doi_matches || url_matches
+}
+
+/// A work's location URLs without repeats: the best open-access location,
+/// the primary location, then the others, each PDF URL before its landing
+/// page URL.
+fn location_urls(w: &Value) -> Vec<String> {
+    let others = w["locations"].as_array().into_iter().flatten();
+    let mut urls: Vec<String> = Vec::new();
+    for u in [&w["best_oa_location"], &w["primary_location"]]
+        .into_iter()
+        .chain(others)
+        .flat_map(|l| [&l["pdf_url"], &l["landing_page_url"]])
+        .filter_map(Value::as_str)
+    {
+        if !u.is_empty() && !urls.iter().any(|seen| seen == u) {
+            urls.push(u.to_string());
+        }
+    }
+    urls
+}
+
+/// Parse a works list response into each work's title and location URLs.
+pub fn parse_location_urls(body: &str) -> Result<Vec<(String, Vec<String>)>, Box<dyn std::error::Error>> {
+    let data: Value = serde_json::from_str(body)?;
+    let works = data["results"].as_array().ok_or("missing results array")?;
+    Ok(works.iter().map(|w| (w["title"].as_str().unwrap_or_default().to_string(), location_urls(w))).collect())
 }
 
 /// Parse response from the single-work endpoint.

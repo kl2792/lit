@@ -1,0 +1,81 @@
+<!doctype html>
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <meta name="description" content="XXX">
+    <meta name="author" content="XXX">
+    <meta name="generator" content="XXX">
+    <title>ECVA | European Computer Vision Association</title>
+    <link rel="canonical" href="https://getbootstrap.com/docs/4.5/examples/eccva/">
+    <link href="https://www.ecva.net/assets/dist/css/bootstrap.css" rel="stylesheet">
+    <link href="https://cdn.mpi-klsb.mpg.de/google/css/quicksand-v29.css" rel="stylesheet">
+    <link href="https://www.ecva.net/css/ecva.css" rel="stylesheet">
+    <script type="text/javascript" src="https://www.ecva.net/src/static/jquery.js"></script>
+  </head>
+  <body>
+
+    <div class="d-flex flex-column flex-md-row align-items-center p-3 px-md-4 mb-3 py-6 bg-white">
+      <div class="container">
+        <div class="row">
+          <h5 class="my-0 mr-md-auto"><img width="100px" src="https://www.ecva.net/src/img/ECVAlogo.png" alt="ECVA logo"></h5>
+          <nav class="my-2">
+            <a class="p-2 text-dark menu-item" href="https://www.ecva.net/index.php">Home</a>
+            <a class="p-2 text-dark menu-item" href="https://www.ecva.net/index.php#about">About</a>
+            <a class="p-2 text-dark menu-item" href="https://www.ecva.net/index.php#conferences">Conferences</a>
+            <a class="p-2 text-dark menu-item" href="https://www.ecva.net/index.php#awards">Awards</a>
+            <a class="p-2 text-dark menu-item" href="https://www.ecva.net/index.php#board">Board</a>
+	    <a class="p-2 text-dark menu-item" href="https://www.ecva.net/papers.php">Papers</a>
+            <a class="p-2 text-dark menu-item" href="sponsorship.php">Sponsorship</a>
+<!--            <a class="p-2 text-dark menu-item" href="https://www.ecva.net/archive.php">Archive</a> -->
+          </nav>
+        </div>
+      </div>
+    </div>
+
+</div>
+<div class="container papercontainer">
+<div id="content">
+<dl><dd><div id="papertitle">
+Quaternion Equivariant Capsule Networks for 3D Point Clouds </div>
+<div id="authors"><br /><b><i>
+Yongheng Zhao, Tolga Birdal, Jan Eric Lenssen, Emanuele Menegatti, Leonidas Guibas, Federico Tombari </i></b>
+; 
+</div><font size="5"><br /><b>Abstract</b> </font><br /><br /><div id="abstract">
+We present a 3D capsule module for processing point clouds that is equivariant to 3D rotations and translations, as well as invariant to permutations of the input points. The operator receives a sparse set of local reference frames, computed from an input point cloud and establishes end-to-end transformation equivariance through a novel dynamic routing procedure on quaternions. Further, we theoretically connect dynamic routing between capsules to the well-known Weiszfeld algorithm, a scheme for solving iterative re-weighted least squares (IRLS) problems with provable convergence properties. It is shown that such group dynamic routing can be interpreted as robust IRLS rotation averaging on capsule votes, where information is routed based on the final inlier scores. Based on our operator, we build a capsule network that disentangles geometry from pose, paving the way for more informative descriptors and a structured latent space. Our architecture allows joint object classification and orientation estimation without explicit supervision of rotations. We validate our algorithm empirically on common benchmark datasets."</div>
+<font size="5"><br /><b>Related Material</b> </font><br /><br />
+[<a href=../../../../papers/eccv_2020/papers_ECCV/papers/123460001.pdf>pdf</a>]
+</dl></dd></div>
+
+</div>
+<footer class="bg-footer">
+<div id="contact" class="container">
+<div class="py-5 row">
+  <div class="col">
+    <h2>Contact</h2>
+    <p><a href="mailto:info@ecva.net">info@ecva.net</a></p>
+    <p><a href="https://data-protection.mpi-klsb.mpg.de/inf/ecva.net">Data Protection</a></p>
+    <p><a href="https://imprint.mpi-klsb.mpg.de/inf/ecva.net">Imprint</a></p>
+  </div>
+</div>
+</footer>
+<!-- <script>
+var acc = document.getElementsByClassName("accordion");
+var i;
+for (i = 0; i < acc.length; i++) {
+acc[i].addEventListener("click", function() {
+this.classList.toggle("active");
+var panel = this.nextElementSibling;
+if (panel.style.display === "block") {
+panel.style.display = "none";
+} else {
+panel.style.display = "block";
+}
+});
+}
+</script> -->
+<!-- <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js" integrity="sha384-DfXdz2htPH0lsSSs5nCTpuj/zy4C+OGpamoFVy38MVBnE+IbbVYUew+OrCXaRkfj" crossorigin="anonymous"></script>
+<script>window.jQuery || document.write('<script src="https://static.ecva.net/assets/js/vendor/jquery.slim.min.js"><\/script>')</script><script src="https://static.ecva.net/assets/dist/js/bootstrap.bundle.js"></script> -->
+</body>
+</html>

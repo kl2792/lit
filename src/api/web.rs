@@ -96,7 +96,13 @@ pub fn is_http_url(input: &str) -> bool {
 pub fn parse_url(input: &str) -> Result<WebUrl, String> {
     let (host, path) = host_and_path(input).ok_or_else(|| format!("not an http(s) URL: {}", input))?;
     let site = Site::from_host(&host).ok_or_else(|| {
-        format!("unsupported host '{}' in {}; lit reads web pages only from: {}", host, input, SUPPORTED_HOSTS.join(", "))
+        format!(
+            "unsupported host '{}' in {}; lit reads web pages only from: {}; and `lit read` reads proceedings papers only from: {}",
+            host,
+            input,
+            SUPPORTED_HOSTS.join(", "),
+            super::proceedings::hosts().join(", ")
+        )
     })?;
     match site {
         Site::AlignmentForum | Site::LessWrong => {
@@ -304,7 +310,7 @@ fn published_date(doc: &[Node]) -> Option<String> {
 }
 
 /// "Last, First" to "First Last"; other forms unchanged.
-fn first_last(name: &str) -> String {
+pub(crate) fn first_last(name: &str) -> String {
     match name.split_once(',') {
         Some((last, first)) if !first.trim().is_empty() => format!("{} {}", first.trim(), last.trim()),
         _ => name.trim().to_string(),
@@ -385,7 +391,7 @@ mod tests {
     fn unsupported_host_error_names_every_supported_host() {
         let err = parse_url("https://example.com/post/1").unwrap_err();
         assert!(err.contains("unsupported host 'example.com'"), "err: {}", err);
-        for host in SUPPORTED_HOSTS {
+        for host in SUPPORTED_HOSTS.iter().chain(&super::super::proceedings::hosts()) {
             assert!(err.contains(host), "err: {}", err);
         }
     }

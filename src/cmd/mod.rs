@@ -13,6 +13,7 @@ pub mod supplements;
 pub(crate) mod lock;
 pub mod open;
 pub mod path;
+pub mod proceedings;
 pub mod read;
 pub mod refs;
 pub mod search;

@@ -45,8 +45,10 @@ lit download <id> [--source] [--url-only] [--dir DIR] [--citekey KEY]
                                  EZProxy); --source for arXiv LaTeX source;
                                  --citekey names the output directory
 lit read <id>...                 Locate paper text, one path per id in order;
-                                 auto-downloads arXiv PDFs and web pages; a
-                                 failed id is named on stderr, the rest still run
+                                 auto-downloads arXiv PDFs, DOIs, web pages and
+                                 proceedings PDFs; a title or S2 id falls back to
+                                 an open-access copy; a failed id is named on
+                                 stderr, the rest still run
 lit add <id> <bib_file> [--key KEY] [--force]
                                  Fetch BibTeX and upsert into file; --json
                                  prints {entry_key, bib_file, added}
@@ -77,10 +79,17 @@ lit clio sync [--check] [--force]
 
 ### Web pages
 
-`lit read <URL>` and `lit add <URL> <bib_file>` accept page URLs on alignmentforum.org, lesswrong.com, greaterwrong.com, distill.pub and transformer-circuits.pub, and reject any other host (ADR-005).
+`lit read <URL>` and `lit add <URL> <bib_file>` accept page URLs on alignmentforum.org, lesswrong.com, greaterwrong.com, distill.pub and transformer-circuits.pub, and reject any other host that is not a proceedings host below (ADR-005).
 The page text is stored once as `etc/pdf/<citekey>/paper.txt` with its URL, host, fetch time and extraction method in `source.yaml`, and later calls read it with no request.
 `add` uses the page's DOI when it has one (Distill) and otherwise writes `@misc` with the site name as `howpublished` and the page `url`.
 See [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) section 2c.
+
+### Proceedings
+
+`lit read <URL>` also accepts PDF and landing-page URLs on the open-access proceedings hosts of the rule table in `src/api/proceedings.rs`: NeurIPS (proceedings.neurips.cc, papers.nips.cc, papers.neurips.cc), PMLR, JMLR, OpenReview, ACL Anthology, AAAI, CVF, ECVA and IJCAI; a dl.acm.org URL is read as its DOI (ADR-010).
+The PDF is stored as `etc/pdf/<citekey>/paper.pdf` with its `pdftotext` extraction, and `source.yaml` records the canonical PDF and landing URLs and the landing page's `citation_*` metadata.
+A title or Semantic Scholar id that matches no local artifact is looked up on Semantic Scholar, then OpenAlex, for an arXiv id, DOI, open-access PDF or proceedings URL; the error names each source tried.
+See [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) section 2d.
 
 ### Flags
 

@@ -201,7 +201,7 @@ fn save_pdf(claim: Claim, data: &[u8], yaml: String) -> Result<PathBuf, Box<dyn 
 /// Write `data` as `dir/paper.pdf` and its `pdftotext` extraction as
 /// `dir/paper.txt`; a failed extraction is warned about and leaves the PDF for
 /// `lit read` to retry.
-fn write_pdf(dir: &Path, data: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_pdf(dir: &Path, data: &[u8]) -> std::io::Result<()> {
     let pdf_path = dir.join("paper.pdf");
     std::fs::write(&pdf_path, data)?;
     if let Err(e) = extract_text(&pdf_path, &dir.join("paper.txt")) {
@@ -397,7 +397,7 @@ fn curl_args(url: &str, cookie_path: Option<&str>) -> Vec<String> {
 /// The bytes are read from curl's stdout, never staged through a file: they are
 /// buffered in memory either way, and a scratch path is one more thing that can
 /// be unwritable. stderr is captured separately so it cannot enter the payload.
-async fn fetch_pdf_via_curl(url: &str, cookie_path: Option<&std::path::Path>) -> Result<Vec<u8>, FetchError> {
+pub(crate) async fn fetch_pdf_via_curl(url: &str, cookie_path: Option<&std::path::Path>) -> Result<Vec<u8>, FetchError> {
     let transport = |code: Option<i32>, message: String| FetchError::Transport {
         url: url.to_string(),
         code,

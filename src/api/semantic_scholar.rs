@@ -1,14 +1,30 @@
 use super::{extract_last_name, urlencode, PaperResult};
 use serde_json::Value;
 
+/// The fields `parse_paper` reads.
+const PAPER_FIELDS: &str = "paperId,externalIds,title,authors,year,venue,abstract,publicationDate,citationCount,openAccessPdf";
+
 /// Build URL for a single paper lookup by identifier.
 ///
 /// `id` can be an arXiv ID (use `arXiv:{id}`), DOI, or S2 paper ID.
 pub fn paper_url(id: &str) -> String {
+    format!("https://api.semanticscholar.org/graph/v1/paper/{}?fields={}", id, PAPER_FIELDS)
+}
+
+/// Build URL for the single closest title match, with `parse_paper`'s fields.
+pub fn match_url(title: &str) -> String {
     format!(
-        "https://api.semanticscholar.org/graph/v1/paper/{}?fields=paperId,externalIds,title,authors,year,venue,abstract,publicationDate,citationCount,openAccessPdf",
-        id
+        "https://api.semanticscholar.org/graph/v1/paper/search/match?query={}&fields={}",
+        urlencode(title),
+        PAPER_FIELDS
     )
+}
+
+/// Parse response from the title-match endpoint: `{"data": [paper]}`.
+pub fn parse_match(body: &str) -> Result<PaperResult, Box<dyn std::error::Error>> {
+    let data: Value = serde_json::from_str(body)?;
+    let paper = data["data"].get(0).ok_or("no title match")?;
+    parse_paper(&paper.to_string())
 }
 
 /// Parse response from the single-paper endpoint.

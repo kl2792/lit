@@ -202,7 +202,7 @@ fn load_artifact(dir: &Path, url: WebUrl) -> Result<WebArtifact, String> {
 }
 
 /// A `source.yaml` value with its quotes and `\"` escapes removed.
-fn yaml_value(yaml: &str, key: &str) -> Option<String> {
+pub(crate) fn yaml_value(yaml: &str, key: &str) -> Option<String> {
     super::check::yaml_field(yaml, key).map(|v| v.replace("\\\"", "\"")).filter(|v| !v.is_empty())
 }
 
@@ -224,7 +224,7 @@ fn claim(dir: &Path) -> std::io::Result<bool> {
 /// Not `artifact::claim_dir`: it identifies works by arXiv id or DOI and
 /// takes an empty directory as free, but here an empty directory may be
 /// another store's claim.
-fn claim_first(root: &Path, slug: &str) -> std::io::Result<PathBuf> {
+pub(crate) fn claim_first(root: &Path, slug: &str) -> std::io::Result<PathBuf> {
     for dir in super::artifact::candidate_names(slug).map(|name| root.join(name)) {
         if claim(&dir)? {
             return Ok(dir);
@@ -235,32 +235,35 @@ fn claim_first(root: &Path, slug: &str) -> std::io::Result<PathBuf> {
 
 /// Write `paper.txt` and `source.yaml` into a staging directory, then move
 /// it onto `artifact.dir`, so a failure leaves the previous artifact or none.
+fn write_artifact(artifact: &WebArtifact, page: &WebPage, claimed: bool) -> std::io::Result<()> {
+    publish_claimed(&artifact.dir, claimed, |staging| {
+        std::fs::write(staging.join("paper.txt"), format!("{}\n", page.text))?;
+        std::fs::write(staging.join("source.yaml"), source_yaml(artifact, page, &super::utc_timestamp()))
+    })
+}
+
+/// Let `fill` write a fresh staging directory, then move it onto `dir`, so a
+/// failure leaves the previous artifact or none.
 ///
 /// A `claimed` directory is this store's empty claim: the staging directory
 /// replaces it by one rename, which fails rather than replace it if anything
 /// has entered it, and a failure removes the claim if it is still empty.
-fn write_artifact(artifact: &WebArtifact, page: &WebPage, claimed: bool) -> std::io::Result<()> {
-    let staging = super::misc::fresh_staging(&artifact.dir);
-    let result = fill_staging(artifact, page, &staging).and_then(|()| {
+pub(crate) fn publish_claimed(dir: &Path, claimed: bool, fill: impl FnOnce(&Path) -> std::io::Result<()>) -> std::io::Result<()> {
+    let staging = super::misc::fresh_staging(dir);
+    let result = std::fs::create_dir_all(&staging).and_then(|()| fill(&staging)).and_then(|()| {
         if claimed {
-            std::fs::rename(&staging, &artifact.dir)
+            std::fs::rename(&staging, dir)
         } else {
-            super::misc::publish(&staging, &artifact.dir)
+            super::misc::publish(&staging, dir)
         }
     });
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
         if claimed {
-            let _ = std::fs::remove_dir(&artifact.dir);
+            let _ = std::fs::remove_dir(dir);
         }
     }
     result
-}
-
-fn fill_staging(artifact: &WebArtifact, page: &WebPage, staging: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(staging)?;
-    std::fs::write(staging.join("paper.txt"), format!("{}\n", page.text))?;
-    std::fs::write(staging.join("source.yaml"), source_yaml(artifact, page, &super::utc_timestamp()))
 }
 
 /// `source.yaml` for a web artifact: the misc fields (title, authors, year,
