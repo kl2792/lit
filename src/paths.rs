@@ -42,6 +42,14 @@ pub fn db_path() -> (PathBuf, &'static str) {
     )
 }
 
+/// The file through which processes sharing the database at `db` pace their
+/// patient Semantic Scholar requests (ADR-012): `<db>.s2-pacing`.
+pub fn s2_pacing_file(db: &Path) -> PathBuf {
+    let mut name = db.as_os_str().to_os_string();
+    name.push(".s2-pacing");
+    PathBuf::from(name)
+}
+
 /// Resolve the project root from an override and a working directory.
 ///
 /// `LIT_PROJECT_ROOT` wins; otherwise the search walks up from `cwd` for a
@@ -132,6 +140,11 @@ mod tests {
             &std::env::current_exe().unwrap_or_default(),
         );
         assert_eq!(db_path(), expected);
+    }
+
+    #[test]
+    fn s2_pacing_file_sits_beside_the_database() {
+        assert_eq!(s2_pacing_file(Path::new("/opt/lit/etc/lit/lit.db")), PathBuf::from("/opt/lit/etc/lit/lit.db.s2-pacing"));
     }
 
     #[test]

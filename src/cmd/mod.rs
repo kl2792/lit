@@ -3,6 +3,7 @@ pub(crate) mod artifact;
 pub mod check;
 pub mod clean;
 pub mod clio;
+pub mod config;
 pub mod metadata;
 pub mod misc;
 pub mod cites;
@@ -34,11 +35,13 @@ pub struct Context {
     pub json: bool,
     pub no_cache: bool,
     pub db: Arc<Db>,
+    /// Patient mode for Semantic Scholar requests (ADR-012); `None` is off.
+    pub patience: Option<crate::http::Patience>,
 }
 
 impl Context {
     pub fn client(&self) -> crate::http::Client {
-        crate::http::Client::new(Arc::clone(&self.db), self.no_cache)
+        crate::http::Client::new(Arc::clone(&self.db), self.no_cache, self.patience.clone())
     }
 
     /// Handle -b/--bib: append to file, or print to stdout.

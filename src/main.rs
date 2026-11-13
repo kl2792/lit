@@ -37,6 +37,18 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     open: bool,
 
+    /// Wait out Semantic Scholar rate limits (up to the patience budget, 300s by default, per request) before falling back; paces requests across lit processes (ADR-012)
+    #[arg(long, global = true, conflicts_with = "no_patient")]
+    patient: bool,
+
+    /// Turn patient mode off for this invocation, overriding the `patient` setting
+    #[arg(long, global = true)]
+    no_patient: bool,
+
+    /// Patience budget in seconds of retry sleep per Semantic Scholar request; implies --patient
+    #[arg(long, global = true, value_name = "SECS", value_parser = clap::value_parser!(u64).range(1..), conflicts_with = "no_patient")]
+    patient_budget: Option<u64>,
+
     /// Free-form input (arXiv ID, DOI, ISBN, URL, or search query)
     input: Vec<String>,
 }
@@ -192,6 +204,11 @@ enum Commands {
         #[command(subcommand)]
         action: DbAction,
     },
+    /// Show or change settings stored in the database (patient, patient_budget)
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
+    },
     /// Locate (and if needed extract) the text of one or more papers.
     /// Prints one file path per id, in argument order.
     Read {
@@ -255,6 +272,16 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Print every setting (the default action)
+    List,
+    /// Store a setting: `patient on|off`, `patient_budget SECS`
+    Set { name: String, value: String },
+    /// Remove a stored setting, restoring its default
+    Unset { name: String },
 }
 
 #[derive(Subcommand)]
@@ -345,6 +372,18 @@ async fn main() {
         }
     }
 
+    let flags = cmd::config::PatienceFlags {
+        patient: cli.patient,
+        no_patient: cli.no_patient,
+        budget_secs: cli.patient_budget,
+    };
+    let patience = match cmd::config::resolve_patience(&database, flags, paths::s2_pacing_file(&db_path)) {
+        Ok(p) => p,
+        Err(e) => {
+            format::error(&format!("patient mode: {}", e));
+            std::process::exit(1);
+        }
+    };
     let ctx = cmd::Context {
         verbose: cli.verbose,
         bib_file,
@@ -352,6 +391,7 @@ async fn main() {
         json: cli.json,
         no_cache: cli.no_cache,
         db: database,
+        patience,
     };
 
     let result = match cli.command {
@@ -448,6 +488,7 @@ async fn main() {
         Some(Commands::Attach { citekey, bib_file, pdf, force }) => {
             run_attach(&ctx, &citekey, &bib_file, &pdf, force)
         }
+        Some(Commands::Config { action }) => run_config(&ctx, action.unwrap_or(ConfigAction::List)),
         Some(Commands::Db { action }) => match action {
             DbAction::Stats => run_db_stats(&ctx),
             DbAction::Rebuild => {
@@ -553,6 +594,27 @@ fn run_db_path(db_path: &std::path::Path, db_path_source: &str) {
         ),
         Err(e) => println!("pdf store   unresolved: {}", e),
     }
+
+    println!(
+        "s2 pacing   {}  [beside the database]",
+        paths::s2_pacing_file(db_path).display()
+    );
+}
+
+/// `lit config`: list settings, or set or unset one, with one status line.
+fn run_config(ctx: &cmd::Context, action: ConfigAction) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        ConfigAction::List => print!("{}", cmd::config::list(&ctx.db)?),
+        ConfigAction::Set { name, value } => {
+            cmd::config::set(&ctx.db, &name, &value)?;
+            println!("Set {} = {}", name, value);
+        }
+        ConfigAction::Unset { name } => {
+            cmd::config::unset(&ctx.db, &name)?;
+            println!("Unset {}; using the default", name);
+        }
+    }
+    Ok(())
 }
 
 /// Print database statistics.

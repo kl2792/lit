@@ -417,6 +417,21 @@ together, then the catalogs (ADR-011). Each `--json` result names its
 backend in `source`. A search that finds nothing while a source failed exits
 nonzero and lists each source's error, so an outage never reads as zero hits.
 
+Without `S2_API_KEY`, Semantic Scholar usually answers HTTP 429, and the
+default cascade waits only about 9s for it before answering from OpenAlex and
+arXiv. When Semantic Scholar's results are worth waiting for, as in a
+systematic review, pass `--patient` (ADR-012): each Semantic Scholar request
+retries for up to 300s (`--patient-budget SECS` changes this), parallel `lit`
+processes share one pace of a request per 1.1s, and every retry prints its wait
+on stderr. `lit config set patient on` makes every invocation patient;
+`--no-patient` opts one call out.
+
+```bash
+lit search --patient --json "dropout Shapley value hidden units"
+# stderr: note: Semantic Scholar: rate limited (attempt 1), retrying in 2.6s (3s of 300s patience used)
+# stdout: results whose "source" is "s2" once Semantic Scholar answers
+```
+
 `--source` is the lever for recall vs. precision vs. latency:
 - `oa`: broad; keyless requests share a daily budget per IP (`OPENALEX_API_KEY`).
 - `ss`: best citation-graph quality.

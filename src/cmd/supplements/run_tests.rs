@@ -33,7 +33,7 @@ async fn child() {
         let (client, server) = fixture(vec![redirect, response("200 OK", "text/html", body.as_bytes())], std::time::Duration::from_secs(2));
         let _override = override_client(client);
         let db = Arc::new(crate::db::Db::open(&root.join("lit.db")).unwrap());
-        let ctx = super::super::Context { verbose: false, bib_file: None, bib_stdout: false, json: true, no_cache: false, db };
+        let ctx = super::super::Context { verbose: false, bib_file: None, bib_stdout: false, json: true, no_cache: false, db, patience: None };
         let result = super::run(&ctx, DOI, true, Some(&root.join("capture")), Some(requested), None, None).await;
         assert_eq!(server.join().unwrap(), 2);
         if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
@@ -65,7 +65,7 @@ async fn child() {
         let (client, server) = fixture(vec![response("200 OK", if cloud { "binary/octet-stream" } else { "image/png" }, image)], std::time::Duration::from_secs(2));
         let _override = override_client(client);
         let db = Arc::new(crate::db::Db::open(&root.join("lit.db")).unwrap());
-        let ctx = super::super::Context { verbose: false, bib_file: None, bib_stdout: false, json: true, no_cache: false, db };
+        let ctx = super::super::Context { verbose: false, bib_file: None, bib_stdout: false, json: true, no_cache: false, db, patience: None };
         let result = super::run(&ctx, DOI, false, None, None, Some(&source), if cloud { Some(&cloud_dir) } else { None }).await;
         assert_eq!(server.join().unwrap(), 1);
         if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
@@ -98,7 +98,7 @@ async fn child() {
     let _override = override_client(client);
     let db = Arc::new(crate::db::Db::open(&root.join("lit.db")).unwrap());
     db.cache_set(&format!("supplements_crossref:{DOI}"), "crossref fixture", &serde_json::json!({"message":{"resource":{"primary":{"URL":LANDING}}}}).to_string());
-    let ctx = super::super::Context { verbose: false, bib_file: None, bib_stdout: false, json: true, no_cache: false, db };
+    let ctx = super::super::Context { verbose: false, bib_file: None, bib_stdout: false, json: true, no_cache: false, db, patience: None };
     let capture_dir = root.join("capture");
     let result = super::run(&ctx, DOI, !matches!(case.as_str(), "partial" | "missing_parent"), if case == "default_discovery" { None } else { Some(&capture_dir) }, None, None, None).await;
     assert_eq!(server.join().unwrap(), expected_requests);

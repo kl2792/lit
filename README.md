@@ -72,6 +72,9 @@ lit check [--fix] [--conflicts] [--bib-file FILE]
                                  Check DB<->filesystem consistency
 lit db stats|rebuild|path        Database operations; path prints every resolved
                                  state path and the source that set it
+lit config [set NAME VALUE | unset NAME]
+                                 List or change settings stored in the
+                                 database: patient on|off, patient_budget SECS
 lit clio auth                    Report EZProxy cookie status
 lit clio sync [--check] [--force]
                                  Download and index the Columbia catalog
@@ -99,7 +102,26 @@ See [`docs/WORKFLOWS.md`](docs/WORKFLOWS.md) section 2d.
     --json           Machine-readable JSON output
     --no-cache       Bypass cache, fetch fresh
     --no-color       Disable colored output
+    --patient        Wait out Semantic Scholar rate limits before falling back
+    --patient-budget SECS
+                     Patience budget per Semantic Scholar request (default
+                     300); implies --patient
+    --no-patient     Patient mode off, overriding the patient setting
 -h, --help           Show help
+```
+
+### Patient mode
+
+In patient mode (ADR-012) every Semantic Scholar request, whether from `search`, `add <title>`, `refs`, `cites`, `closure` or `path`, retries HTTP 429, 5xx and connection failures until its retry sleep would pass the patience budget, 300s by default; only then does the command fall back to OpenAlex or arXiv.
+Waits follow the server's Retry-After, else 2, 4, 8, 16, 32 and then 60s, each plus up to 50% jitter, and each retry prints one stderr line such as `note: Semantic Scholar: rate limited (attempt 3), retrying in 8.4s (14s of 300s patience used)`.
+Patient requests from every `lit` process sharing a database are spaced 1.1s apart through the file `<database>.s2-pacing`, matching the 1 request per second Semantic Scholar documents for an API key; a wait of 2s or more for a slot prints a line too.
+Other hosts, and every request outside patient mode, keep the retry policy above.
+
+```bash
+lit search --patient "dropout Shapley value hidden units"
+lit cites --patient-budget 600 2408.01416
+lit config set patient on        # every invocation using this database is patient
+lit search --no-patient "quick lookup"
 ```
 
 ### Search sources (`-s`)
@@ -128,7 +150,7 @@ A search that finds nothing while a source failed exits nonzero and names every 
 | `LIT_PROJECT_ROOT` | nearest directory above the working directory holding a non-empty `etc/pdf/` | Root of the artifact library that `check`, `download` and `read` operate on |
 | `LIT_CLIO_DB_PATH` | `etc/lit/clio.db` (nearest `etc/lit/` above the working directory) | Columbia catalog index |
 | `CURL_TIMEOUT` | `15` | HTTP timeout in seconds |
-| `LIT_MAX_ATTEMPTS` | `5` | HTTP attempts before giving up; waits are the server's Retry-After, else 2s, 4s, 8s, 16s plus up to 50% jitter, at most 60s in total (ADR-004), 9s per source in the default search cascade (ADR-011) |
+| `LIT_MAX_ATTEMPTS` | `5` | HTTP attempts before giving up; waits are the server's Retry-After, else 2s, 4s, 8s, 16s plus up to 50% jitter, at most 60s in total (ADR-004), 9s per source in the default search cascade (ADR-011); patient Semantic Scholar requests are limited by the patience budget alone unless this is set (ADR-012) |
 | `NO_COLOR` | *(unset)* | Set to any non-empty value to disable color |
 | `LIT_EMAIL` | `lit-cli@users.noreply.github.com` | Email for Unpaywall API |
 | `S2_API_KEY` | *(unset)* | Semantic Scholar API key (free, avoids shared rate limits) |
@@ -297,7 +319,8 @@ src/
   db.rs             SQLite store: papers, citations, response cache, FTS index
   detect.rs         Input type detection + normalization
   citekey.rs        BibTeX key generation (lastname2017word)
-  http.rs           HTTP client (reqwest, retry + backoff, cache-aware)
+  http.rs           HTTP client (reqwest, retry + backoff, cache-aware, patient mode)
+  http/pacing.rs    Semantic Scholar request slots shared across processes (ADR-012)
   format.rs         Colored output, truncation
   bibtex.rs         BibTeX parsing and generation
   sanitize.rs       BibTeX value normalization; `lit clean` derives its findings from it
@@ -328,6 +351,7 @@ src/
     verify.rs       Parallel .bib verification
     web.rs          Web-page artifacts for `read` and `add`
     check.rs        DB <-> filesystem reconciliation, rebuild
+    config.rs       `lit config` settings and patient-mode resolution (ADR-012)
     clio.rs         Clio auth and sync
 tests/              Integration tests keyed to the ADRs
 test/

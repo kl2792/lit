@@ -42,6 +42,7 @@ A change that alters what the tool promises, or that closes off an alternative s
 | [ADR-007](ADR-007-artifact-directory-ownership-and-refetch.md) | An artifact directory belongs to the paper its `source.yaml` names; atomic claims, suffixed names, staged in-place refetch, `--no-cache` means refetch | Proposed |
 | [ADR-010](ADR-010-open-access-proceedings.md) | `lit read` fetches proceedings PDFs through one host rule table with landing-page `citation_*` metadata; a title or S2 id falls back to Semantic Scholar then OpenAlex open-access copies | Proposed |
 | [ADR-011](ADR-011-free-text-search-fallback.md) | Default search falls back from Semantic Scholar to OpenAlex and arXiv together, ranks results holding half the topic words first, marks each result's source, retries at most 9s per source, and fails when it finds nothing and a source failed | Proposed |
+| [ADR-012](ADR-012-patient-semantic-scholar.md) | Patient mode (`--patient`, or the `patient` setting) retries Semantic Scholar up to a 300s budget with capped backoff before falling back, and paces requests 1.1s apart across processes sharing a database | Proposed |
 
 ADR-001 is not in this log.
 It governs the boundary between `lit` and the repository that embeds it, so it belongs to the repository containing both, at `docs/ADR-001-lit-and-repository-workflow.md` in the parent.

@@ -234,7 +234,15 @@ pub fn validate_tex_dir(path: &str) -> Result<PathBuf, String> {
 /// Build the `cmd::Context` used for all MCP tool calls.
 ///
 /// JSON mode is always on (structured output for MCP), bib options disabled.
+/// Patient mode follows the database's `patient` setting (ADR-012); a stored
+/// value that cannot be read is reported and leaves it off.
 pub fn make_context(database: Arc<db::Db>) -> cmd::Context {
+    let pacing_file = crate::paths::s2_pacing_file(&crate::paths::db_path().0);
+    let patience = cmd::config::resolve_patience(&database, cmd::config::PatienceFlags::default(), pacing_file)
+        .unwrap_or_else(|e| {
+            eprintln!("warning: patient mode off: {}", e);
+            None
+        });
     cmd::Context {
         verbose: false,
         bib_file: None,
@@ -242,6 +250,7 @@ pub fn make_context(database: Arc<db::Db>) -> cmd::Context {
         json: true,
         no_cache: false,
         db: database,
+        patience,
     }
 }
 

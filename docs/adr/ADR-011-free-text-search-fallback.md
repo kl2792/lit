@@ -43,6 +43,7 @@ OpenAlex therefore cannot be the only fallback.
 5. Every `--json` search result carries `source`: `s2`, `openalex`, `arxiv`, `crossref`, `dblp`, `openlibrary`, `philpapers` or `clio`, matching the labels of `lit refs` and `lit cites`.
 6. Within the default cascade a request sleeps at most 9s across retries; a Retry-After beyond that ends its retries at once.
    An explicit `--source` keeps the 60s budget of ADR-004, because it has no fallback.
+   In patient mode a Semantic Scholar request instead waits up to its patience budget, 300s by default, before the cascade moves on (ADR-012).
 7. A search that finds nothing while some source failed exits nonzero, naming every source consulted with its error or "no results".
 8. OpenAlex requests carry no `mailto`; a key in `OPENALEX_API_KEY` is the supported way to a private budget.
 9. `--source arxiv` selects arXiv alone.

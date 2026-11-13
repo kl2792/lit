@@ -4,6 +4,7 @@
 /// for transparent request deduplication.
 
 use crate::db::Db;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,10 +15,73 @@ const MAX_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
 #[path = "http/publisher_transport_tests.rs"]
 pub(crate) mod publisher_transport_tests;
 
+#[path = "http/pacing.rs"]
+pub(crate) mod pacing;
+
 pub struct Client {
     inner: reqwest::Client,
     db: Arc<Db>,
     no_cache: bool,
+    patience: Option<Patience>,
+}
+
+/// Patient mode (ADR-012): Semantic Scholar requests wait out rate limits
+/// for up to `budget` of retry sleep, paced across processes through
+/// `pacing_file`, before the caller falls back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Patience {
+    pub budget: Duration,
+    pub pacing_file: PathBuf,
+}
+
+/// Patience budget when neither `--patient-budget` nor the `patient_budget`
+/// setting names one.
+pub const DEFAULT_PATIENCE_BUDGET: Duration = Duration::from_secs(300);
+
+/// Spacing of patient Semantic Scholar requests across processes: the
+/// documented 1 request per second for an API key, plus 0.1s for differences
+/// in when requests leave each process (ADR-012).
+pub const S2_REQUEST_INTERVAL: Duration = Duration::from_millis(1100);
+
+/// Longest patient backoff before jitter, so retries keep coming once the
+/// doubling passes a minute.
+const PATIENT_BACKOFF_CAP: Duration = Duration::from_secs(60);
+
+/// Shortest pacing wait worth a stderr line.
+const PACING_NOTE_THRESHOLD: Duration = Duration::from_secs(2);
+
+/// How one request retries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Policy {
+    max_attempts: usize,
+    /// Longest total sleep across retries.
+    budget: Duration,
+    /// True for a patient Semantic Scholar request: capped backoff, paced
+    /// attempts, and progress lines that name the source and budget.
+    patient: bool,
+}
+
+/// The retry policy for `url`: patient for a Semantic Scholar request when
+/// `patience` is set, otherwise `DEFAULT_MAX_ATTEMPTS` attempts under `budget`.
+/// `attempts_override` is `$LIT_MAX_ATTEMPTS`; patient requests are limited
+/// by their budget alone unless it is set.
+fn policy_for(url: &str, patience: Option<&Patience>, budget: Duration, attempts_override: Option<usize>) -> Policy {
+    match patience {
+        Some(p) if is_semantic_scholar(url) => Policy {
+            max_attempts: attempts_override.unwrap_or(usize::MAX),
+            budget: p.budget,
+            patient: true,
+        },
+        _ => Policy {
+            max_attempts: attempts_override.unwrap_or(DEFAULT_MAX_ATTEMPTS),
+            budget,
+            patient: false,
+        },
+    }
+}
+
+fn is_semantic_scholar(url: &str) -> bool {
+    url.contains("api.semanticscholar.org")
 }
 
 /// Uncached publisher response. The caller validates content and persists provenance.
@@ -86,16 +150,14 @@ impl Client {
             return publisher_get(&client, url, 1).await;
         }
         let client = publisher_client_builder(Duration::from_secs(30)).build()?;
-        let attempts = std::env::var("LIT_MAX_ATTEMPTS").ok()
-            .and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0)
-            .unwrap_or(DEFAULT_MAX_ATTEMPTS);
-        publisher_get(&client, url, attempts).await
+        publisher_get(&client, url, attempts_override().unwrap_or(DEFAULT_MAX_ATTEMPTS)).await
     }
     /// Create a new HTTP client backed by the given database.
     ///
     /// When `no_cache` is true, all requests bypass the cache (no reads or writes).
+    /// With `patience`, Semantic Scholar requests follow ADR-012.
     /// Timeout defaults to 15 seconds, overridden by `$CURL_TIMEOUT` env var.
-    pub fn new(db: Arc<Db>, no_cache: bool) -> Self {
+    pub fn new(db: Arc<Db>, no_cache: bool, patience: Option<Patience>) -> Self {
         let timeout_secs: u64 = std::env::var("CURL_TIMEOUT")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -112,6 +174,7 @@ impl Client {
             inner,
             db,
             no_cache,
+            patience,
         }
     }
 
@@ -190,18 +253,21 @@ impl Client {
         self.get_within(url, RETRY_BUDGET).await
     }
 
-    /// `get` with at most `budget` of total sleep across retries.
+    /// `get` with at most `budget` of total sleep across retries, except that
+    /// a patient Semantic Scholar request uses the patience budget instead.
     async fn get_within(&self, url: &str, budget: Duration) -> Result<String, Box<dyn std::error::Error>> {
-        let max_attempts = std::env::var("LIT_MAX_ATTEMPTS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|&n| n > 0)
-            .unwrap_or(DEFAULT_MAX_ATTEMPTS);
+        let policy = policy_for(url, self.patience.as_ref(), budget, attempts_override());
+        let pacing_file = self.patience.as_ref().filter(|_| policy.patient).map(|p| p.pacing_file.as_path());
         let outcome = with_retries(
-            max_attempts,
-            budget,
-            || self.attempt(url),
+            &policy,
+            || async move {
+                if let Some(file) = pacing_file {
+                    pace(file).await;
+                }
+                self.attempt(url).await
+            },
             tokio::time::sleep,
+            |line| eprintln!("{}", line),
         )
         .await;
         match outcome {
@@ -267,7 +333,8 @@ async fn publisher_get(client: &reqwest::Client, url: &str, attempts: usize) -> 
         return Err(format!("unsupported publisher URL: {url}").into());
     }
     let last_response = std::cell::RefCell::new(None);
-    let result = with_retries(attempts, RETRY_BUDGET, || async {
+    let policy = Policy { max_attempts: attempts, budget: RETRY_BUDGET, patient: false };
+    let result = with_retries(&policy, || async {
         // Metadata belongs to the current attempt. A later connection failure
         // must not masquerade as the preceding attempt's HTTP response.
         last_response.replace(None);
@@ -286,7 +353,7 @@ async fn publisher_get(client: &reqwest::Client, url: &str, attempts: usize) -> 
             return Attempt::Retry { err: Transient::Status(resp.status()), retry_after };
         }
         Attempt::Done(read_publisher(resp).await)
-    }, tokio::time::sleep).await;
+    }, tokio::time::sleep, |line| eprintln!("{}", line)).await;
     match result {
         Ok(response) => response,
         Err((error, attempts, _)) => {
@@ -372,18 +439,20 @@ enum Attempt<T, E> {
     Retry { err: E, retry_after: Option<Duration> },
 }
 
-/// Run `attempt` up to `max_attempts` times, sleeping between transient failures.
+/// Run `attempt` up to `policy.max_attempts` times, sleeping between
+/// transient failures and passing one progress line per retry to `note`.
 ///
 /// The wait before retry `k` (0-based) is the server's Retry-After when given,
-/// otherwise `2^(k+1)` seconds plus up to 50% jitter (2s, 4s, 8s, 16s, ...).
-/// Gives up early rather than let total sleep exceed `budget`.
+/// otherwise `2^(k+1)` seconds plus up to 50% jitter (2s, 4s, 8s, 16s, ...),
+/// the doubling capped at 60s for a patient policy.
+/// Gives up early rather than let total sleep exceed `policy.budget`.
 /// Returns the first `Done` value, or the last transient error, the number
 /// of attempts made, and the last attempt's Retry-After.
-async fn with_retries<T, E, A, AFut, S, SFut>(
-    max_attempts: usize,
-    budget: Duration,
+async fn with_retries<T, E, A, AFut, S, SFut, N>(
+    policy: &Policy,
     mut attempt: A,
     mut sleep: S,
+    mut note: N,
 ) -> Result<T, (E, usize, Option<Duration>)>
 where
     E: std::fmt::Display,
@@ -391,7 +460,9 @@ where
     AFut: std::future::Future<Output = Attempt<T, E>>,
     S: FnMut(Duration) -> SFut,
     SFut: std::future::Future<Output = ()>,
+    N: FnMut(String),
 {
+    let cap = policy.patient.then_some(PATIENT_BACKOFF_CAP);
     let mut slept = Duration::ZERO;
     let mut made = 0;
     loop {
@@ -400,23 +471,65 @@ where
             Attempt::Done(value) => return Ok(value),
             Attempt::Retry { err, retry_after } => (err, retry_after),
         };
-        let wait = retry_after.unwrap_or_else(|| backoff(made - 1, jitter_fraction()));
-        if made >= max_attempts || slept + wait > budget {
+        let wait = retry_after.unwrap_or_else(|| backoff(made - 1, jitter_fraction(), cap));
+        if made >= policy.max_attempts || slept + wait > policy.budget {
             return Err((err, made, retry_after));
         }
-        eprintln!(
-            "note: {} (attempt {}/{}), retrying in {:.1}s...",
-            err, made, max_attempts, wait.as_secs_f64()
-        );
+        note(retry_note(policy, &err, made, wait, slept + wait));
         sleep(wait).await;
         slept += wait;
     }
 }
 
-/// Exponential backoff for retry `k`: `2^(k+1)` seconds scaled by `1 + jitter/2`,
-/// `jitter` in `[0, 1)`. The exponent is capped so the shift cannot overflow.
-fn backoff(k: usize, jitter: f64) -> Duration {
-    Duration::from_secs(2u64 << k.min(16)).mul_f64(1.0 + jitter / 2.0)
+/// The progress line for a retry after attempt `made`, waiting `wait`, with
+/// `used` of the budget slept once the wait ends.
+fn retry_note(policy: &Policy, err: &dyn std::fmt::Display, made: usize, wait: Duration, used: Duration) -> String {
+    if policy.patient {
+        format!(
+            "note: Semantic Scholar: {} (attempt {}), retrying in {:.1}s ({:.0}s of {}s patience used)",
+            err, made, wait.as_secs_f64(), used.as_secs_f64(), policy.budget.as_secs()
+        )
+    } else {
+        format!(
+            "note: {} (attempt {}/{}), retrying in {:.1}s...",
+            err, made, policy.max_attempts, wait.as_secs_f64()
+        )
+    }
+}
+
+/// Exponential backoff for retry `k`: `2^(k+1)` seconds, at most `cap`,
+/// scaled by `1 + jitter/2` with `jitter` in `[0, 1)`. The exponent is capped
+/// so the shift cannot overflow.
+fn backoff(k: usize, jitter: f64, cap: Option<Duration>) -> Duration {
+    let base = Duration::from_secs(2u64 << k.min(16));
+    cap.map_or(base, |c| base.min(c)).mul_f64(1.0 + jitter / 2.0)
+}
+
+/// `$LIT_MAX_ATTEMPTS` when it is a positive integer.
+fn attempts_override() -> Option<usize> {
+    std::env::var("LIT_MAX_ATTEMPTS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0)
+}
+
+/// Wait for this process's Semantic Scholar request slot in `file`
+/// (ADR-012), noting waits of 2s or more. A pacing file that cannot be used
+/// is reported and the request goes unpaced.
+async fn pace(file: &std::path::Path) {
+    match pacing::reserve(file, S2_REQUEST_INTERVAL) {
+        Ok(wait) => {
+            if let Some(line) = pacing_note(wait) {
+                eprintln!("{}", line);
+            }
+            tokio::time::sleep(wait).await;
+        }
+        Err(e) => eprintln!("note: Semantic Scholar pacing unavailable ({}: {}); requesting unpaced", file.display(), e),
+    }
+}
+
+/// The stderr line for a pacing wait, when it is long enough to report.
+fn pacing_note(wait: Duration) -> Option<String> {
+    (wait >= PACING_NOTE_THRESHOLD).then(|| {
+        format!("note: Semantic Scholar: waiting {:.1}s for a request slot shared with other lit processes", wait.as_secs_f64())
+    })
 }
 
 /// A jitter fraction in `[0, 1)` from the clock's sub-second nanoseconds,
@@ -445,7 +558,7 @@ struct KeySpec {
 
 /// The key scheme for `url`'s API host, if it takes one.
 fn key_spec(url: &str) -> Option<KeySpec> {
-    if url.contains("api.semanticscholar.org") {
+    if is_semantic_scholar(url) {
         Some(KeySpec { env: "S2_API_KEY", header: "x-api-key", prefix: "" })
     } else if url.contains("api.openalex.org") {
         Some(KeySpec { env: "OPENALEX_API_KEY", header: "authorization", prefix: "Bearer " })
@@ -499,7 +612,7 @@ fn looks_valid(body: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{auth_header, is_rate_limited, parse_retry_after, rate_limit_message, with_retries, Attempt, FALLBACK_RETRY_BUDGET, RETRY_BUDGET};
+    use super::{auth_header, backoff, is_rate_limited, pacing_note, parse_retry_after, policy_for, rate_limit_message, retry_note, with_retries, Attempt, Patience, Policy, DEFAULT_MAX_ATTEMPTS, DEFAULT_PATIENCE_BUDGET, FALLBACK_RETRY_BUDGET, RETRY_BUDGET};
     use std::cell::RefCell;
     use std::time::Duration;
     #[test]
@@ -525,19 +638,161 @@ mod tests {
         max_attempts: usize,
         script: Vec<Attempt<&'static str, &'static str>>,
     ) -> (Result<&'static str, (&'static str, usize, Option<Duration>)>, Vec<Duration>) {
+        let (result, sleeps, _) = drive_policy(Policy { max_attempts, budget, patient: false }, script).await;
+        (result, sleeps)
+    }
+
+    /// Run `with_retries` under `policy` over a scripted sequence of attempt
+    /// outcomes, recording every sleep (the mocked clock) and progress line.
+    async fn drive_policy(
+        policy: Policy,
+        script: Vec<Attempt<&'static str, &'static str>>,
+    ) -> (Result<&'static str, (&'static str, usize, Option<Duration>)>, Vec<Duration>, Vec<String>) {
         let script = RefCell::new(script.into_iter());
         let sleeps = RefCell::new(Vec::new());
+        let notes = RefCell::new(Vec::new());
         let result = with_retries(
-            max_attempts,
-            budget,
+            &policy,
             || std::future::ready(script.borrow_mut().next().expect("script exhausted")),
             |d| {
                 sleeps.borrow_mut().push(d);
                 std::future::ready(())
             },
+            |line| notes.borrow_mut().push(line),
         )
         .await;
-        (result, sleeps.into_inner())
+        (result, sleeps.into_inner(), notes.into_inner())
+    }
+
+    const S2_SEARCH: &str = "https://api.semanticscholar.org/graph/v1/paper/search?query=x";
+
+    fn patience() -> Patience {
+        Patience { budget: DEFAULT_PATIENCE_BUDGET, pacing_file: "unused".into() }
+    }
+
+    fn patient_policy() -> Policy {
+        policy_for(S2_SEARCH, Some(&patience()), FALLBACK_RETRY_BUDGET, None)
+    }
+
+    #[test]
+    fn without_patience_every_request_keeps_its_caller_budget_and_five_attempts() {
+        for url in [S2_SEARCH, "https://api.openalex.org/works?search=x"] {
+            for budget in [FALLBACK_RETRY_BUDGET, RETRY_BUDGET] {
+                assert_eq!(
+                    policy_for(url, None, budget, None),
+                    Policy { max_attempts: DEFAULT_MAX_ATTEMPTS, budget, patient: false }
+                );
+            }
+        }
+        assert_eq!(policy_for(S2_SEARCH, None, RETRY_BUDGET, Some(2)).max_attempts, 2);
+    }
+
+    #[test]
+    fn patience_applies_to_semantic_scholar_only() {
+        let p = Patience { budget: Duration::from_secs(120), pacing_file: "f".into() };
+        assert_eq!(
+            policy_for(S2_SEARCH, Some(&p), FALLBACK_RETRY_BUDGET, None),
+            Policy { max_attempts: usize::MAX, budget: Duration::from_secs(120), patient: true }
+        );
+        let s2_cites = "https://api.semanticscholar.org/graph/v1/paper/ARXIV:1/citations?offset=0";
+        assert!(policy_for(s2_cites, Some(&p), RETRY_BUDGET, None).patient);
+        for url in ["https://api.openalex.org/works?search=x", "https://export.arxiv.org/api/query?search_query=x"] {
+            assert_eq!(
+                policy_for(url, Some(&p), FALLBACK_RETRY_BUDGET, None),
+                Policy { max_attempts: DEFAULT_MAX_ATTEMPTS, budget: FALLBACK_RETRY_BUDGET, patient: false },
+                "{}", url
+            );
+        }
+        assert_eq!(policy_for(S2_SEARCH, Some(&p), RETRY_BUDGET, Some(3)).max_attempts, 3);
+    }
+
+    #[test]
+    fn patient_backoff_doubles_to_a_sixty_second_cap_with_bounded_jitter() {
+        let cap = Some(Duration::from_secs(60));
+        let bases = [2, 4, 8, 16, 32, 60, 60, 60];
+        for (k, base) in bases.iter().enumerate() {
+            let base = Duration::from_secs(*base);
+            assert_eq!(backoff(k, 0.0, cap), base, "retry {}", k);
+            assert!(backoff(k, 0.999, cap) < base.mul_f64(1.5));
+        }
+        assert_eq!(backoff(40, 0.0, cap), Duration::from_secs(60), "no overflow far out");
+        assert_eq!(backoff(5, 0.0, None), Duration::from_secs(64), "default backoff is uncapped");
+    }
+
+    #[tokio::test]
+    async fn patient_retries_continue_past_five_attempts_until_the_budget_is_spent() {
+        let (result, sleeps, _) = drive_policy(patient_policy(), (0..100).map(|_| transient(None)).collect()).await;
+        let (err, made, _) = result.unwrap_err();
+        assert_eq!(err, "rate limited");
+        assert!(made > DEFAULT_MAX_ATTEMPTS, "made {} attempts", made);
+        let total: Duration = sleeps.iter().sum();
+        assert!(total <= DEFAULT_PATIENCE_BUDGET, "slept {:?}", total);
+        // The refused wait, under 90s (the 60s cap plus 50% jitter), would have passed the budget.
+        assert!(total + Duration::from_secs(90) > DEFAULT_PATIENCE_BUDGET, "gave up early at {:?}", total);
+        for (k, d) in sleeps.iter().enumerate() {
+            let base = Duration::from_secs((2u64 << k.min(16)).min(60));
+            assert!(*d >= base && *d < base.mul_f64(1.5), "sleep {} = {:?}", k, d);
+        }
+    }
+
+    #[tokio::test]
+    async fn patient_success_after_retries_returns_the_body() {
+        let script = vec![transient(None), transient(None), transient(None), transient(None), transient(None), Attempt::Done("body")];
+        let (result, sleeps, notes) = drive_policy(patient_policy(), script).await;
+        assert_eq!(result, Ok("body"));
+        assert_eq!(sleeps.len(), 5);
+        assert_eq!(notes.len(), 5, "one progress line per retry");
+    }
+
+    #[tokio::test]
+    async fn retry_after_takes_precedence_over_patient_backoff_and_its_cap() {
+        let (result, sleeps, _) = drive_policy(patient_policy(), vec![transient(Some(7)), transient(Some(120)), Attempt::Done("body")]).await;
+        assert_eq!(result, Ok("body"));
+        assert_eq!(sleeps, vec![Duration::from_secs(7), Duration::from_secs(120)]);
+    }
+
+    #[tokio::test]
+    async fn patient_retry_after_beyond_the_remaining_budget_gives_up_at_once() {
+        let (result, sleeps, _) = drive_policy(patient_policy(), vec![transient(Some(200)), transient(Some(101))]).await;
+        assert_eq!(result, Err(("rate limited", 2, Some(Duration::from_secs(101)))));
+        assert_eq!(sleeps, vec![Duration::from_secs(200)], "200s fits, 200s + 101s does not");
+    }
+
+    #[tokio::test]
+    async fn patient_progress_lines_name_the_source_attempt_wait_and_budget_used() {
+        let (_, sleeps, notes) = drive_policy(patient_policy(), vec![transient(Some(7)), transient(Some(30)), Attempt::Done("body")]).await;
+        assert_eq!(sleeps.len(), 2);
+        assert_eq!(notes, vec![
+            "note: Semantic Scholar: rate limited (attempt 1), retrying in 7.0s (7s of 300s patience used)".to_string(),
+            "note: Semantic Scholar: rate limited (attempt 2), retrying in 30.0s (37s of 300s patience used)".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn default_progress_line_is_unchanged() {
+        let policy = Policy { max_attempts: 5, budget: RETRY_BUDGET, patient: false };
+        assert_eq!(
+            retry_note(&policy, &"rate limited", 2, Duration::from_millis(4300), Duration::from_secs(7)),
+            "note: rate limited (attempt 2/5), retrying in 4.3s..."
+        );
+    }
+
+    #[tokio::test]
+    async fn default_policy_prints_one_line_per_retry() {
+        let (_, _, notes) = drive_policy(
+            Policy { max_attempts: 5, budget: RETRY_BUDGET, patient: false },
+            vec![transient(Some(3)), Attempt::Done("body")],
+        ).await;
+        assert_eq!(notes, vec!["note: rate limited (attempt 1/5), retrying in 3.0s...".to_string()]);
+    }
+
+    #[test]
+    fn pacing_waits_of_two_seconds_or_more_are_reported() {
+        assert_eq!(pacing_note(Duration::from_millis(1100)), None);
+        assert_eq!(
+            pacing_note(Duration::from_millis(3300)).as_deref(),
+            Some("note: Semantic Scholar: waiting 3.3s for a request slot shared with other lit processes")
+        );
     }
 
     fn transient(retry_after: Option<u64>) -> Attempt<&'static str, &'static str> {

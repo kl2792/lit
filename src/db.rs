@@ -137,6 +137,26 @@ impl Db {
         })
     }
 
+    /// The `meta` table's value for `key`.
+    pub fn meta_get(&self, key: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.query_row("SELECT value FROM meta WHERE key = ?", params![key], |row| row.get(0)).ok()
+    }
+
+    /// Store `value` under `key` in the `meta` table, replacing any value.
+    pub fn meta_set(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", params![key, value])?;
+        Ok(())
+    }
+
+    /// Remove `key` from the `meta` table; a missing key is not an error.
+    pub fn meta_delete(&self, key: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute("DELETE FROM meta WHERE key = ?", params![key])?;
+        Ok(())
+    }
+
     /// Return cached body if `key` exists and is younger than `ttl` seconds.
     pub fn cache_get(&self, key: &str, ttl: u64) -> Option<String> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());

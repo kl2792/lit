@@ -859,6 +859,7 @@ bibtex_key: lewis1973causation
                     json: false,
                     no_cache: false,
                     db: Arc::new(crate::db::Db::open_in_memory().unwrap()),
+                    patience: None,
                 },
             }
         }
